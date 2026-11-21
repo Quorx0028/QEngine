@@ -26,7 +26,16 @@ export {
   createSphereGeometry,
   extractColliderTriangles,
 } from './render/Primitives';
+export {
+  composePostProcessShader,
+  createPostProcessPreset,
+  isPostProcessActive,
+  POST_PROCESS_PRESET_NAMES,
+  type PostProcessConfig,
+  type PostProcessPresetName,
+} from './render/PostProcess';
 export { composeShader, SHADER_BLOCK_IDS, type ComposeShaderConfig } from './render/ShaderBlocks';
+export { ShaderGraph } from './render/ShaderGraph';
 export {
   createPresetMaterial,
   defaultMaterialUniforms,
@@ -34,7 +43,7 @@ export {
   type MaterialPresetOverrides,
   type ShaderPresetName,
 } from './render/ShaderPresets';
-export { WebGL2Backend } from './render/WebGL2Backend';
+export { computeSmoothNormals, WebGL2Backend } from './render/WebGL2Backend';
 export {
   Scene,
   type CameraState,

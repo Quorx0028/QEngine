@@ -11,6 +11,12 @@ export const SHADER_BLOCK_IDS: readonly ShaderBlockId[] = [
   'pixelDither',
   'triplanarGrid',
   'distanceFog',
+  'iridescent',
+  'matcapNeon',
+  'glassRefract',
+  'voronoiCaustics',
+  'pixelWorld',
+  'pulseEmissive',
 ] as const;
 
 export interface ComposeShaderConfig {
@@ -141,6 +147,82 @@ vec3 evalRimLight(vec3 n, vec3 v, vec3 rimColor, float power) {
 vec3 evalFresnelGlow(vec3 n, vec3 v, vec3 glowColor, float power) {
   float f = pow(1.0 - max(dot(n, v), 0.0), max(power, 0.5));
   return glowColor * f;
+}
+`);
+  }
+
+  if (has('iridescent')) {
+    blockSnippets.push(`
+vec3 evalIridescent(vec3 n, vec3 v, vec3 wp, float t) {
+  float ndv = clamp(dot(n, v), 0.0, 1.0);
+  float phase = (1.0 - ndv) * 4.8 + wp.y * 0.35 + t * 0.8;
+  vec3 rainbow = 0.5 + 0.5 * cos(6.28318 * (phase + vec3(0.0, 0.33, 0.67)));
+  return rainbow * mix(0.25, 0.95, 1.0 - ndv);
+}
+`);
+  }
+
+  if (has('matcapNeon')) {
+    blockSnippets.push(`
+vec3 evalMatcapNeon(vec3 n, vec3 v, vec3 wp, vec3 glowColor, float t) {
+  float edge = pow(1.0 - max(dot(n, v), 0.0), 1.6);
+  vec3 grid = abs(fract(wp * 1.25 - 0.5) - 0.5) / max(fwidth(wp * 1.25), vec3(0.002));
+  float wire = 1.0 - min(min(grid.x, grid.y), min(grid.z, 1.0));
+  float pulse = 0.75 + 0.25 * sin(t * 3.2 + wp.y * 2.0);
+  return glowColor * (edge * 1.1 + wire * 0.95) * pulse;
+}
+`);
+  }
+
+  if (has('glassRefract')) {
+    blockSnippets.push(`
+vec3 evalGlassRefract(vec3 n, vec3 v, vec3 l, vec3 glowColor) {
+  float fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+  vec3 refl = reflect(-v, n);
+  float skyRefl = smoothstep(-0.2, 0.8, refl.y);
+  vec3 h = normalize(l + v);
+  float spark = pow(max(dot(n, h), 0.0), 96.0) * 1.8;
+  return mix(glowColor * 0.3, vec3(0.85, 0.95, 1.0), skyRefl) * (0.35 + fresnel * 0.9) + vec3(spark);
+}
+`);
+  }
+
+  if (has('voronoiCaustics')) {
+    blockSnippets.push(`
+float evalVoronoiCaustics(vec3 wp, float t) {
+  vec2 p = wp.xz * 1.3 + wp.y * 0.45;
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float minD = 8.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 g = vec2(float(x), float(y));
+      vec2 h = fract(sin(vec2(dot(i + g, vec2(127.1, 311.7)), dot(i + g, vec2(269.5, 183.3)))) * 43758.5453);
+      vec2 o = 0.5 + 0.45 * sin(t * 1.8 + 6.2831 * h);
+      float d = length(g + o - f);
+      minD = min(minD, d);
+    }
+  }
+  return pow(clamp(1.0 - minD, 0.0, 1.0), 3.0);
+}
+`);
+  }
+
+  if (has('pixelWorld')) {
+    blockSnippets.push(`
+vec3 evalPixelWorld(vec3 wp, vec3 col) {
+  vec3 q = floor(wp * 4.0) / 4.0;
+  float band = fract(sin(dot(q, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+  return col * (0.86 + 0.24 * band);
+}
+`);
+  }
+
+  if (has('pulseEmissive')) {
+    blockSnippets.push(`
+vec3 evalPulseEmissive(vec3 wp, vec3 glowColor, float t) {
+  float p = 0.5 + 0.5 * sin(t * 4.0 + wp.y * 3.0);
+  return glowColor * (0.2 + p * 0.75);
 }
 `);
   }
@@ -301,6 +383,7 @@ void main() {
   float alpha = u_baseColor.a * texSample.a;
 
   ${has('triplanarGrid') ? 'albedo = evalTriplanarGrid(albedo, v_worldPos, u_gridScale);' : ''}
+  ${has('pixelWorld') ? 'albedo = evalPixelWorld(v_worldPos, albedo);' : ''}
 
   vec3 n = normalize(v_normal);
   vec3 v = normalize(u_cameraPos - v_worldPos);
@@ -313,6 +396,11 @@ void main() {
 
   ${has('rimLight') ? 'color += evalRimLight(n, v, u_rimColor, u_rimPower);' : ''}
   ${has('fresnelGlow') ? 'color += evalFresnelGlow(n, v, u_glowColor, u_fresnelPower);' : ''}
+  ${has('iridescent') ? 'color += evalIridescent(n, v, v_worldPos, u_time);' : ''}
+  ${has('matcapNeon') ? 'color += evalMatcapNeon(n, v, v_worldPos, u_glowColor, u_time);' : ''}
+  ${has('glassRefract') ? 'color = mix(color, evalGlassRefract(n, v, l, u_glowColor), 0.72); alpha *= 0.58;' : ''}
+  ${has('voronoiCaustics') ? 'color += u_glowColor * evalVoronoiCaustics(v_worldPos, u_time) * 0.85;' : ''}
+  ${has('pulseEmissive') ? 'color += evalPulseEmissive(v_worldPos, u_edgeColor, u_time);' : ''}
 
   ${
     has('dissolveNoise')

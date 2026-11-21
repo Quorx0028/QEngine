@@ -5,7 +5,13 @@ import { AssetManager } from '../src/assets/AssetManager';
 import { Engine } from '../src/Engine';
 import type { IRenderBackend, MaterialDesc, MeshGeometry } from '../src/render/IRenderBackend';
 import { composeShader, SHADER_BLOCK_IDS } from '../src/render/ShaderBlocks';
+import { ShaderGraph } from '../src/render/ShaderGraph';
 import { createPresetMaterial, SHADER_PRESET_NAMES } from '../src/render/ShaderPresets';
+import {
+  composePostProcessShader,
+  createPostProcessPreset,
+  POST_PROCESS_PRESET_NAMES,
+} from '../src/render/PostProcess';
 import { computeSmoothNormals } from '../src/render/WebGL2Backend';
 
 const wasmBytes = readFileSync(resolve(import.meta.dirname, '../wasm/quark_core.wasm'));
@@ -78,6 +84,12 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
       'dissolve',
       'retroDither',
       'waveSurface',
+      'iridescent',
+      'cyberNeon',
+      'crystalGlass',
+      'waterCaustics',
+      'ps1Retro',
+      'magmaPulse',
     ]);
 
     const toon = createPresetMaterial('animeToon', { outlineWidth: 0.045 });
@@ -89,6 +101,42 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(holo.transparent).toBe(true);
     expect(holo.blocks).toContain('hologramScanline');
     expect(holo.blocks).toContain('fresnelGlow');
+
+    const irid = createPresetMaterial('iridescent');
+    expect(irid.blocks).toContain('iridescent');
+  });
+
+  it('builds valid GLSL materials via ShaderGraph fluent API and PostProcess presets', () => {
+    const mat = new ShaderGraph()
+      .add('celLighting')
+      .add('iridescent')
+      .add('pulseEmissive')
+      .setOutline(0.025, [0.1, 0.05, 0.2])
+      .compile();
+
+    expect(mat.blocks).toEqual(['celLighting', 'iridescent', 'pulseEmissive']);
+    expect(mat.outlineWidth).toBeCloseTo(0.025, 5);
+
+    const composed = composeShader({ blocks: [...SHADER_BLOCK_IDS] });
+    expect(composed.fragmentSource).toContain('evalIridescent');
+    expect(composed.fragmentSource).toContain('evalVoronoiCaustics');
+
+    expect(POST_PROCESS_PRESET_NAMES).toEqual([
+      'none',
+      'animeWorld',
+      'retroPS1',
+      'crtHorror',
+      'dreamWave',
+      'noir',
+    ]);
+    const pp = createPostProcessPreset('crtHorror');
+    expect(pp.crt).toBe(true);
+    expect(pp.chromaticAberration).toBeGreaterThan(0);
+
+    const ppSrc = composePostProcessShader();
+    expect(ppSrc.fragmentSource).toContain('#version 300 es');
+    expect(ppSrc.fragmentSource).toContain('u_sceneTex');
+    expect(ppSrc.fragmentSource).toContain('u_depthTex');
   });
 
   it('AssetManager tracks resources by tag and disposes tag-scoped assets without leaking', async () => {

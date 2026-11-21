@@ -2,6 +2,7 @@ import { mat4LookAt, mat4Multiply, mat4Ortho, type Vec3Tuple } from '../math/Mat
 import type { Scene } from '../Scene';
 import type { WasmBridge } from '../wasm/WasmBridge';
 import type { IRenderBackend, MaterialDesc, MeshGeometry } from './IRenderBackend';
+import { composePostProcessShader, isPostProcessActive, type PostProcessConfig } from './PostProcess';
 import { composeShader } from './ShaderBlocks';
 
 interface GpuMesh {
@@ -203,6 +204,20 @@ export class WebGL2Backend implements IRenderBackend {
   private spriteInstVbo: WebGLBuffer;
   private spriteInstScratch = new Float32Array(16 * 128);
 
+  private ppBrightProgram: GpuProgram;
+  private ppBlurProgram: GpuProgram;
+  private ppCompositeProgram: GpuProgram;
+  private ppWidth = 0;
+  private ppHeight = 0;
+  private sceneFbo: WebGLFramebuffer | null = null;
+  private sceneColorTex: WebGLTexture | null = null;
+  private sceneDepthTex: WebGLTexture | null = null;
+  private bloomFboA: WebGLFramebuffer | null = null;
+  private bloomTexA: WebGLTexture | null = null;
+  private bloomFboB: WebGLFramebuffer | null = null;
+  private bloomTexB: WebGLTexture | null = null;
+  private dummyBlackTex: WebGLTexture;
+
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext('webgl2', {
       antialias: true,
@@ -217,6 +232,17 @@ export class WebGL2Backend implements IRenderBackend {
     this.skyProgram = this.compileProgram('__sky__', SKY_VERT, SKY_FRAG);
     this.outlineProgram = this.compileProgram('__outline__', OUTLINE_VERT, OUTLINE_FRAG);
     this.spriteProgram = this.compileProgram('__sprite2d__', SPRITE_VERT, SPRITE_FRAG);
+
+    const ppSrc = composePostProcessShader();
+    this.ppBrightProgram = this.compileProgram('__pp_bright__', ppSrc.vertexSource, ppSrc.brightFragmentSource);
+    this.ppBlurProgram = this.compileProgram('__pp_blur__', ppSrc.vertexSource, ppSrc.blurFragmentSource);
+    this.ppCompositeProgram = this.compileProgram('__pp_comp__', ppSrc.vertexSource, ppSrc.fragmentSource);
+
+    const blackTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, blackTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.dummyBlackTex = blackTex;
 
     // Shadow depth FBO
     const sFbo = gl.createFramebuffer()!;
@@ -431,6 +457,80 @@ export class WebGL2Backend implements IRenderBackend {
     this.textures.delete(textureId);
   }
 
+  private ensurePostProcessFbos(w: number, h: number): void {
+    if (this.ppWidth === w && this.ppHeight === h && this.sceneFbo) return;
+    this.disposePostProcessFbos();
+    const gl = this.gl;
+    this.ppWidth = w;
+    this.ppHeight = h;
+
+    const makeColorTex = (tw: number, th: number) => {
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return tex;
+    };
+
+    const sColor = makeColorTex(w, h);
+    const sDepth = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, sDepth);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const sFbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sColor, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, sDepth, 0);
+
+    const hw = Math.max(1, Math.floor(w / 2));
+    const hh = Math.max(1, Math.floor(h / 2));
+    const bTexA = makeColorTex(hw, hh);
+    const bFboA = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bFboA);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, bTexA, 0);
+
+    const bTexB = makeColorTex(hw, hh);
+    const bFboB = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, bFboB);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, bTexB, 0);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
+    this.sceneFbo = sFbo;
+    this.sceneColorTex = sColor;
+    this.sceneDepthTex = sDepth;
+    this.bloomFboA = bFboA;
+    this.bloomTexA = bTexA;
+    this.bloomFboB = bFboB;
+    this.bloomTexB = bTexB;
+  }
+
+  private disposePostProcessFbos(): void {
+    const gl = this.gl;
+    if (this.sceneFbo) gl.deleteFramebuffer(this.sceneFbo);
+    if (this.sceneColorTex) gl.deleteTexture(this.sceneColorTex);
+    if (this.sceneDepthTex) gl.deleteTexture(this.sceneDepthTex);
+    if (this.bloomFboA) gl.deleteFramebuffer(this.bloomFboA);
+    if (this.bloomTexA) gl.deleteTexture(this.bloomTexA);
+    if (this.bloomFboB) gl.deleteFramebuffer(this.bloomFboB);
+    if (this.bloomTexB) gl.deleteTexture(this.bloomTexB);
+    this.sceneFbo = null;
+    this.sceneColorTex = null;
+    this.sceneDepthTex = null;
+    this.bloomFboA = null;
+    this.bloomTexA = null;
+    this.bloomFboB = null;
+    this.bloomTexB = null;
+  }
+
   renderFrame(bridge: WasmBridge, scene: Scene, aspect: number, timeSec: number): number {
     const gl = this.gl;
     const canvas = gl.canvas as HTMLCanvasElement;
@@ -438,6 +538,14 @@ export class WebGL2Backend implements IRenderBackend {
 
     if (scene.camera.mode === '3d' && scene.shadowsEnabled) {
       drawCalls += this.renderShadowPass(bridge, scene);
+    }
+
+    const usePp = isPostProcessActive(scene.postProcess);
+    if (usePp) {
+      this.ensurePostProcessFbos(canvas.width, canvas.height);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFbo);
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     }
 
     gl.viewport(0, 0, canvas.width, canvas.height);
@@ -451,7 +559,95 @@ export class WebGL2Backend implements IRenderBackend {
       drawCalls += this.render3DPass(bridge, scene, viewProj, timeSec);
     }
     drawCalls += this.render2DPass(bridge, viewProj);
+
+    if (usePp) {
+      drawCalls += this.renderPostProcess(canvas.width, canvas.height, scene.postProcess, timeSec);
+    }
     return drawCalls;
+  }
+
+  private renderPostProcess(w: number, h: number, pp: PostProcessConfig, timeSec: number): number {
+    const gl = this.gl;
+    let calls = 0;
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(this.skyVao);
+
+    let bloomTexToBind = this.dummyBlackTex;
+    if (pp.bloomIntensity > 0.001 && this.bloomFboA && this.bloomFboB && this.bloomTexA && this.bloomTexB) {
+      const hw = Math.max(1, Math.floor(w / 2));
+      const hh = Math.max(1, Math.floor(h / 2));
+      gl.viewport(0, 0, hw, hh);
+
+      // Extract bright areas
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomFboA);
+      gl.useProgram(this.ppBrightProgram.program);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.sceneColorTex);
+      gl.uniform1i(this.uLoc(this.ppBrightProgram, 'u_sceneTex'), 0);
+      gl.uniform1f(this.uLoc(this.ppBrightProgram, 'u_bloomThreshold'), pp.bloomThreshold);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      calls++;
+
+      // Horizontal blur -> B
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomFboB);
+      gl.useProgram(this.ppBlurProgram.program);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.bloomTexA);
+      gl.uniform1i(this.uLoc(this.ppBlurProgram, 'u_tex'), 0);
+      gl.uniform2f(this.uLoc(this.ppBlurProgram, 'u_dir'), 1.0, 0.0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      calls++;
+
+      // Vertical blur -> A
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.bloomFboA);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.bloomTexB);
+      gl.uniform2f(this.uLoc(this.ppBlurProgram, 'u_dir'), 0.0, 1.0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      calls++;
+
+      bloomTexToBind = this.bloomTexA;
+    }
+
+    // Final composite to screen
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    gl.useProgram(this.ppCompositeProgram.program);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneColorTex);
+    gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_sceneTex'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.sceneDepthTex);
+    gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_depthTex'), 1);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, bloomTexToBind);
+    gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_bloomTex'), 2);
+
+    gl.uniform2f(this.uLoc(this.ppCompositeProgram, 'u_resolution'), w, h);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_time'), timeSec);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_bloomIntensity'), pp.bloomIntensity);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_screenOutline'), pp.screenOutline);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_pixelSize'), pp.pixelSize);
+    gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_crt'), pp.crt ? 1 : 0);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_chromatic'), pp.chromaticAberration);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_vignette'), pp.vignette);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_grain'), pp.filmGrain);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_wave'), pp.waveStrength);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_saturation'), pp.saturation);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_noir'), pp.noir);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    calls++;
+
+    gl.bindVertexArray(null);
+    gl.depthMask(true);
+    return calls;
   }
 
   private renderSkyPass(scene: Scene, aspect: number): number {
@@ -787,6 +983,8 @@ export class WebGL2Backend implements IRenderBackend {
     this.programCache.clear();
     gl.deleteFramebuffer(this.shadowFbo);
     gl.deleteTexture(this.shadowDepthTex);
+    gl.deleteTexture(this.dummyBlackTex);
+    this.disposePostProcessFbos();
     gl.deleteVertexArray(this.skyVao);
     gl.deleteVertexArray(this.spriteVao);
     gl.deleteBuffer(this.spriteQuadVbo);

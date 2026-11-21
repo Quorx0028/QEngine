@@ -239,15 +239,41 @@
         <b>Forest Escape:</b> броди с фонариком (F), убегай от монстра, найди 3 кристалла и добеги до выхода!
       </div>
 
-      <div class="section-title">Цель редактора шейдеров</div>
+      <div class="section-title">Глобальный шейдер (весь экран)</div>
+      <div class="row" id="pp-preset-buttons"></div>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="chk-pp-crt" /> CRT</label>
+        <label class="slider" style="flex:1">Bloom: <span id="val-pp-bloom">0.0</span>
+          <input id="sl-pp-bloom" type="range" min="0" max="1.2" step="0.05" value="0" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="slider" style="flex:1">Screen Outline: <span id="val-pp-outline">0.0</span>
+          <input id="sl-pp-outline" type="range" min="0" max="1" step="0.05" value="0" />
+        </label>
+        <label class="slider" style="flex:1">Pixelate: <span id="val-pp-pixel">1</span>
+          <input id="sl-pp-pixel" type="range" min="1" max="8" step="1" value="1" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="slider" style="flex:1">Chromatic: <span id="val-pp-chrom">0.0</span>
+          <input id="sl-pp-chrom" type="range" min="0" max="0.01" step="0.0005" value="0" />
+        </label>
+        <label class="slider" style="flex:1">Wave: <span id="val-pp-wave">0.0</span>
+          <input id="sl-pp-wave" type="range" min="0" max="0.02" step="0.001" value="0" />
+        </label>
+      </div>
+
+      <div class="section-title">Цель материал-шейдеров</div>
       <div class="row">
         <select id="sel-target">
+          <option value="all">All Scene Objects (Весь мир)</option>
           <option value="crystal">Central Crystal / .GLB</option>
           <option value="props">Spawned Cubes & Spheres</option>
         </select>
       </div>
 
-      <div class="section-title">Пресет шейдера</div>
+      <div class="section-title">Пресет материала (12 шт.)</div>
       <div class="row" id="preset-buttons"></div>
 
       <div class="section-title">Блоки шейдера (конструктор)</div>

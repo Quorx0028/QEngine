@@ -1,16 +1,19 @@
 import {
   createBoxGeometry,
   createPlaneGeometry,
+  createPostProcessPreset,
   createPresetMaterial,
   createRampGeometry,
   createSphereGeometry,
   Engine,
   extractColliderTriangles,
+  POST_PROCESS_PRESET_NAMES,
   quatFromEuler,
   SHADER_BLOCK_IDS,
   SHADER_PRESET_NAMES,
   type EntityId,
   type MaterialDesc,
+  type PostProcessPresetName,
   type ShaderBlockId,
   type ShaderPresetName,
   type Vec3Tuple,
@@ -85,8 +88,9 @@ async function bootstrap() {
   let crystalEntity = 0;
   let crystalMatId = 0;
   let propsMatId = 0;
-  let editTarget: 'crystal' | 'props' = 'crystal';
+  let editTarget: 'all' | 'crystal' | 'props' = 'all';
   let activePreset: ShaderPresetName = 'animeToon';
+  let activePpPreset: PostProcessPresetName = 'none';
   let yaw = 0;
   let pitch = -0.16;
   let hero2d = 0;
@@ -103,6 +107,7 @@ async function bootstrap() {
   const propsDesc: MaterialDesc = createPresetMaterial('pbr', {
     uniforms: { baseColor: [0.92, 0.56, 0.32, 1.0], roughness: 0.38 },
   });
+  const worldDesc: MaterialDesc = createPresetMaterial('animeToon');
 
   function playSfx(freq: number, dur = 0.08, type: OscillatorType = 'triangle', vol = 0.12) {
     if (sfxEnabled) audio.playTone(freq, dur, type, vol);
@@ -470,6 +475,7 @@ async function bootstrap() {
   }
 
   function getActiveTarget(): { desc: MaterialDesc; matId: number } {
+    if (editTarget === 'all') return { desc: worldDesc, matId: crystalMatId };
     return editTarget === 'crystal'
       ? { desc: crystalDesc, matId: crystalMatId }
       : { desc: propsDesc, matId: propsMatId };
@@ -477,6 +483,14 @@ async function bootstrap() {
 
   function syncActiveMaterial() {
     const { desc, matId } = getActiveTarget();
+    if (editTarget === 'all') {
+      const ids = assets.getMaterialsByTag('scene');
+      for (const id of ids) {
+        assets.updateMaterial(id, desc);
+      }
+      syncUiFromActiveDesc();
+      return;
+    }
     if (!matId) return;
     assets.updateMaterial(matId, desc);
     if (editTarget === 'crystal' && crystalEntity) {
@@ -492,6 +506,63 @@ async function bootstrap() {
     }
     syncUiFromActiveDesc();
   }
+
+  // Global Screen Post-Process Controls
+  const ppWrap = document.getElementById('pp-preset-buttons')!;
+  const ppButtons = new Map<PostProcessPresetName, HTMLButtonElement>();
+  const chkPpCrt = document.getElementById('chk-pp-crt') as HTMLInputElement;
+  const slPpBloom = document.getElementById('sl-pp-bloom') as HTMLInputElement;
+  const slPpOutline = document.getElementById('sl-pp-outline') as HTMLInputElement;
+  const slPpPixel = document.getElementById('sl-pp-pixel') as HTMLInputElement;
+  const slPpChrom = document.getElementById('sl-pp-chrom') as HTMLInputElement;
+  const slPpWave = document.getElementById('sl-pp-wave') as HTMLInputElement;
+
+  function syncPpUi() {
+    const pp = scene.postProcess;
+    chkPpCrt.checked = pp.crt;
+    slPpBloom.value = String(pp.bloomIntensity);
+    document.getElementById('val-pp-bloom')!.textContent = pp.bloomIntensity.toFixed(2);
+    slPpOutline.value = String(pp.screenOutline);
+    document.getElementById('val-pp-outline')!.textContent = pp.screenOutline.toFixed(2);
+    slPpPixel.value = String(pp.pixelSize);
+    document.getElementById('val-pp-pixel')!.textContent = String(pp.pixelSize);
+    slPpChrom.value = String(pp.chromaticAberration);
+    document.getElementById('val-pp-chrom')!.textContent = pp.chromaticAberration.toFixed(4);
+    slPpWave.value = String(pp.waveStrength);
+    document.getElementById('val-pp-wave')!.textContent = pp.waveStrength.toFixed(3);
+  }
+
+  for (const ppName of POST_PROCESS_PRESET_NAMES) {
+    const btn = document.createElement('button');
+    btn.textContent = ppName;
+    if (ppName === activePpPreset) btn.classList.add('active');
+    btn.onclick = () => {
+      activePpPreset = ppName;
+      scene.postProcess = createPostProcessPreset(ppName);
+      ppButtons.forEach((b, k) => b.classList.toggle('active', k === ppName));
+      syncPpUi();
+    };
+    ppButtons.set(ppName, btn);
+    ppWrap.appendChild(btn);
+  }
+
+  chkPpCrt.onchange = () => {
+    scene.postProcess.enabled = true;
+    scene.postProcess.crt = chkPpCrt.checked;
+  };
+  const bindPpSlider = (sl: HTMLInputElement, valId: string, apply: (v: number) => void, digits = 2) => {
+    sl.oninput = () => {
+      const v = Number(sl.value);
+      scene.postProcess.enabled = true;
+      apply(v);
+      document.getElementById(valId)!.textContent = digits === 0 ? String(v) : v.toFixed(digits);
+    };
+  };
+  bindPpSlider(slPpBloom, 'val-pp-bloom', (v) => (scene.postProcess.bloomIntensity = v), 2);
+  bindPpSlider(slPpOutline, 'val-pp-outline', (v) => (scene.postProcess.screenOutline = v), 2);
+  bindPpSlider(slPpPixel, 'val-pp-pixel', (v) => (scene.postProcess.pixelSize = v), 0);
+  bindPpSlider(slPpChrom, 'val-pp-chrom', (v) => (scene.postProcess.chromaticAberration = v), 4);
+  bindPpSlider(slPpWave, 'val-pp-wave', (v) => (scene.postProcess.waveStrength = v), 3);
 
   // UI Setup
   const presetWrap = document.getElementById('preset-buttons')!;
@@ -556,7 +627,7 @@ async function bootstrap() {
   }
 
   (document.getElementById('sel-target') as HTMLSelectElement).onchange = (e) => {
-    editTarget = (e.target as HTMLSelectElement).value as 'crystal' | 'props';
+    editTarget = (e.target as HTMLSelectElement).value as 'all' | 'crystal' | 'props';
     syncUiFromActiveDesc();
   };
 

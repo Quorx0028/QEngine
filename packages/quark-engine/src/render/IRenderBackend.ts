@@ -11,7 +11,13 @@ export type ShaderBlockId =
   | 'hologramScanline'
   | 'pixelDither'
   | 'triplanarGrid'
-  | 'distanceFog';
+  | 'distanceFog'
+  | 'iridescent'
+  | 'matcapNeon'
+  | 'glassRefract'
+  | 'voronoiCaustics'
+  | 'pixelWorld'
+  | 'pulseEmissive';
 
 export interface MeshGeometry {
   /** Interleaved floats: [px, py, pz, nx, ny, nz, u, v] (8 floats per vertex) */

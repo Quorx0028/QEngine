@@ -1,4 +1,9 @@
 import { mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective, Vec3Tuple, QuatTuple } from './math/Mat4';
+import {
+  createPostProcessPreset,
+  type PostProcessConfig,
+  type PostProcessPresetName,
+} from './render/PostProcess';
 import { WasmBridge } from './wasm/WasmBridge';
 
 export type EntityId = number;
@@ -111,6 +116,7 @@ export class Scene {
   };
 
   readonly pointLights: PointLight[] = [];
+  postProcess: PostProcessConfig = createPostProcessPreset('none');
   shadowsEnabled = true;
   skyTopColor: Vec3Tuple = [0.08, 0.16, 0.32];
   skyHorizonColor: Vec3Tuple = [0.22, 0.32, 0.48];
@@ -213,6 +219,10 @@ export class Scene {
       worldPoint?.[1],
       worldPoint?.[2]
     );
+  }
+
+  setPostProcessPreset(name: PostProcessPresetName): void {
+    this.postProcess = createPostProcessPreset(name);
   }
 
   triggerShake(intensity: number, durationSec: number): void {

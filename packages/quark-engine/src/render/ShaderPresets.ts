@@ -6,7 +6,13 @@ export type ShaderPresetName =
   | 'hologram'
   | 'dissolve'
   | 'retroDither'
-  | 'waveSurface';
+  | 'waveSurface'
+  | 'iridescent'
+  | 'cyberNeon'
+  | 'crystalGlass'
+  | 'waterCaustics'
+  | 'ps1Retro'
+  | 'magmaPulse';
 
 export const SHADER_PRESET_NAMES: readonly ShaderPresetName[] = [
   'pbr',
@@ -15,6 +21,12 @@ export const SHADER_PRESET_NAMES: readonly ShaderPresetName[] = [
   'dissolve',
   'retroDither',
   'waveSurface',
+  'iridescent',
+  'cyberNeon',
+  'crystalGlass',
+  'waterCaustics',
+  'ps1Retro',
+  'magmaPulse',
 ] as const;
 
 export function defaultMaterialUniforms(overrides: Partial<MaterialUniforms> = {}): MaterialUniforms {
@@ -117,6 +129,63 @@ function getPresetBase(preset: ShaderPresetName): MaterialDesc {
           roughness: 0.18,
           waveAmp: 0.18,
           waveFreq: 2.4,
+        }),
+      };
+    case 'iridescent':
+      return {
+        blocks: ['pbrLighting', 'iridescent', 'rimLight', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.22, 0.24, 0.32, 1.0],
+          metallic: 0.65,
+          roughness: 0.22,
+          rimColor: [0.9, 0.95, 1.0],
+        }),
+      };
+    case 'cyberNeon':
+      return {
+        blocks: ['pbrLighting', 'matcapNeon', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.08, 0.1, 0.18, 1.0],
+          glowColor: [0.15, 0.95, 0.9],
+          roughness: 0.25,
+        }),
+      };
+    case 'crystalGlass':
+      return {
+        blocks: ['pbrLighting', 'glassRefract', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.55, 0.85, 1.0, 0.8],
+          glowColor: [0.65, 0.92, 1.0],
+          roughness: 0.08,
+        }),
+        transparent: true,
+      };
+    case 'waterCaustics':
+      return {
+        blocks: ['pbrLighting', 'voronoiCaustics', 'vertexWave', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.1, 0.45, 0.72, 1.0],
+          glowColor: [0.35, 0.95, 1.0],
+          waveAmp: 0.08,
+          waveFreq: 2.0,
+        }),
+      };
+    case 'ps1Retro':
+      return {
+        blocks: ['celLighting', 'pixelWorld', 'pixelDither', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.76, 0.72, 0.65, 1.0],
+          celSteps: 4,
+          ditherStrength: 0.95,
+        }),
+      };
+    case 'magmaPulse':
+      return {
+        blocks: ['pbrLighting', 'pulseEmissive', 'dissolveNoise', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.18, 0.09, 0.08, 1.0],
+          edgeColor: [1.0, 0.35, 0.06],
+          dissolve: 0.12,
         }),
       };
   }

@@ -184,6 +184,10 @@ export class AssetManager {
     return this.namedMaterials.get(name);
   }
 
+  getMaterialsByTag(tag: string): number[] {
+    return [...(this.tags.get(tag)?.materials ?? [])];
+  }
+
   getTexture(name: string): number | undefined {
     return this.namedTextures.get(name);
   }
