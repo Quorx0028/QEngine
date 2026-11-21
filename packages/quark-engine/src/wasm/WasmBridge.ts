@@ -53,6 +53,30 @@ interface CoreExports {
     restitution: number,
     friction: number
   ): void;
+  core_set_rigid_body_ex(
+    ptr: number,
+    entity: number,
+    dynamic: number,
+    gravityScale: number,
+    restitution: number,
+    friction: number,
+    linearDamping: number,
+    angularDamping: number,
+    mass: number,
+    lockRotation: number
+  ): void;
+  core_set_angular_velocity(ptr: number, entity: number, wx: number, wy: number, wz: number): void;
+  core_apply_impulse(
+    ptr: number,
+    entity: number,
+    ix: number,
+    iy: number,
+    iz: number,
+    px: number,
+    py: number,
+    pz: number,
+    hasPoint: number
+  ): void;
   core_is_grounded(ptr: number, entity: number): number;
   core_set_collider_3d(ptr: number, entity: number, kind: number, a: number, b: number, c: number): void;
   core_set_collider_2d(ptr: number, entity: number, kind: number, a: number, b: number): void;
@@ -288,15 +312,50 @@ export class WasmBridge {
     dynamic: boolean,
     gravityScale: number,
     restitution: number,
-    friction: number
+    friction: number,
+    linearDamping = 0.12,
+    angularDamping = 0.35,
+    mass = 1.0,
+    lockRotation = false
   ): void {
-    this.exports.core_set_rigid_body(
+    this.exports.core_set_rigid_body_ex(
       this.corePtr,
       entity,
       dynamic ? 1 : 0,
       gravityScale,
       restitution,
-      friction
+      friction,
+      linearDamping,
+      angularDamping,
+      mass,
+      lockRotation ? 1 : 0
+    );
+  }
+
+  setAngularVelocity(entity: number, wx: number, wy: number, wz: number): void {
+    this.exports.core_set_angular_velocity(this.corePtr, entity, wx, wy, wz);
+  }
+
+  applyImpulse(
+    entity: number,
+    ix: number,
+    iy: number,
+    iz: number,
+    px?: number,
+    py?: number,
+    pz?: number
+  ): void {
+    const hasPt = px !== undefined && py !== undefined && pz !== undefined ? 1 : 0;
+    this.exports.core_apply_impulse(
+      this.corePtr,
+      entity,
+      ix,
+      iy,
+      iz,
+      px ?? 0,
+      py ?? 0,
+      pz ?? 0,
+      hasPt
     );
   }
 

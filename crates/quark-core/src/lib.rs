@@ -226,9 +226,74 @@ pub unsafe extern "C" fn core_set_rigid_body(
             gravity_scale,
             restitution,
             friction,
+            ..Default::default()
+        });
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_rigid_body_ex(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    dynamic: u32,
+    gravity_scale: f32,
+    restitution: f32,
+    friction: f32,
+    linear_damping: f32,
+    angular_damping: f32,
+    mass: f32,
+    lock_rotation: u32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        core.world.rigid_bodies[entity_index(entity)] = Some(RigidBody {
+            dynamic: dynamic != 0,
+            gravity_scale,
+            restitution,
+            friction,
+            linear_damping,
+            angular_damping,
+            mass: mass.max(0.01),
+            lock_rotation: lock_rotation != 0,
             grounded: false,
         });
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_angular_velocity(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    wx: f32,
+    wy: f32,
+    wz: f32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        core.world.angular_velocities[entity_index(entity)] = Vec3::new(wx, wy, wz);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_apply_impulse(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    ix: f32,
+    iy: f32,
+    iz: f32,
+    px: f32,
+    py: f32,
+    pz: f32,
+    has_point: u32,
+) {
+    let core = &mut *ptr;
+    let pt = if has_point != 0 {
+        Some(Vec3::new(px, py, pz))
+    } else {
+        None
+    };
+    core.physics
+        .apply_impulse(&mut core.world, entity, Vec3::new(ix, iy, iz), pt);
 }
 
 #[no_mangle]

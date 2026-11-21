@@ -15,6 +15,10 @@ export interface RigidBodyOptions {
   gravityScale?: number;
   restitution?: number;
   friction?: number;
+  linearDamping?: number;
+  angularDamping?: number;
+  mass?: number;
+  lockRotation?: boolean;
 }
 
 export type Collider3DOptions =
@@ -51,6 +55,7 @@ export interface CameraState {
   near: number;
   far: number;
   orthoHeight: number;
+  zoom: number;
   pixelSnap: boolean;
 }
 
@@ -59,6 +64,13 @@ export interface DirectionalLight {
   color: Vec3Tuple;
   intensity: number;
   ambientColor: Vec3Tuple;
+}
+
+export interface PointLight {
+  position: Vec3Tuple;
+  color: Vec3Tuple;
+  intensity: number;
+  radius: number;
 }
 
 export class Scene {
@@ -76,18 +88,27 @@ export class Scene {
     near: 0.1,
     far: 250,
     orthoHeight: 12,
+    zoom: 1.0,
     pixelSnap: false,
   };
 
   readonly light: DirectionalLight = {
-    direction: [0.55, 0.8, 0.45],
-    color: [1.0, 0.98, 0.94],
-    intensity: 1.25,
+    direction: [0.55, 0.85, 0.45],
+    color: [1.0, 0.97, 0.92],
+    intensity: 1.35,
     ambientColor: [0.22, 0.25, 0.34],
   };
 
-  fogColor: Vec3Tuple = [0.09, 0.11, 0.16];
-  fogDensity = 0.012;
+  readonly pointLights: PointLight[] = [];
+  shadowsEnabled = true;
+  skyTopColor: Vec3Tuple = [0.08, 0.16, 0.32];
+  skyHorizonColor: Vec3Tuple = [0.22, 0.32, 0.48];
+  fogColor: Vec3Tuple = [0.16, 0.22, 0.34];
+  fogDensity = 0.008;
+
+  private shakeTime = 0;
+  private shakeDuration = 0;
+  private shakeIntensity = 0;
 
   constructor(bridge: WasmBridge) {
     this.bridge = bridge;
@@ -154,9 +175,41 @@ export class Scene {
       entity,
       opts.dynamic ?? true,
       opts.gravityScale ?? 1.0,
-      opts.restitution ?? 0.0,
-      opts.friction ?? 0.85
+      opts.restitution ?? 0.1,
+      opts.friction ?? 0.75,
+      opts.linearDamping ?? 0.12,
+      opts.angularDamping ?? 0.35,
+      opts.mass ?? 1.0,
+      opts.lockRotation ?? false
     );
+  }
+
+  setAngularVelocity(entity: EntityId, wx: number, wy: number, wz: number): void {
+    this.bridge.setAngularVelocity(entity, wx, wy, wz);
+  }
+
+  applyImpulse(entity: EntityId, impulse: Vec3Tuple, worldPoint?: Vec3Tuple): void {
+    this.bridge.applyImpulse(
+      entity,
+      impulse[0],
+      impulse[1],
+      impulse[2],
+      worldPoint?.[0],
+      worldPoint?.[1],
+      worldPoint?.[2]
+    );
+  }
+
+  triggerShake(intensity: number, durationSec: number): void {
+    this.shakeIntensity = intensity;
+    this.shakeDuration = Math.max(0.01, durationSec);
+    this.shakeTime = this.shakeDuration;
+  }
+
+  advanceEffects(dt: number): void {
+    if (this.shakeTime > 0) {
+      this.shakeTime = Math.max(0, this.shakeTime - dt);
+    }
   }
 
   isGrounded(entity: EntityId): boolean {
@@ -236,17 +289,28 @@ export class Scene {
     proj: Float32Array;
     viewProj: Float32Array;
   } {
+    let sx = 0;
+    let sy = 0;
+    if (this.shakeTime > 0 && this.shakeDuration > 0) {
+      const decay = this.shakeTime / this.shakeDuration;
+      const amp = this.shakeIntensity * decay;
+      sx = (Math.random() * 2 - 1) * amp;
+      sy = (Math.random() * 2 - 1) * amp;
+    }
+
     if (this.camera.mode === '2d') {
-      const halfH = this.camera.orthoHeight * 0.5;
+      const halfH = (this.camera.orthoHeight / Math.max(this.camera.zoom, 0.1)) * 0.5;
       const halfW = halfH * Math.max(aspect, 0.001);
-      const cx = this.camera.pixelSnap ? Math.round(this.camera.position[0] * 32) / 32 : this.camera.position[0];
-      const cy = this.camera.pixelSnap ? Math.round(this.camera.position[1] * 32) / 32 : this.camera.position[1];
+      const cx = (this.camera.pixelSnap ? Math.round(this.camera.position[0] * 32) / 32 : this.camera.position[0]) + sx;
+      const cy = (this.camera.pixelSnap ? Math.round(this.camera.position[1] * 32) / 32 : this.camera.position[1]) + sy;
       mat4Ortho(cx - halfW, cx + halfW, cy - halfH, cy + halfH, -50, 50, this.projMat);
       this.viewMat.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
       this.vpMat.set(this.projMat);
     } else {
+      const pos: Vec3Tuple = [this.camera.position[0] + sx, this.camera.position[1] + sy, this.camera.position[2]];
+      const tgt: Vec3Tuple = [this.camera.target[0] + sx, this.camera.target[1] + sy, this.camera.target[2]];
       mat4Perspective((this.camera.fovDeg * Math.PI) / 180, aspect, this.camera.near, this.camera.far, this.projMat);
-      mat4LookAt(this.camera.position, this.camera.target, this.camera.up, this.viewMat);
+      mat4LookAt(pos, tgt, this.camera.up, this.viewMat);
       mat4Multiply(this.projMat, this.viewMat, this.vpMat);
     }
     return { view: this.viewMat, proj: this.projMat, viewProj: this.vpMat };

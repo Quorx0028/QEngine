@@ -61,6 +61,27 @@ export class AudioSystem {
     this.bgmSource = src;
   }
 
+  playTone(
+    freq: number,
+    durationSec = 0.08,
+    type: OscillatorType = 'triangle',
+    volume = 0.14
+  ): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    gain.gain.setValueAtTime(Math.max(0.001, volume), now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + Math.max(0.01, durationSec));
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + durationSec + 0.01);
+  }
+
   unloadSound(key: string): void {
     this.buffers.delete(key);
   }

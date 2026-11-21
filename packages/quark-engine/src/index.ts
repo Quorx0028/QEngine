@@ -43,6 +43,7 @@ export {
   type DirectionalLight,
   type EntityId,
   type Mesh3DOptions,
+  type PointLight,
   type RigidBodyOptions,
   type Sprite2DOptions,
   type TransformOptions,

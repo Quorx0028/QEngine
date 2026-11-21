@@ -64,6 +64,8 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(fragmentSource).toContain('evalRimLight');
     expect(fragmentSource).toContain('applyPixelDither');
     expect(fragmentSource).toContain('applyDistanceFog');
+    expect(fragmentSource).toContain('evalShadow');
+    expect(fragmentSource).toContain('evalPointLights');
     expect(SHADER_BLOCK_IDS.length).toBeGreaterThanOrEqual(8);
   });
 

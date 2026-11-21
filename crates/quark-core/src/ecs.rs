@@ -28,6 +28,10 @@ pub struct RigidBody {
     pub gravity_scale: f32,
     pub restitution: f32,
     pub friction: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub mass: f32,
+    pub lock_rotation: bool,
     pub grounded: bool,
 }
 
@@ -36,8 +40,12 @@ impl Default for RigidBody {
         Self {
             dynamic: true,
             gravity_scale: 1.0,
-            restitution: 0.0,
-            friction: 0.85,
+            restitution: 0.1,
+            friction: 0.75,
+            linear_damping: 0.12,
+            angular_damping: 0.35,
+            mass: 1.0,
+            lock_rotation: false,
             grounded: false,
         }
     }
@@ -86,6 +94,7 @@ pub struct World {
     pub curr_rot: Vec<Quat>,
     pub scale: Vec<Vec3>,
     pub velocities: Vec<Vec3>,
+    pub angular_velocities: Vec<Vec3>,
 
     pub rigid_bodies: Vec<Option<RigidBody>>,
     pub colliders_3d: Vec<Option<Collider3D>>,
@@ -112,6 +121,7 @@ impl World {
             curr_rot: Vec::new(),
             scale: Vec::new(),
             velocities: Vec::new(),
+            angular_velocities: Vec::new(),
             rigid_bodies: Vec::new(),
             colliders_3d: Vec::new(),
             colliders_2d: Vec::new(),
@@ -160,6 +170,7 @@ impl World {
         self.curr_rot.push(Quat::IDENTITY);
         self.scale.push(Vec3::ONE);
         self.velocities.push(Vec3::ZERO);
+        self.angular_velocities.push(Vec3::ZERO);
         self.rigid_bodies.push(None);
         self.colliders_3d.push(None);
         self.colliders_2d.push(None);
@@ -181,6 +192,7 @@ impl World {
         self.curr_rot[idx] = Quat::IDENTITY;
         self.scale[idx] = Vec3::ONE;
         self.velocities[idx] = Vec3::ZERO;
+        self.angular_velocities[idx] = Vec3::ZERO;
         self.rigid_bodies[idx] = None;
         self.colliders_3d[idx] = None;
         self.colliders_2d[idx] = None;
@@ -361,6 +373,7 @@ impl World {
         self.curr_rot.clear();
         self.scale.clear();
         self.velocities.clear();
+        self.angular_velocities.clear();
         self.rigid_bodies.clear();
         self.colliders_3d.clear();
         self.colliders_2d.clear();

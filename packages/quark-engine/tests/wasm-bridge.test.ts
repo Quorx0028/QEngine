@@ -108,4 +108,28 @@ describe('WasmBridge & Engine headless integration', () => {
     expect(parsed.boundsMax[0]).toBeCloseTo(1, 4);
     engine.dispose();
   });
+
+  it('applies off-center impulse and stops sliding via friction from TypeScript', async () => {
+    const engine = await Engine.init({ wasmBytes });
+    const scene = engine.scene;
+
+    const floor = scene.createEntity();
+    scene.setTransform(floor, { position: [0, -0.5, 0], immediate: true });
+    scene.setCollider3D(floor, { kind: 'aabb', halfExtents: [25, 0.5, 25] });
+
+    const cube = scene.createEntity();
+    scene.setTransform(cube, { position: [0, 0.5, 0], immediate: true });
+    scene.setCollider3D(cube, { kind: 'aabb', halfExtents: [0.5, 0.5, 0.5] });
+    scene.setRigidBody(cube, { dynamic: true, friction: 0.85, lockRotation: false });
+
+    scene.applyImpulse(cube, [5, 0, 0], [0, 0.8, 0.2]);
+    const [, ] = scene.getVelocity(cube);
+    expect(scene.getVelocity(cube)[0]).toBeGreaterThan(4.5);
+
+    for (let i = 0; i < 180; i++) {
+      engine.step(1 / 60);
+    }
+    expect(Math.abs(scene.getVelocity(cube)[0])).toBeLessThan(0.1);
+    engine.dispose();
+  });
 });

@@ -49,6 +49,7 @@ layout(location = 2) in vec2 a_uv;
 
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
+uniform mat4 u_lightViewProj;
 uniform float u_time;
 uniform float u_waveAmp;
 uniform float u_waveFreq;
@@ -56,6 +57,7 @@ uniform float u_waveFreq;
 out vec3 v_worldPos;
 out vec3 v_normal;
 out vec2 v_uv;
+out vec4 v_shadowCoord;
 
 ${vertexWaveFn}
 
@@ -67,6 +69,7 @@ void main() {
   v_worldPos = world.xyz;
   v_normal = normalize(transpose(inverse(mat3(u_model))) * a_normal);
   v_uv = a_uv;
+  v_shadowCoord = u_lightViewProj * world;
   gl_Position = u_viewProj * world;
 }
 `;
@@ -87,7 +90,7 @@ vec3 evalTriplanarGrid(vec3 baseAlbedo, vec3 wp, float scale) {
 
   if (has('pbrLighting')) {
     blockSnippets.push(`
-vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, float metallic, float roughness) {
+vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, float metallic, float roughness, float shadow) {
   vec3 h = normalize(l + v);
   float ndotl = max(dot(n, l), 0.0);
   float ndotv = max(dot(n, v), 0.001);
@@ -100,8 +103,8 @@ vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lIn
   vec3 f = f0 + (1.0 - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
   vec3 spec = (d * f) / max(4.0 * ndotv * ndotl + 0.05, 0.05);
   vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
-  vec3 direct = (kd * albedo / 3.14159265 + spec) * lColor * lInt * ndotl;
-  vec3 hemi = mix(amb * 0.6, amb * 1.2, n.y * 0.5 + 0.5) * albedo;
+  vec3 direct = (kd * albedo / 3.14159265 + spec) * lColor * lInt * ndotl * shadow;
+  vec3 hemi = mix(amb * 0.65, amb * 1.25, n.y * 0.5 + 0.5) * albedo;
   return direct + hemi;
 }
 `);
@@ -109,13 +112,13 @@ vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lIn
 
   if (has('celLighting')) {
     blockSnippets.push(`
-vec3 evalCelLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, vec3 shadowTint, float steps) {
-  float ndotl = dot(n, l) * 0.5 + 0.5;
+vec3 evalCelLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, vec3 shadowTint, float steps, float shadow) {
+  float ndotl = (dot(n, l) * 0.5 + 0.5) * mix(0.35, 1.0, shadow);
   float q = floor(clamp(ndotl, 0.0, 0.999) * max(steps, 2.0)) / max(steps - 1.0, 1.0);
   float lit = smoothstep(0.0, 0.08, q);
-  vec3 diffuse = mix(albedo * shadowTint, albedo * lColor * lInt, q) * mix(0.65, 1.0, lit);
+  vec3 diffuse = mix(albedo * shadowTint, albedo * lColor * lInt, q) * mix(0.62, 1.0, lit);
   vec3 h = normalize(l + v);
-  float spec = step(0.92, max(dot(n, h), 0.0)) * 0.28;
+  float spec = step(0.92, max(dot(n, h), 0.0)) * 0.28 * shadow;
   return diffuse + amb * albedo * 0.55 + vec3(spec);
 }
 `);
@@ -201,10 +204,10 @@ vec3 applyDistanceFog(vec3 col, float dist, vec3 fogColor, float density) {
   }
 
   const lightingBody = has('celLighting')
-    ? `color = evalCelLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, u_shadowTint, u_celSteps);`
+    ? `color = evalCelLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, u_shadowTint, u_celSteps, shadowFactor);`
     : has('pbrLighting')
-      ? `color = evalPbrLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, u_metallic, u_roughness);`
-      : `color = albedo * (max(dot(n, l), 0.0) * u_lightColor * u_lightIntensity + u_ambientColor);`;
+      ? `color = evalPbrLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, u_metallic, u_roughness, shadowFactor);`
+      : `color = albedo * (max(dot(n, l), 0.0) * u_lightColor * u_lightIntensity * shadowFactor + u_ambientColor);`;
 
   const fragmentSource = `#version 300 es
 precision highp float;
@@ -212,6 +215,7 @@ precision highp float;
 in vec3 v_worldPos;
 in vec3 v_normal;
 in vec2 v_uv;
+in vec4 v_shadowCoord;
 
 uniform vec3 u_cameraPos;
 uniform float u_time;
@@ -221,6 +225,13 @@ uniform float u_lightIntensity;
 uniform vec3 u_ambientColor;
 uniform vec3 u_fogColor;
 uniform float u_fogDensity;
+
+uniform int u_shadowsEnabled;
+uniform sampler2D u_shadowMap;
+uniform int u_pointLightCount;
+uniform vec3 u_pointPos[4];
+uniform vec3 u_pointColor[4];
+uniform float u_pointRadius[4];
 
 uniform vec4 u_baseColor;
 uniform vec3 u_shadowTint;
@@ -240,6 +251,45 @@ uniform sampler2D u_tex;
 
 out vec4 fragColor;
 
+float evalShadow(vec4 sc, vec3 n, vec3 l) {
+  if (u_shadowsEnabled == 0) return 1.0;
+  vec3 proj = sc.xyz / max(sc.w, 0.0001) * 0.5 + 0.5;
+  if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0) {
+    return 1.0;
+  }
+  float bias = max(0.003 * (1.0 - dot(n, l)), 0.0008);
+  vec2 texelSize = 1.0 / vec2(textureSize(u_shadowMap, 0));
+  float sum = 0.0;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      float depth = texture(u_shadowMap, proj.xy + vec2(x, y) * texelSize).r;
+      sum += (proj.z - bias <= depth) ? 1.0 : 0.0;
+    }
+  }
+  return sum / 9.0;
+}
+
+vec3 evalPointLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel) {
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 4; i++) {
+    if (i >= u_pointLightCount) break;
+    vec3 toL = u_pointPos[i] - wp;
+    float d = length(toL);
+    float r = max(u_pointRadius[i], 0.1);
+    if (d >= r) continue;
+    vec3 ld = toL / max(d, 0.001);
+    float att = pow(1.0 - d / r, 2.0);
+    float ndl = max(dot(n, ld), 0.0);
+    if (cel > 0.5) {
+      ndl = floor(ndl * 2.99) / 2.0;
+    }
+    vec3 h = normalize(ld + v);
+    float sp = pow(max(dot(n, h), 0.0), 24.0) * 0.35;
+    acc += (albedo * ndl + sp) * u_pointColor[i] * att;
+  }
+  return acc;
+}
+
 ${blockSnippets.join('\n')}
 
 void main() {
@@ -252,9 +302,11 @@ void main() {
   vec3 n = normalize(v_normal);
   vec3 v = normalize(u_cameraPos - v_worldPos);
   vec3 l = normalize(u_lightDir);
+  float shadowFactor = evalShadow(v_shadowCoord, n, l);
 
   vec3 color;
   ${lightingBody}
+  color += evalPointLights(albedo, v_worldPos, n, v, ${has('celLighting') ? '1.0' : '0.0'});
 
   ${has('rimLight') ? 'color += evalRimLight(n, v, u_rimColor, u_rimPower);' : ''}
   ${has('fresnelGlow') ? 'color += evalFresnelGlow(n, v, u_glowColor, u_fresnelPower);' : ''}
