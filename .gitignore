@@ -1,0 +1,7 @@
+node_modules/
+dist/
+target/
+.superpowers/
+*.log
+.DS_Store
+packages/quark-engine/wasm/*.wasm
