@@ -1,0 +1,20 @@
+[package]
+name = "quark-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytemuck = { version = "1.19", features = ["derive"] }
+glam = { version = "0.29", default-features = false, features = ["libm"] }
+gltf = { version = "1.4", default-features = false, features = ["utils"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
