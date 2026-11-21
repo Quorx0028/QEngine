@@ -77,6 +77,9 @@ interface CoreExports {
     pz: number,
     hasPoint: number
   ): void;
+  core_set_collision_filter(ptr: number, entity: number, layer: number, mask: number): void;
+  core_set_trigger(ptr: number, entity: number, isTrigger: number): void;
+  core_is_sleeping(ptr: number, entity: number): number;
   core_is_grounded(ptr: number, entity: number): number;
   core_set_collider_3d(ptr: number, entity: number, kind: number, a: number, b: number, c: number): void;
   core_set_collider_2d(ptr: number, entity: number, kind: number, a: number, b: number): void;
@@ -135,6 +138,8 @@ interface CoreExports {
   core_render_2d_tex_len(ptr: number): number;
   core_render_3d_ptr(ptr: number): number;
   core_render_3d_len(ptr: number): number;
+  core_events_ptr(ptr: number): number;
+  core_events_len(ptr: number): number;
   core_parse_glb(ptr: number, bytesPtr: number, bytesLen: number): number;
   core_glb_vertices_ptr(ptr: number): number;
   core_glb_vertices_len(ptr: number): number;
@@ -479,6 +484,39 @@ export class WasmBridge {
     if (!ptr || len === 0) return new Uint32Array(0);
     const start = ptr >>> 2;
     return this.u32View.subarray(start, start + len);
+  }
+
+  setCollisionFilter(entity: number, layer: number, mask: number): void {
+    this.exports.core_set_collision_filter(this.corePtr, entity, layer >>> 0, mask >>> 0);
+  }
+
+  setTrigger(entity: number, isTrigger: boolean): void {
+    this.exports.core_set_trigger(this.corePtr, entity, isTrigger ? 1 : 0);
+  }
+
+  isSleeping(entity: number): boolean {
+    return this.exports.core_is_sleeping(this.corePtr, entity) !== 0;
+  }
+
+  forEachPhysicsEvent(
+    cb: (kind: number, entityA: number, entityB: number, nx: number, ny: number, nz: number) => void
+  ): void {
+    this.refreshViews();
+    const ptr = this.exports.core_events_ptr(this.corePtr);
+    const len = this.exports.core_events_len(this.corePtr);
+    if (!ptr || len < 6) return;
+    const base = ptr >>> 2;
+    for (let i = 0; i + 5 < len; i += 6) {
+      const off = base + i;
+      cb(
+        this.u32View[off],
+        this.u32View[off + 1],
+        this.u32View[off + 2],
+        this.f32View[off + 3],
+        this.f32View[off + 4],
+        this.f32View[off + 5]
+      );
+    }
   }
 
   parseGlb(bytes: Uint8Array): ParsedGlbResult {

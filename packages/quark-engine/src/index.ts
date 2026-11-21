@@ -40,6 +40,7 @@ export {
   type CameraState,
   type Collider2DOptions,
   type Collider3DOptions,
+  type CollisionEvent,
   type DirectionalLight,
   type EntityId,
   type Mesh3DOptions,
@@ -47,5 +48,6 @@ export {
   type RigidBodyOptions,
   type Sprite2DOptions,
   type TransformOptions,
+  type TriggerEvent,
 } from './Scene';
 export { WasmBridge, type ParsedGlbResult } from './wasm/WasmBridge';

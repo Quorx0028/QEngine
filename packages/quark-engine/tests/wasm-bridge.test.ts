@@ -130,6 +130,40 @@ describe('WasmBridge & Engine headless integration', () => {
       engine.step(1 / 60);
     }
     expect(Math.abs(scene.getVelocity(cube)[0])).toBeLessThan(0.1);
+    expect(scene.isSleeping(cube)).toBe(true);
+    engine.dispose();
+  });
+
+  it('fires onTriggerEnter and onTriggerExit callbacks from WASM and respects collision masks', async () => {
+    const engine = await Engine.init({ wasmBytes });
+    const scene = engine.scene;
+    scene.setGravity(0, 0, 0);
+
+    const sensor = scene.createEntity();
+    scene.setTransform(sensor, { position: [3, 0, 0], immediate: true });
+    scene.setCollider3D(sensor, { kind: 'aabb', halfExtents: [1, 1, 1] });
+    scene.setTrigger(sensor, true);
+    scene.setCollisionFilter(sensor, 0b01, 0b01);
+
+    const mover = scene.createEntity();
+    scene.setTransform(mover, { position: [0, 0, 0], immediate: true });
+    scene.setCollider3D(mover, { kind: 'sphere', radius: 0.5 });
+    scene.setRigidBody(mover, { dynamic: true, gravityScale: 0, linearDamping: 0 });
+    scene.setCollisionFilter(mover, 0b01, 0b01);
+    scene.setVelocity(mover, 6, 0, 0);
+
+    const entered: number[] = [];
+    const exited: number[] = [];
+    scene.onTriggerEnter((ev) => entered.push(ev.entityA, ev.entityB));
+    scene.onTriggerExit((ev) => exited.push(ev.entityA, ev.entityB));
+
+    for (let i = 0; i < 90; i++) {
+      engine.step(1 / 60);
+    }
+
+    expect(entered.length).toBeGreaterThan(0);
+    expect(exited.length).toBeGreaterThan(0);
+    expect(scene.getPosition(mover)[0]).toBeGreaterThan(7.5);
     engine.dispose();
   });
 });

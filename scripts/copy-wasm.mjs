@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,4 +10,10 @@ const dest = resolve(destDir, 'quark_core.wasm');
 
 mkdirSync(destDir, { recursive: true });
 copyFileSync(src, dest);
-console.log(`Copied ${src} -> ${dest}`);
+
+try {
+  execFileSync('wasm-opt', ['-Oz', dest, '-o', dest], { stdio: 'ignore' });
+  console.log(`Copied and optimized (wasm-opt -Oz) -> ${dest}`);
+} catch {
+  console.log(`Copied ${src} -> ${dest}`);
+}

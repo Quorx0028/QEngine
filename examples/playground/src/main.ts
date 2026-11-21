@@ -277,6 +277,25 @@ async function bootstrap() {
     });
     yaw = 0;
     pitch = -0.15;
+
+    // Glowing Hologram Jump-Pad Trigger Zone (uses Milestone 1 WASM TriggerEnter event!)
+    const padMat = assets.createPreset('jump-pad', 'hologram', {
+      uniforms: { glowColor: [0.2, 1.0, 0.75], baseColor: [0.1, 0.9, 0.65, 0.65] },
+    }, 'scene');
+    const jumpPad = scene.createEntity();
+    scene.setTransform(jumpPad, { position: [4, 0.12, 5], scale: [2.2, 0.2, 2.2], immediate: true });
+    scene.setCollider3D(jumpPad, { kind: 'aabb', halfExtents: [1.1, 0.55, 1.1] });
+    scene.setTrigger(jumpPad, true);
+    scene.setMesh3D(jumpPad, { meshId: boxMesh.meshId, materialId: padMat, transparent: true, boundsRadius: 2 });
+
+    scene.onTriggerEnter((ev) => {
+      if (ev.entityA === jumpPad || ev.entityB === jumpPad) {
+        const other = ev.entityA === jumpPad ? ev.entityB : ev.entityA;
+        scene.applyImpulse(other, [0, 14.5, 0]);
+        scene.triggerShake(0.06, 0.12);
+        playSfx(660, 0.14, 'sine', 0.14);
+      }
+    });
   }
 
   function build2DOMORIStyleScene() {

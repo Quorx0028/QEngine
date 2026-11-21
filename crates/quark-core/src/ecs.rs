@@ -32,6 +32,11 @@ pub struct RigidBody {
     pub angular_damping: f32,
     pub mass: f32,
     pub lock_rotation: bool,
+    pub is_trigger: bool,
+    pub layer: u32,
+    pub mask: u32,
+    pub sleeping: bool,
+    pub sleep_timer: f32,
     pub grounded: bool,
 }
 
@@ -46,6 +51,11 @@ impl Default for RigidBody {
             angular_damping: 0.35,
             mass: 1.0,
             lock_rotation: false,
+            is_trigger: false,
+            layer: 1,
+            mask: u32::MAX,
+            sleeping: false,
+            sleep_timer: 0.0,
             grounded: false,
         }
     }
@@ -300,6 +310,15 @@ impl World {
     pub fn snapshot_prev_transforms(&mut self) {
         self.prev_pos.copy_from_slice(&self.curr_pos);
         self.prev_rot.copy_from_slice(&self.curr_rot);
+    }
+
+    pub fn wake_body(&mut self, handle: EntityHandle) {
+        if self.is_alive(handle) {
+            if let Some(rb) = &mut self.rigid_bodies[entity_index(handle)] {
+                rb.sleeping = false;
+                rb.sleep_timer = 0.0;
+            }
+        }
     }
 
     pub fn compute_interpolated_matrices(&mut self, alpha: f32) {

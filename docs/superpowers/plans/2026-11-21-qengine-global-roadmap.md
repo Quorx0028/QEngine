@@ -43,9 +43,9 @@
   - Spatial hash broadphase grid for dynamic bodies + velocity/angular sleep threshold
 
 **Deliverables & Verification:**
-- [ ] **TDD Step 1:** Rust benchmark/unit tests: 500 stacked/scattered dynamic bodies step in `< 2ms` with broadphase + sleeping; 20,000-triangle `StaticTriMesh` raycast & capsule query visits `< 64` triangles via BVH; trigger volume emits `TriggerEnter` / `TriggerExit` without applying physical push.
-- [ ] **TDD Step 2:** TypeScript integration test verifying `scene.onTriggerEnter` / `scene.onCollisionEnter` callbacks fire from WASM ring-buffer and respect `layer`/`mask` bitflags.
-- [ ] **Verify:** `cargo test`, `vitest run`, `wasm-opt -Oz` size check.
+- [x] **TDD Step 1:** Rust benchmark/unit tests: 500 stacked/scattered dynamic bodies step in `< 2ms` with broadphase + sleeping; 20,000-triangle `StaticTriMesh` raycast & capsule query visits `< 64` triangles via BVH; trigger volume emits `TriggerEnter` / `TriggerExit` without applying physical push.
+- [x] **TDD Step 2:** TypeScript integration test verifying `scene.onTriggerEnter` / `scene.onCollisionEnter` callbacks fire from WASM ring-buffer and respect `layer`/`mask` bitflags.
+- [x] **Verify:** `cargo test`, `vitest run`, `wasm-opt -Oz` hook (runs automatically when `wasm-opt` is installed; `quark_core.wasm` 469.41 kB raw / 135.92 kB gzip).
 
 ---
 

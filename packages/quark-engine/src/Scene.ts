@@ -73,6 +73,17 @@ export interface PointLight {
   radius: number;
 }
 
+export interface CollisionEvent {
+  entityA: EntityId;
+  entityB: EntityId;
+  normal: Vec3Tuple;
+}
+
+export interface TriggerEvent {
+  entityA: EntityId;
+  entityB: EntityId;
+}
+
 export class Scene {
   private readonly bridge: WasmBridge;
   private readonly projMat = new Float32Array(16);
@@ -109,6 +120,10 @@ export class Scene {
   private shakeTime = 0;
   private shakeDuration = 0;
   private shakeIntensity = 0;
+
+  private readonly collisionEnterListeners = new Set<(ev: CollisionEvent) => void>();
+  private readonly triggerEnterListeners = new Set<(ev: TriggerEvent) => void>();
+  private readonly triggerExitListeners = new Set<(ev: TriggerEvent) => void>();
 
   constructor(bridge: WasmBridge) {
     this.bridge = bridge;
@@ -216,6 +231,56 @@ export class Scene {
     return this.bridge.isGrounded(entity);
   }
 
+  isSleeping(entity: EntityId): boolean {
+    return this.bridge.isSleeping(entity);
+  }
+
+  setCollisionFilter(entity: EntityId, layer: number, mask: number): void {
+    this.bridge.setCollisionFilter(entity, layer, mask);
+  }
+
+  setTrigger(entity: EntityId, isTrigger: boolean): void {
+    this.bridge.setTrigger(entity, isTrigger);
+  }
+
+  onCollisionEnter(cb: (ev: CollisionEvent) => void): () => void {
+    this.collisionEnterListeners.add(cb);
+    return () => this.collisionEnterListeners.delete(cb);
+  }
+
+  onTriggerEnter(cb: (ev: TriggerEvent) => void): () => void {
+    this.triggerEnterListeners.add(cb);
+    return () => this.triggerEnterListeners.delete(cb);
+  }
+
+  onTriggerExit(cb: (ev: TriggerEvent) => void): () => void {
+    this.triggerExitListeners.add(cb);
+    return () => this.triggerExitListeners.delete(cb);
+  }
+
+  /** Internal event pump invoked by Engine.step after WASM simulation. */
+  dispatchPhysicsEvents(): void {
+    if (
+      this.collisionEnterListeners.size === 0 &&
+      this.triggerEnterListeners.size === 0 &&
+      this.triggerExitListeners.size === 0
+    ) {
+      return;
+    }
+    this.bridge.forEachPhysicsEvent((kind, entityA, entityB, nx, ny, nz) => {
+      if (kind === 1 && this.collisionEnterListeners.size > 0) {
+        const ev: CollisionEvent = { entityA, entityB, normal: [nx, ny, nz] };
+        this.collisionEnterListeners.forEach((cb) => cb(ev));
+      } else if (kind === 2 && this.triggerEnterListeners.size > 0) {
+        const ev: TriggerEvent = { entityA, entityB };
+        this.triggerEnterListeners.forEach((cb) => cb(ev));
+      } else if (kind === 3 && this.triggerExitListeners.size > 0) {
+        const ev: TriggerEvent = { entityA, entityB };
+        this.triggerExitListeners.forEach((cb) => cb(ev));
+      }
+    });
+  }
+
   setCollider3D(entity: EntityId, opts: Collider3DOptions): void {
     if (opts.kind === 'aabb') {
       this.bridge.setCollider3D(entity, 0, opts.halfExtents[0], opts.halfExtents[1], opts.halfExtents[2]);
@@ -317,6 +382,9 @@ export class Scene {
   }
 
   clear(): void {
+    this.collisionEnterListeners.clear();
+    this.triggerEnterListeners.clear();
+    this.triggerExitListeners.clear();
     this.bridge.clear();
   }
 }

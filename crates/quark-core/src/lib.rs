@@ -158,6 +158,7 @@ pub unsafe extern "C" fn core_set_transform(
     } else {
         (*ptr).world.set_curr_transform(entity, pos, rot, scale);
     }
+    (*ptr).world.wake_body(entity);
 }
 
 #[no_mangle]
@@ -189,6 +190,9 @@ pub unsafe extern "C" fn core_set_velocity(
     let core = &mut *ptr;
     if core.world.is_alive(entity) {
         core.world.velocities[entity_index(entity)] = Vec3::new(vx, vy, vz);
+        if vx * vx + vy * vy + vz * vz > 1e-6 {
+            core.world.wake_body(entity);
+        }
     }
 }
 
@@ -255,7 +259,7 @@ pub unsafe extern "C" fn core_set_rigid_body_ex(
             angular_damping,
             mass: mass.max(0.01),
             lock_rotation: lock_rotation != 0,
-            grounded: false,
+            ..Default::default()
         });
     }
 }
@@ -271,7 +275,59 @@ pub unsafe extern "C" fn core_set_angular_velocity(
     let core = &mut *ptr;
     if core.world.is_alive(entity) {
         core.world.angular_velocities[entity_index(entity)] = Vec3::new(wx, wy, wz);
+        if wx * wx + wy * wy + wz * wz > 1e-6 {
+            core.world.wake_body(entity);
+        }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_collision_filter(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    layer: u32,
+    mask: u32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        let idx = entity_index(entity);
+        let rb = core.world.rigid_bodies[idx].get_or_insert(RigidBody {
+            dynamic: false,
+            ..Default::default()
+        });
+        rb.layer = layer;
+        rb.mask = mask;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_trigger(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    is_trigger: u32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        let idx = entity_index(entity);
+        let rb = core.world.rigid_bodies[idx].get_or_insert(RigidBody {
+            dynamic: false,
+            ..Default::default()
+        });
+        rb.is_trigger = is_trigger != 0;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_is_sleeping(ptr: *mut EngineCore, entity: EntityHandle) -> u32 {
+    let core = &*ptr;
+    if !core.world.is_alive(entity) {
+        return 0;
+    }
+    u32::from(
+        core.world.rigid_bodies[entity_index(entity)]
+            .map(|r| r.sleeping)
+            .unwrap_or(false),
+    )
 }
 
 #[no_mangle]
@@ -463,6 +519,7 @@ pub unsafe extern "C" fn core_step(
     view_proj_ptr: *const f32,
 ) -> f32 {
     let core = &mut *ptr;
+    core.physics.clear_events();
     let res = core.physics.step(&mut core.world, frame_dt);
     core.render_queue.build_2d(&core.world);
     let vp = if view_proj_ptr.is_null() {
@@ -546,6 +603,16 @@ pub unsafe extern "C" fn core_render_3d_ptr(ptr: *const EngineCore) -> *const u3
 #[no_mangle]
 pub unsafe extern "C" fn core_render_3d_len(ptr: *const EngineCore) -> usize {
     (*ptr).render_queue.items_3d.len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_events_ptr(ptr: *const EngineCore) -> *const u32 {
+    (*ptr).physics.event_words.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_events_len(ptr: *const EngineCore) -> usize {
+    (*ptr).physics.event_words.len()
 }
 
 #[no_mangle]

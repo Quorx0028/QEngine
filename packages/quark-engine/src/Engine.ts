@@ -130,6 +130,7 @@ export class Engine {
       this.canvas && this.canvas.height > 0 ? this.canvas.width / this.canvas.height : 16 / 9;
     const { viewProj } = this.scene.computeCameraMatrices(aspect);
     const alpha = this.bridge.step(clamped, viewProj);
+    this.scene.dispatchPhysicsEvents();
     this.scene.advanceEffects(clamped);
     this.updateCb?.(clamped, alpha);
     if (this.renderFrameHook) {
