@@ -4,7 +4,8 @@ export type PostProcessPresetName =
   | 'retroPS1'
   | 'crtHorror'
   | 'dreamWave'
-  | 'noir';
+  | 'noir'
+  | 'ultraRealism';
 
 export const POST_PROCESS_PRESET_NAMES: readonly PostProcessPresetName[] = [
   'none',
@@ -13,6 +14,7 @@ export const POST_PROCESS_PRESET_NAMES: readonly PostProcessPresetName[] = [
   'crtHorror',
   'dreamWave',
   'noir',
+  'ultraRealism',
 ] as const;
 
 export interface PostProcessConfig {
@@ -20,6 +22,7 @@ export interface PostProcessConfig {
   bloomIntensity: number;
   bloomThreshold: number;
   screenOutline: number;
+  ssao: number;
   pixelSize: number;
   crt: boolean;
   chromaticAberration: number;
@@ -38,6 +41,7 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         bloomIntensity: 0,
         bloomThreshold: 0.72,
         screenOutline: 0,
+        ssao: 0,
         pixelSize: 1,
         crt: false,
         chromaticAberration: 0,
@@ -53,6 +57,7 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         bloomIntensity: 0.45,
         bloomThreshold: 0.74,
         screenOutline: 0.75,
+        ssao: 0,
         pixelSize: 1,
         crt: false,
         chromaticAberration: 0.001,
@@ -68,6 +73,7 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         bloomIntensity: 0.15,
         bloomThreshold: 0.78,
         screenOutline: 0,
+        ssao: 0,
         pixelSize: 4,
         crt: false,
         chromaticAberration: 0.0015,
@@ -83,6 +89,7 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         bloomIntensity: 0.55,
         bloomThreshold: 0.65,
         screenOutline: 0,
+        ssao: 0.3,
         pixelSize: 2,
         crt: true,
         chromaticAberration: 0.0045,
@@ -98,6 +105,7 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         bloomIntensity: 0.65,
         bloomThreshold: 0.68,
         screenOutline: 0,
+        ssao: 0,
         pixelSize: 1,
         crt: false,
         chromaticAberration: 0.003,
@@ -113,6 +121,7 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         bloomIntensity: 0.22,
         bloomThreshold: 0.75,
         screenOutline: 0.35,
+        ssao: 0.45,
         pixelSize: 1,
         crt: false,
         chromaticAberration: 0,
@@ -122,6 +131,22 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
         saturation: 0,
         noir: 1,
       };
+    case 'ultraRealism':
+      return {
+        enabled: true,
+        bloomIntensity: 0.26,
+        bloomThreshold: 0.78,
+        screenOutline: 0,
+        ssao: 0.72,
+        pixelSize: 1,
+        crt: false,
+        chromaticAberration: 0.0005,
+        vignette: 0.24,
+        filmGrain: 0.02,
+        waveStrength: 0,
+        saturation: 1.07,
+        noir: 0,
+      };
   }
 }
 
@@ -130,6 +155,7 @@ export function isPostProcessActive(cfg: PostProcessConfig): boolean {
   return (
     cfg.bloomIntensity > 0.001 ||
     cfg.screenOutline > 0.001 ||
+    cfg.ssao > 0.001 ||
     cfg.pixelSize > 1.01 ||
     cfg.crt ||
     cfg.chromaticAberration > 0.0001 ||
@@ -200,6 +226,7 @@ uniform float u_time;
 
 uniform float u_bloomIntensity;
 uniform float u_screenOutline;
+uniform float u_ssao;
 uniform float u_pixelSize;
 uniform int u_crt;
 uniform float u_chromatic;
@@ -259,6 +286,34 @@ void main() {
   // Bloom glow
   if (u_bloomIntensity > 0.001) {
     col += texture(u_bloomTex, uv).rgb * u_bloomIntensity;
+  }
+
+  // Screen-space ambient occlusion (contact shadows & crevice darkening)
+  if (u_ssao > 0.001) {
+    float dC = linearDepth(uv);
+    if (dC < 160.0) {
+      vec2 px = 1.0 / u_resolution;
+      float radPx = clamp(24.0 / max(dC, 1.0), 3.0, 14.0);
+      float occ = 0.0;
+      vec2 taps[8];
+      taps[0] = vec2(1.0, 0.0);
+      taps[1] = vec2(-1.0, 0.0);
+      taps[2] = vec2(0.0, 1.0);
+      taps[3] = vec2(0.0, -1.0);
+      taps[4] = vec2(0.707, 0.707);
+      taps[5] = vec2(-0.707, 0.707);
+      taps[6] = vec2(0.707, -0.707);
+      taps[7] = vec2(-0.707, -0.707);
+      for (int i = 0; i < 8; i++) {
+        vec2 sUv = clamp(uv + taps[i] * px * radPx, 0.001, 0.999);
+        float dS = linearDepth(sUv);
+        float diff = dC - dS;
+        float range = smoothstep(1.2, 0.05, abs(diff));
+        occ += step(0.04, diff) * range;
+      }
+      float ao = 1.0 - (occ / 8.0) * u_ssao * 0.62;
+      col *= clamp(ao, 0.38, 1.0);
+    }
   }
 
   // Screen-space depth/luma Sobel outline across whole world

@@ -90,7 +90,13 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
       'waterCaustics',
       'ps1Retro',
       'magmaPulse',
+      'ultraRealism',
     ]);
+
+    const real = createPresetMaterial('ultraRealism');
+    expect(real.blocks).toContain('pbrLighting');
+    expect(real.blocks).toContain('envIBL');
+    expect(real.blocks).toContain('microDetail');
 
     const toon = createPresetMaterial('animeToon', { outlineWidth: 0.045 });
     expect(toon.outlineWidth).toBeCloseTo(0.045, 5);
@@ -120,6 +126,8 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     const composed = composeShader({ blocks: [...SHADER_BLOCK_IDS] });
     expect(composed.fragmentSource).toContain('evalIridescent');
     expect(composed.fragmentSource).toContain('evalVoronoiCaustics');
+    expect(composed.fragmentSource).toContain('evalEnvIBL');
+    expect(composed.fragmentSource).toContain('applyMicroDetail');
 
     expect(POST_PROCESS_PRESET_NAMES).toEqual([
       'none',
@@ -128,15 +136,21 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
       'crtHorror',
       'dreamWave',
       'noir',
+      'ultraRealism',
     ]);
     const pp = createPostProcessPreset('crtHorror');
     expect(pp.crt).toBe(true);
     expect(pp.chromaticAberration).toBeGreaterThan(0);
 
+    const ppReal = createPostProcessPreset('ultraRealism');
+    expect(ppReal.ssao).toBeGreaterThan(0);
+    expect(ppReal.bloomIntensity).toBeGreaterThan(0);
+
     const ppSrc = composePostProcessShader();
     expect(ppSrc.fragmentSource).toContain('#version 300 es');
     expect(ppSrc.fragmentSource).toContain('u_sceneTex');
     expect(ppSrc.fragmentSource).toContain('u_depthTex');
+    expect(ppSrc.fragmentSource).toContain('u_ssao');
   });
 
   it('AssetManager tracks resources by tag and disposes tag-scoped assets without leaking', async () => {

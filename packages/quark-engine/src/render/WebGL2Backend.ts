@@ -640,6 +640,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_time'), timeSec);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_bloomIntensity'), pp.bloomIntensity);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_screenOutline'), pp.screenOutline);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_ssao'), pp.ssao);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_pixelSize'), pp.pixelSize);
     gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_crt'), pp.crt ? 1 : 0);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_chromatic'), pp.chromaticAberration);

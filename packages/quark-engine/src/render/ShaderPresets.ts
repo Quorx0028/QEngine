@@ -12,7 +12,8 @@ export type ShaderPresetName =
   | 'crystalGlass'
   | 'waterCaustics'
   | 'ps1Retro'
-  | 'magmaPulse';
+  | 'magmaPulse'
+  | 'ultraRealism';
 
 export const SHADER_PRESET_NAMES: readonly ShaderPresetName[] = [
   'pbr',
@@ -27,6 +28,7 @@ export const SHADER_PRESET_NAMES: readonly ShaderPresetName[] = [
   'waterCaustics',
   'ps1Retro',
   'magmaPulse',
+  'ultraRealism',
 ] as const;
 
 export function defaultMaterialUniforms(overrides: Partial<MaterialUniforms> = {}): MaterialUniforms {
@@ -186,6 +188,15 @@ function getPresetBase(preset: ShaderPresetName): MaterialDesc {
           baseColor: [0.18, 0.09, 0.08, 1.0],
           edgeColor: [1.0, 0.35, 0.06],
           dissolve: 0.12,
+        }),
+      };
+    case 'ultraRealism':
+      return {
+        blocks: ['pbrLighting', 'envIBL', 'microDetail', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.74, 0.76, 0.79, 1.0],
+          metallic: 0.18,
+          roughness: 0.26,
         }),
       };
   }

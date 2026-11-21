@@ -513,6 +513,7 @@ async function bootstrap() {
   const chkPpCrt = document.getElementById('chk-pp-crt') as HTMLInputElement;
   const slPpBloom = document.getElementById('sl-pp-bloom') as HTMLInputElement;
   const slPpOutline = document.getElementById('sl-pp-outline') as HTMLInputElement;
+  const slPpSsao = document.getElementById('sl-pp-ssao') as HTMLInputElement;
   const slPpPixel = document.getElementById('sl-pp-pixel') as HTMLInputElement;
   const slPpChrom = document.getElementById('sl-pp-chrom') as HTMLInputElement;
   const slPpWave = document.getElementById('sl-pp-wave') as HTMLInputElement;
@@ -524,6 +525,8 @@ async function bootstrap() {
     document.getElementById('val-pp-bloom')!.textContent = pp.bloomIntensity.toFixed(2);
     slPpOutline.value = String(pp.screenOutline);
     document.getElementById('val-pp-outline')!.textContent = pp.screenOutline.toFixed(2);
+    slPpSsao.value = String(pp.ssao);
+    document.getElementById('val-pp-ssao')!.textContent = pp.ssao.toFixed(2);
     slPpPixel.value = String(pp.pixelSize);
     document.getElementById('val-pp-pixel')!.textContent = String(pp.pixelSize);
     slPpChrom.value = String(pp.chromaticAberration);
@@ -560,6 +563,7 @@ async function bootstrap() {
   };
   bindPpSlider(slPpBloom, 'val-pp-bloom', (v) => (scene.postProcess.bloomIntensity = v), 2);
   bindPpSlider(slPpOutline, 'val-pp-outline', (v) => (scene.postProcess.screenOutline = v), 2);
+  bindPpSlider(slPpSsao, 'val-pp-ssao', (v) => (scene.postProcess.ssao = v), 2);
   bindPpSlider(slPpPixel, 'val-pp-pixel', (v) => (scene.postProcess.pixelSize = v), 0);
   bindPpSlider(slPpChrom, 'val-pp-chrom', (v) => (scene.postProcess.chromaticAberration = v), 4);
   bindPpSlider(slPpWave, 'val-pp-wave', (v) => (scene.postProcess.waveStrength = v), 3);

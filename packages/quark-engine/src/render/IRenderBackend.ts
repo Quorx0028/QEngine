@@ -17,7 +17,9 @@ export type ShaderBlockId =
   | 'glassRefract'
   | 'voronoiCaustics'
   | 'pixelWorld'
-  | 'pulseEmissive';
+  | 'pulseEmissive'
+  | 'envIBL'
+  | 'microDetail';
 
 export interface MeshGeometry {
   /** Interleaved floats: [px, py, pz, nx, ny, nz, u, v] (8 floats per vertex) */

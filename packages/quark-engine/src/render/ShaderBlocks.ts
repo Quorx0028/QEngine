@@ -17,6 +17,8 @@ export const SHADER_BLOCK_IDS: readonly ShaderBlockId[] = [
   'voronoiCaustics',
   'pixelWorld',
   'pulseEmissive',
+  'envIBL',
+  'microDetail',
 ] as const;
 
 export interface ComposeShaderConfig {
@@ -227,7 +229,7 @@ vec3 evalPulseEmissive(vec3 wp, vec3 glowColor, float t) {
 `);
   }
 
-  if (has('dissolveNoise')) {
+  if (has('dissolveNoise') || has('microDetail')) {
     blockSnippets.push(`
 float hash31(vec3 p) {
   p = fract(p * 0.1031);
@@ -251,6 +253,41 @@ float valueNoise3(vec3 p) {
     mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
     f.z
   );
+}
+`);
+  }
+
+  if (has('microDetail')) {
+    blockSnippets.push(`
+void applyMicroDetail(vec3 wp, inout vec3 n, inout vec3 albedo, inout float roughness) {
+  float n0 = valueNoise3(wp * 11.0);
+  float nx = valueNoise3(wp * 11.0 + vec3(0.08, 0.0, 0.0));
+  float ny = valueNoise3(wp * 11.0 + vec3(0.0, 0.08, 0.0));
+  float nz = valueNoise3(wp * 11.0 + vec3(0.0, 0.0, 0.08));
+  vec3 grad = vec3(nx - n0, ny - n0, nz - n0);
+  float fine = valueNoise3(wp * 31.0);
+  n = normalize(n - grad * 0.45);
+  albedo *= mix(0.92, 1.06, n0 * 0.65 + fine * 0.35);
+  roughness = clamp(roughness + (n0 - 0.5) * 0.22, 0.05, 0.98);
+}
+`);
+  }
+
+  if (has('envIBL')) {
+    blockSnippets.push(`
+vec3 evalEnvIBL(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, vec3 skyCol, float metallic, float roughness) {
+  vec3 r = reflect(-v, n);
+  float skyT = smoothstep(-0.15, 0.75, r.y);
+  vec3 groundCol = vec3(0.14, 0.13, 0.12);
+  vec3 horizonCol = mix(skyCol, vec3(0.75, 0.82, 0.92), 0.55);
+  vec3 envUp = mix(horizonCol, skyCol * 0.5 + vec3(0.18, 0.34, 0.62), skyT);
+  vec3 envCol = r.y >= 0.0 ? envUp : mix(horizonCol, groundCol, clamp(-r.y * 2.2, 0.0, 1.0));
+  float sunSpec = pow(max(dot(r, l), 0.0), mix(128.0, 6.0, roughness)) * (1.2 - roughness * 0.85);
+  envCol += lColor * sunSpec;
+  vec3 f0 = mix(vec3(0.04), albedo, metallic);
+  vec3 fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+  vec3 irr = mix(groundCol, horizonCol, n.y * 0.5 + 0.5) * albedo * (1.0 - metallic) * 0.28;
+  return irr + envCol * fresnel * mix(0.85, 0.22, roughness);
 }
 `);
   }
@@ -291,7 +328,7 @@ vec3 applyDistanceFog(vec3 col, float dist, vec3 fogColor, float density) {
   const lightingBody = has('celLighting')
     ? `color = evalCelLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, u_shadowTint, u_celSteps, shadowFactor);`
     : has('pbrLighting')
-      ? `color = evalPbrLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, u_metallic, u_roughness, shadowFactor);`
+      ? `color = evalPbrLighting(albedo, n, v, l, u_lightColor, u_lightIntensity, u_ambientColor, matMetallic, matRoughness, shadowFactor);`
       : `color = albedo * (max(dot(n, l), 0.0) * u_lightColor * u_lightIntensity * shadowFactor + u_ambientColor);`;
 
   const fragmentSource = `#version 300 es
@@ -388,10 +425,14 @@ void main() {
   vec3 n = normalize(v_normal);
   vec3 v = normalize(u_cameraPos - v_worldPos);
   vec3 l = normalize(u_lightDir);
+  float matMetallic = u_metallic;
+  float matRoughness = u_roughness;
+  ${has('microDetail') ? 'applyMicroDetail(v_worldPos, n, albedo, matRoughness);' : ''}
   float shadowFactor = evalShadow(v_shadowCoord, n, l);
 
   vec3 color;
   ${lightingBody}
+  ${has('envIBL') ? 'color += evalEnvIBL(albedo, n, v, l, u_lightColor, u_fogColor, matMetallic, matRoughness);' : ''}
   color += evalPointLights(albedo, v_worldPos, n, v, ${has('celLighting') ? '1.0' : '0.0'});
 
   ${has('rimLight') ? 'color += evalRimLight(n, v, u_rimColor, u_rimPower);' : ''}
