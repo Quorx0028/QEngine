@@ -1,4 +1,5 @@
 pub mod ecs;
+pub mod physics;
 
 use std::alloc::{alloc, dealloc, Layout};
 
