@@ -7,8 +7,43 @@ import { composeShader } from './ShaderBlocks';
 interface GpuMesh {
   vao: WebGLVertexArrayObject;
   vbo: WebGLBuffer;
+  smoothVbo: WebGLBuffer;
   ibo: WebGLBuffer;
   indexCount: number;
+}
+
+/** Averages face normals at shared positions so inverted-hull outlines never split at hard edges. */
+export function computeSmoothNormals(vertices: Float32Array): Float32Array {
+  const vCount = Math.floor(vertices.length / 8);
+  const accum = new Map<string, [number, number, number]>();
+  const keys = new Array<string>(vCount);
+
+  for (let i = 0; i < vCount; i++) {
+    const off = i * 8;
+    const kx = Math.round(vertices[off] * 10000);
+    const ky = Math.round(vertices[off + 1] * 10000);
+    const kz = Math.round(vertices[off + 2] * 10000);
+    const key = `${kx},${ky},${kz}`;
+    keys[i] = key;
+    const prev = accum.get(key);
+    if (prev) {
+      prev[0] += vertices[off + 3];
+      prev[1] += vertices[off + 4];
+      prev[2] += vertices[off + 5];
+    } else {
+      accum.set(key, [vertices[off + 3], vertices[off + 4], vertices[off + 5]]);
+    }
+  }
+
+  const out = new Float32Array(vCount * 3);
+  for (let i = 0; i < vCount; i++) {
+    const sum = accum.get(keys[i])!;
+    const len = Math.hypot(sum[0], sum[1], sum[2]) || 1;
+    out[i * 3] = sum[0] / len;
+    out[i * 3 + 1] = sum[1] / len;
+    out[i * 3 + 2] = sum[2] / len;
+  }
+  return out;
 }
 
 interface GpuProgram {
@@ -79,12 +114,12 @@ void main() {
 const OUTLINE_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
-layout(location = 1) in vec3 a_normal;
+layout(location = 3) in vec3 a_smoothNormal;
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
 uniform float u_outlineWidth;
 void main() {
-  vec4 world = u_model * vec4(a_position + a_normal * u_outlineWidth, 1.0);
+  vec4 world = u_model * vec4(a_position + a_smoothNormal * u_outlineWidth, 1.0);
   gl_Position = u_viewProj * world;
 }
 `;
@@ -287,6 +322,7 @@ export class WebGL2Backend implements IRenderBackend {
     const gl = this.gl;
     const vao = gl.createVertexArray()!;
     const vbo = gl.createBuffer()!;
+    const smoothVbo = gl.createBuffer()!;
     const ibo = gl.createBuffer()!;
 
     gl.bindVertexArray(vao);
@@ -301,12 +337,18 @@ export class WebGL2Backend implements IRenderBackend {
     gl.enableVertexAttribArray(2);
     gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
 
+    const smoothNormals = computeSmoothNormals(geom.vertices);
+    gl.bindBuffer(gl.ARRAY_BUFFER, smoothVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, smoothNormals, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, 12, 0);
+
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geom.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
 
     const id = this.nextMeshId++;
-    this.meshes.set(id, { vao, vbo, ibo, indexCount: geom.indices.length });
+    this.meshes.set(id, { vao, vbo, smoothVbo, ibo, indexCount: geom.indices.length });
     return id;
   }
 
@@ -315,6 +357,7 @@ export class WebGL2Backend implements IRenderBackend {
     if (!mesh) return;
     this.gl.deleteVertexArray(mesh.vao);
     this.gl.deleteBuffer(mesh.vbo);
+    this.gl.deleteBuffer(mesh.smoothVbo);
     this.gl.deleteBuffer(mesh.ibo);
     this.meshes.delete(meshId);
   }

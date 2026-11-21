@@ -6,6 +6,7 @@ import { Engine } from '../src/Engine';
 import type { IRenderBackend, MaterialDesc, MeshGeometry } from '../src/render/IRenderBackend';
 import { composeShader, SHADER_BLOCK_IDS } from '../src/render/ShaderBlocks';
 import { createPresetMaterial, SHADER_PRESET_NAMES } from '../src/render/ShaderPresets';
+import { computeSmoothNormals } from '../src/render/WebGL2Backend';
 
 const wasmBytes = readFileSync(resolve(import.meta.dirname, '../wasm/quark_core.wasm'));
 
@@ -125,5 +126,18 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     assets.dispose();
     expect(backend.activeMeshes.size).toBe(0);
     engine.dispose();
+  });
+
+  it('computes unified smooth normals across split-face vertices for seamless outlines', () => {
+    // Two triangles meeting at (0, 1, 0) with normals (+X,+Y) and (-X,+Y) -> averaged smooth normal is (0, 1, 0)
+    const verts = new Float32Array([
+      0, 1, 0,  0.707, 0.707, 0,  0, 0,
+      0, 1, 0, -0.707, 0.707, 0,  0, 0,
+    ]);
+    const smooth = computeSmoothNormals(verts);
+    expect(smooth[0]).toBeCloseTo(0, 4);
+    expect(smooth[1]).toBeCloseTo(1, 4);
+    expect(smooth[3]).toBeCloseTo(0, 4);
+    expect(smooth[4]).toBeCloseTo(1, 4);
   });
 });

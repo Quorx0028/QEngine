@@ -69,7 +69,7 @@ void main() {
   v_worldPos = world.xyz;
   v_normal = normalize(transpose(inverse(mat3(u_model))) * a_normal);
   v_uv = a_uv;
-  v_shadowCoord = u_lightViewProj * world;
+  v_shadowCoord = u_lightViewProj * vec4(world.xyz + v_normal * 0.05, 1.0);
   gl_Position = u_viewProj * world;
 }
 `;
@@ -113,12 +113,15 @@ vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lIn
   if (has('celLighting')) {
     blockSnippets.push(`
 vec3 evalCelLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, vec3 shadowTint, float steps, float shadow) {
-  float ndotl = (dot(n, l) * 0.5 + 0.5) * mix(0.35, 1.0, shadow);
+  float rawNdl = dot(n, l);
+  float shadowWeight = smoothstep(0.02, 0.18, rawNdl);
+  float effShadow = mix(1.0, shadow, shadowWeight);
+  float ndotl = (rawNdl * 0.5 + 0.5) * mix(0.45, 1.0, effShadow);
   float q = floor(clamp(ndotl, 0.0, 0.999) * max(steps, 2.0)) / max(steps - 1.0, 1.0);
   float lit = smoothstep(0.0, 0.08, q);
   vec3 diffuse = mix(albedo * shadowTint, albedo * lColor * lInt, q) * mix(0.62, 1.0, lit);
   vec3 h = normalize(l + v);
-  float spec = step(0.92, max(dot(n, h), 0.0)) * 0.28 * shadow;
+  float spec = step(0.92, max(dot(n, h), 0.0)) * 0.28 * effShadow;
   return diffuse + amb * albedo * 0.55 + vec3(spec);
 }
 `);
