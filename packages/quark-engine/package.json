@@ -1,0 +1,32 @@
+{
+  "name": "quark-engine",
+  "version": "0.1.0",
+  "description": "Lightweight 2D/3D browser game and simulation engine powered by Rust/WASM and WebGL2.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wasm": "./dist/wasm/quark_core.wasm"
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json && node ../../scripts/copy-dist-wasm.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}
