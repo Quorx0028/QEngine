@@ -1,3 +1,5 @@
+pub mod ecs;
+
 use std::alloc::{alloc, dealloc, Layout};
 
 pub const ABI_VERSION: u32 = 1;
