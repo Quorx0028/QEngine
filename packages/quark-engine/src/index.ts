@@ -1,3 +1,4 @@
+export { AssetManager, type LoadedMeshHandle } from './assets/AssetManager';
 export { AudioSystem } from './Audio';
 export { Engine, type EngineOptions, type EngineStats } from './Engine';
 export { Input } from './Input';
@@ -11,6 +12,29 @@ export {
   type QuatTuple,
   type Vec3Tuple,
 } from './math/Mat4';
+export type {
+  IRenderBackend,
+  MaterialDesc,
+  MaterialUniforms,
+  MeshGeometry,
+  ShaderBlockId,
+} from './render/IRenderBackend';
+export {
+  createBoxGeometry,
+  createPlaneGeometry,
+  createRampGeometry,
+  createSphereGeometry,
+  extractColliderTriangles,
+} from './render/Primitives';
+export { composeShader, SHADER_BLOCK_IDS, type ComposeShaderConfig } from './render/ShaderBlocks';
+export {
+  createPresetMaterial,
+  defaultMaterialUniforms,
+  SHADER_PRESET_NAMES,
+  type MaterialPresetOverrides,
+  type ShaderPresetName,
+} from './render/ShaderPresets';
+export { WebGL2Backend } from './render/WebGL2Backend';
 export {
   Scene,
   type CameraState,

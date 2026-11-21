@@ -12,7 +12,7 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./wasm": "./dist/wasm/quark_core.wasm"
+    "./wasm": "./wasm/quark_core.wasm"
   },
   "files": [
     "dist",

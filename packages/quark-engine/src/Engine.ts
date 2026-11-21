@@ -1,5 +1,8 @@
+import { AssetManager } from './assets/AssetManager';
 import { AudioSystem } from './Audio';
 import { Input } from './Input';
+import type { IRenderBackend } from './render/IRenderBackend';
+import { WebGL2Backend } from './render/WebGL2Backend';
 import { Scene } from './Scene';
 import { WasmBridge } from './wasm/WasmBridge';
 
@@ -8,6 +11,7 @@ export interface EngineOptions {
   wasmUrl?: string | URL;
   wasmBytes?: BufferSource;
   fixedDt?: number;
+  backend?: IRenderBackend;
 }
 
 export interface EngineStats {
@@ -23,10 +27,13 @@ export class Engine {
   readonly scene: Scene;
   readonly input: Input;
   readonly audio: AudioSystem;
+  readonly renderer: IRenderBackend | null;
+  readonly assets: AssetManager;
   readonly canvas: HTMLCanvasElement | null;
 
   private fixedDt: number;
   private accumulator = 0;
+  private elapsedTime = 0;
   private rafId = 0;
   private running = false;
   private lastTimeMs = 0;
@@ -47,6 +54,21 @@ export class Engine {
     this.input = new Input();
     this.audio = new AudioSystem();
     this.canvas = options.canvas ?? null;
+
+    if (options.backend) {
+      this.renderer = options.backend;
+    } else if (this.canvas) {
+      this.renderer = new WebGL2Backend(this.canvas);
+    } else {
+      this.renderer = null;
+    }
+    this.assets = new AssetManager(this.bridge, this.renderer);
+
+    if (this.renderer) {
+      const backend = this.renderer;
+      this.renderFrameHook = (aspect: number) =>
+        backend.renderFrame(this.bridge, this.scene, aspect, this.elapsedTime);
+    }
 
     if (this.canvas) {
       this.input.attach(this.canvas);
@@ -92,6 +114,7 @@ export class Engine {
 
   step(dtSeconds: number): number {
     const clamped = Math.max(0, Math.min(dtSeconds, 0.1));
+    this.elapsedTime += clamped;
     this.accumulator += clamped;
     let substeps = 0;
     while (this.accumulator >= this.fixedDt && substeps < 6) {
@@ -160,6 +183,8 @@ export class Engine {
     }
     this.input.dispose();
     this.audio.dispose();
+    this.assets.dispose();
+    this.renderer?.dispose();
     this.bridge.dispose();
   }
 }
