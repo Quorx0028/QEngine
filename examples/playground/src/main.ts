@@ -89,8 +89,8 @@ async function bootstrap() {
   let crystalMatId = 0;
   let propsMatId = 0;
   let editTarget: 'all' | 'crystal' | 'props' = 'all';
-  let activePreset: ShaderPresetName = 'animeToon';
-  let activePpPreset: PostProcessPresetName = 'none';
+  let activePreset: ShaderPresetName = 'ultraRealism';
+  let activePpPreset: PostProcessPresetName = 'ultraRealism';
   let yaw = 0;
   let pitch = -0.16;
   let hero2d = 0;
@@ -104,10 +104,10 @@ async function bootstrap() {
   let npcs2d: Array<{ x: number; y: number; name: string; lines: string }> = [];
 
   const crystalDesc: MaterialDesc = createPresetMaterial('animeToon');
-  const propsDesc: MaterialDesc = createPresetMaterial('pbr', {
-    uniforms: { baseColor: [0.92, 0.56, 0.32, 1.0], roughness: 0.38 },
+  const propsDesc: MaterialDesc = createPresetMaterial('ultraRealism', {
+    uniforms: { baseColor: [0.92, 0.78, 0.62, 1.0], roughness: 0.42 },
   });
-  const worldDesc: MaterialDesc = createPresetMaterial('animeToon');
+  const worldDesc: MaterialDesc = createPresetMaterial('ultraRealism');
 
   function playSfx(freq: number, dur = 0.08, type: OscillatorType = 'triangle', vol = 0.12) {
     if (sfxEnabled) audio.playTone(freq, dur, type, vol);
@@ -130,10 +130,57 @@ async function bootstrap() {
     forestGame = null;
     forestHudEl.style.display = 'none';
     forestBannerEl.style.display = 'none';
+    assets.unloadTag('scene-fx');
+  }
+
+  const sceneMaterialMeta = new Map<
+    number,
+    { baseColor: [number, number, number, number]; textureId?: number; keepGrid?: boolean }
+  >();
+
+  function makeStoneTileTexture(): number {
+    const size = 128;
+    const px = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const grout = x < 3 || y < 3 || (x >= 63 && x < 66) || (y >= 63 && y < 66);
+        const hash = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+        const n = (hash - Math.floor(hash)) * 22 - 11;
+        const base = grout ? 68 : 168 + n;
+        px[i] = Math.max(20, Math.min(255, base));
+        px[i + 1] = Math.max(20, Math.min(255, base + 4));
+        px[i + 2] = Math.max(20, Math.min(255, base + 10));
+        px[i + 3] = 255;
+      }
+    }
+    return assets.createTexture('stone-tile', size, size, px, false, 'scene');
+  }
+
+  function makeCrateWoodTexture(): number {
+    const size = 128;
+    const px = new Uint8Array(size * size * 4);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        const frame = x < 10 || x >= size - 10 || y < 10 || y >= size - 10;
+        const diag = Math.abs(x - y) < 7;
+        const plank = y % 24 < 2;
+        const hash = Math.sin(x * 4.1 + y * 29.7) * 43758.5453;
+        const grain = ((hash - Math.floor(hash)) - 0.5) * 18;
+        const lum = frame || diag ? 148 + grain : plank ? 115 : 196 + grain;
+        px[i] = Math.max(20, Math.min(255, lum));
+        px[i + 1] = Math.max(20, Math.min(255, lum * 0.84));
+        px[i + 2] = Math.max(20, Math.min(255, lum * 0.62));
+        px[i + 3] = 255;
+      }
+    }
+    return assets.createTexture('crate-wood', size, size, px, false, 'scene');
   }
 
   function build3DArena() {
     hideForestUi();
+    sceneMaterialMeta.clear();
     scene.clear();
     assets.unloadTag('scene');
     dialogueActive = false;
@@ -153,6 +200,9 @@ async function bootstrap() {
       { position: [-7.5, 2.2, 2.5], color: [1.0, 0.58, 0.25], intensity: 1.9, radius: 10 }
     );
 
+    const floorTex = makeStoneTileTexture();
+    const crateTex = makeCrateWoodTexture();
+
     const floorMesh = assets.registerMesh('floor', createPlaneGeometry(56, 56, 28), 'scene');
     const boxMesh = assets.registerMesh('box', createBoxGeometry(0.5, 0.5, 0.5), 'scene');
     const sphereMesh = assets.registerMesh('sphere', createSphereGeometry(0.55, 18, 24), 'scene');
@@ -164,38 +214,52 @@ async function bootstrap() {
     const floorMat = assets.createMaterial(
       'floor-grid',
       {
-        blocks: ['pbrLighting', 'triplanarGrid', 'distanceFog'],
+        blocks: ['pbrLighting', 'envIBL', 'microDetail', 'triplanarGrid', 'distanceFog'],
         uniforms: {
-          ...createPresetMaterial('pbr').uniforms,
-          baseColor: [0.24, 0.28, 0.36, 1],
-          roughness: 0.78,
+          ...createPresetMaterial('ultraRealism').uniforms,
+          baseColor: [0.42, 0.46, 0.54, 1],
+          roughness: 0.42,
+          metallic: 0.08,
           gridScale: 1.0,
         },
+        textureId: floorTex,
       },
       'scene'
     );
+    sceneMaterialMeta.set(floorMat, {
+      baseColor: [0.42, 0.46, 0.54, 1],
+      textureId: floorTex,
+      keepGrid: true,
+    });
 
     const wallMat = assets.createPreset(
       'wall-pbr',
-      'pbr',
-      { uniforms: { baseColor: [0.4, 0.46, 0.58, 1], roughness: 0.55 } },
-      'scene'
-    );
-    const rampMat = assets.createPreset(
-      'ramp-toon',
-      'animeToon',
+      'ultraRealism',
       {
-        uniforms: {
-          baseColor: [0.95, 0.65, 0.35, 1],
-          shadowTint: [0.55, 0.32, 0.28],
-        },
-        outlineWidth: 0.02,
+        uniforms: { baseColor: [0.46, 0.52, 0.62, 1], roughness: 0.52 },
+        textureId: floorTex,
       },
       'scene'
     );
+    sceneMaterialMeta.set(wallMat, { baseColor: [0.46, 0.52, 0.62, 1], textureId: floorTex });
+
+    const rampMat = assets.createPreset(
+      'ramp-toon',
+      'ultraRealism',
+      {
+        uniforms: { baseColor: [0.76, 0.56, 0.38, 1], roughness: 0.45 },
+        textureId: crateTex,
+      },
+      'scene'
+    );
+    sceneMaterialMeta.set(rampMat, { baseColor: [0.76, 0.56, 0.38, 1], textureId: crateTex });
 
     crystalMatId = assets.createMaterial('showcase-crystal', crystalDesc, 'scene');
+    sceneMaterialMeta.set(crystalMatId, { baseColor: [...crystalDesc.uniforms.baseColor] });
+
+    propsDesc.textureId = crateTex;
     propsMatId = assets.createMaterial('showcase-props', propsDesc, 'scene');
+    sceneMaterialMeta.set(propsMatId, { baseColor: [0.92, 0.78, 0.62, 1], textureId: crateTex });
 
     // Ground collider + floor mesh
     const floor = scene.createEntity();
@@ -300,7 +364,7 @@ async function bootstrap() {
     // Glowing Hologram Jump-Pad Trigger Zone (uses Milestone 1 WASM TriggerEnter event!)
     const padMat = assets.createPreset('jump-pad', 'hologram', {
       uniforms: { glowColor: [0.2, 1.0, 0.75], baseColor: [0.1, 0.9, 0.65, 0.65] },
-    }, 'scene');
+    }, 'scene-fx');
     const jumpPad = scene.createEntity();
     scene.setTransform(jumpPad, { position: [4, 0.12, 5], scale: [2.2, 0.2, 2.2], immediate: true });
     scene.setCollider3D(jumpPad, { kind: 'aabb', halfExtents: [1.1, 0.55, 1.1] });
@@ -486,7 +550,19 @@ async function bootstrap() {
     if (editTarget === 'all') {
       const ids = assets.getMaterialsByTag('scene');
       for (const id of ids) {
-        assets.updateMaterial(id, desc);
+        const meta = sceneMaterialMeta.get(id);
+        const blocks = meta?.keepGrid && !desc.blocks.includes('triplanarGrid')
+          ? [...desc.blocks, 'triplanarGrid' as ShaderBlockId]
+          : desc.blocks;
+        assets.updateMaterial(id, {
+          ...desc,
+          blocks,
+          textureId: meta?.textureId ?? desc.textureId,
+          uniforms: {
+            ...desc.uniforms,
+            baseColor: meta ? meta.baseColor : desc.uniforms.baseColor,
+          },
+        });
       }
       syncUiFromActiveDesc();
       return;
@@ -868,6 +944,9 @@ async function bootstrap() {
       `WASM RAM: <b>${Math.round(st.wasmMemoryBytes / 1024)} KB</b>`;
   });
 
+  scene.postProcess = createPostProcessPreset(activePpPreset);
+  syncPpUi();
+  syncUiFromActiveDesc();
   build3DArena();
   engine.start();
 }

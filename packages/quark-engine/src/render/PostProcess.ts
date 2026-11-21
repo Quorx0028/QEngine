@@ -134,17 +134,17 @@ export function createPostProcessPreset(name: PostProcessPresetName): PostProces
     case 'ultraRealism':
       return {
         enabled: true,
-        bloomIntensity: 0.26,
-        bloomThreshold: 0.78,
+        bloomIntensity: 0.32,
+        bloomThreshold: 0.76,
         screenOutline: 0,
-        ssao: 0.72,
+        ssao: 0.85,
         pixelSize: 1,
         crt: false,
         chromaticAberration: 0.0005,
-        vignette: 0.24,
-        filmGrain: 0.02,
+        vignette: 0.26,
+        filmGrain: 0.018,
         waveStrength: 0,
-        saturation: 1.07,
+        saturation: 1.12,
         noir: 0,
       };
   }
@@ -288,12 +288,17 @@ void main() {
     col += texture(u_bloomTex, uv).rgb * u_bloomIntensity;
   }
 
-  // Screen-space ambient occlusion (contact shadows & crevice darkening)
+  // Screen-space ambient occlusion using view-space normal reconstruction (crevices/corners only, no flat-floor darkening)
   if (u_ssao > 0.001) {
     float dC = linearDepth(uv);
     if (dC < 160.0) {
       vec2 px = 1.0 / u_resolution;
-      float radPx = clamp(24.0 / max(dC, 1.0), 3.0, 14.0);
+      vec3 pC = vec3((uv * 2.0 - 1.0) * dC, dC);
+      vec3 pR = vec3(((uv + vec2(px.x, 0.0)) * 2.0 - 1.0) * linearDepth(uv + vec2(px.x, 0.0)), linearDepth(uv + vec2(px.x, 0.0)));
+      vec3 pU = vec3(((uv + vec2(0.0, px.y)) * 2.0 - 1.0) * linearDepth(uv + vec2(0.0, px.y)), linearDepth(uv + vec2(0.0, px.y)));
+      vec3 surfN = normalize(cross(pR - pC, pU - pC));
+
+      float radPx = clamp(28.0 / max(dC, 1.0), 4.0, 16.0);
       float occ = 0.0;
       vec2 taps[8];
       taps[0] = vec2(1.0, 0.0);
@@ -307,12 +312,19 @@ void main() {
       for (int i = 0; i < 8; i++) {
         vec2 sUv = clamp(uv + taps[i] * px * radPx, 0.001, 0.999);
         float dS = linearDepth(sUv);
-        float diff = dC - dS;
-        float range = smoothstep(1.2, 0.05, abs(diff));
-        occ += step(0.04, diff) * range;
+        vec3 pS = vec3((sUv * 2.0 - 1.0) * dS, dS);
+        vec3 vDiff = pS - pC;
+        float dist = length(vDiff);
+        if (dist > 0.001 && dist < 1.8) {
+          float nDot = dot(surfN, vDiff / dist);
+          // Positive nDot toward camera (-Z) / concavity test via plane distance
+          float planeDist = dC - dS;
+          float range = smoothstep(1.6, 0.05, abs(planeDist));
+          occ += smoothstep(0.03, 0.25, planeDist) * smoothstep(0.05, 0.4, abs(nDot)) * range;
+        }
       }
-      float ao = 1.0 - (occ / 8.0) * u_ssao * 0.62;
-      col *= clamp(ao, 0.38, 1.0);
+      float ao = 1.0 - (occ / 8.0) * u_ssao * 0.85;
+      col *= clamp(ao, 0.32, 1.0);
     }
   }
 

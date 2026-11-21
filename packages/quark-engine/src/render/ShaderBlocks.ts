@@ -259,16 +259,30 @@ float valueNoise3(vec3 p) {
 
   if (has('microDetail')) {
     blockSnippets.push(`
+float fbmMicro(vec3 p) {
+  float v = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 3; i++) {
+    v += a * valueNoise3(p);
+    p *= 2.07;
+    a *= 0.5;
+  }
+  return v;
+}
 void applyMicroDetail(vec3 wp, inout vec3 n, inout vec3 albedo, inout float roughness) {
-  float n0 = valueNoise3(wp * 11.0);
-  float nx = valueNoise3(wp * 11.0 + vec3(0.08, 0.0, 0.0));
-  float ny = valueNoise3(wp * 11.0 + vec3(0.0, 0.08, 0.0));
-  float nz = valueNoise3(wp * 11.0 + vec3(0.0, 0.0, 0.08));
-  vec3 grad = vec3(nx - n0, ny - n0, nz - n0);
-  float fine = valueNoise3(wp * 31.0);
-  n = normalize(n - grad * 0.45);
-  albedo *= mix(0.92, 1.06, n0 * 0.65 + fine * 0.35);
-  roughness = clamp(roughness + (n0 - 0.5) * 0.22, 0.05, 0.98);
+  vec3 p = wp * 3.5;
+  float n0 = fbmMicro(p);
+  float nx = fbmMicro(p + vec3(0.04, 0.0, 0.0));
+  float ny = fbmMicro(p + vec3(0.0, 0.04, 0.0));
+  float nz = fbmMicro(p + vec3(0.0, 0.0, 0.04));
+  vec3 grad = (vec3(nx, ny, nz) - n0) / 0.04;
+  // Project gradient onto surface tangent plane so flat faces get true crisp bump relief
+  vec3 tangGrad = grad - n * dot(grad, n);
+  n = normalize(n - tangGrad * 0.22);
+  float grain = valueNoise3(wp * 24.0);
+  float wear = smoothstep(0.35, 0.72, n0);
+  albedo *= mix(0.78, 1.14, n0 * 0.75 + grain * 0.25);
+  roughness = clamp(mix(roughness * 0.65, min(0.95, roughness + 0.35), wear), 0.06, 0.96);
 }
 `);
   }
@@ -277,17 +291,17 @@ void applyMicroDetail(vec3 wp, inout vec3 n, inout vec3 albedo, inout float roug
     blockSnippets.push(`
 vec3 evalEnvIBL(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, vec3 skyCol, float metallic, float roughness) {
   vec3 r = reflect(-v, n);
-  float skyT = smoothstep(-0.15, 0.75, r.y);
-  vec3 groundCol = vec3(0.14, 0.13, 0.12);
-  vec3 horizonCol = mix(skyCol, vec3(0.75, 0.82, 0.92), 0.55);
-  vec3 envUp = mix(horizonCol, skyCol * 0.5 + vec3(0.18, 0.34, 0.62), skyT);
-  vec3 envCol = r.y >= 0.0 ? envUp : mix(horizonCol, groundCol, clamp(-r.y * 2.2, 0.0, 1.0));
-  float sunSpec = pow(max(dot(r, l), 0.0), mix(128.0, 6.0, roughness)) * (1.2 - roughness * 0.85);
+  float skyT = smoothstep(-0.1, 0.75, r.y);
+  vec3 groundCol = vec3(0.11, 0.1, 0.09);
+  vec3 horizonCol = mix(skyCol, vec3(0.84, 0.89, 0.96), 0.55);
+  vec3 envUp = mix(horizonCol, skyCol * 0.45 + vec3(0.16, 0.36, 0.68), skyT);
+  vec3 envCol = r.y >= 0.0 ? envUp : mix(horizonCol, groundCol, clamp(-r.y * 2.5, 0.0, 1.0));
+  float sunSpec = pow(max(dot(r, l), 0.0), mix(180.0, 8.0, roughness)) * (1.5 - roughness);
   envCol += lColor * sunSpec;
   vec3 f0 = mix(vec3(0.04), albedo, metallic);
   vec3 fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-  vec3 irr = mix(groundCol, horizonCol, n.y * 0.5 + 0.5) * albedo * (1.0 - metallic) * 0.28;
-  return irr + envCol * fresnel * mix(0.85, 0.22, roughness);
+  vec3 irr = mix(groundCol * 0.85, horizonCol * 0.65, n.y * 0.5 + 0.5) * albedo * (1.0 - metallic) * 0.32;
+  return irr + envCol * fresnel * mix(0.95, 0.24, roughness);
 }
 `);
   }
@@ -295,8 +309,8 @@ vec3 evalEnvIBL(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, vec3 skyCol, f
   if (has('hologramScanline')) {
     blockSnippets.push(`
 float evalHologramScanline(vec3 wp, float t) {
-  float scan = 0.65 + 0.35 * sin(wp.y * 28.0 - t * 9.0);
-  float pulse = 0.9 + 0.1 * sin(t * 23.0);
+  float scan = 0.7 + 0.3 * sin((wp.y * 18.0 + wp.x * 4.0 + wp.z * 4.0) - t * 8.0);
+  float pulse = 0.92 + 0.08 * sin(t * 16.0);
   return scan * pulse;
 }
 `);
