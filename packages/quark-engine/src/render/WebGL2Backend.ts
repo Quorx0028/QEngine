@@ -432,6 +432,8 @@ export class WebGL2Backend implements IRenderBackend {
       this.spriteInstScratch = new Float32Array(count * 16);
     }
 
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);

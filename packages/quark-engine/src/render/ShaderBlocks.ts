@@ -65,7 +65,7 @@ void main() {
   ${config.customVertexSnippet ?? ''}
   vec4 world = u_model * vec4(localPos, 1.0);
   v_worldPos = world.xyz;
-  v_normal = normalize(mat3(u_model) * a_normal);
+  v_normal = normalize(transpose(inverse(mat3(u_model))) * a_normal);
   v_uv = a_uv;
   gl_Position = u_viewProj * world;
 }

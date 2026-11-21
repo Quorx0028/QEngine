@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QuarkEngine Playground — 3D/2D & Shader Block Studio</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0d1018;
+        color: #e6ebf5;
+        font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+        font-size: 13px;
+      }
+      #viewport {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        cursor: crosshair;
+      }
+      .hud-panel {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        width: 296px;
+        max-height: calc(100vh - 24px);
+        overflow-y: auto;
+        background: rgba(16, 20, 30, 0.86);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .hud-stats {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        background: rgba(16, 20, 30, 0.84);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        padding: 10px 12px;
+        line-height: 1.5;
+        pointer-events: none;
+      }
+      .hud-stats b { color: #7dd3fc; }
+      .row { display: flex; gap: 6px; flex-wrap: wrap; }
+      button, select {
+        background: #1c2436;
+        color: #e6ebf5;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover { background: #27324a; }
+      button.active {
+        background: #2563eb;
+        border-color: #60a5fa;
+        color: #fff;
+      }
+      .blocks-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px 8px;
+      }
+      label.chk {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      label.slider {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 11px;
+        color: #b5c0d4;
+      }
+      .section-title {
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #94a3b8;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        padding-top: 8px;
+      }
+      .hint {
+        font-size: 11px;
+        color: #94a3b8;
+        line-height: 1.4;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewport"></canvas>
+
+    <div class="hud-stats" id="stats">Loading QuarkEngine WASM...</div>
+
+    <aside class="hud-panel">
+      <div class="row">
+        <button id="btn-3d" class="active">3D Arena</button>
+        <button id="btn-2d">2D OMORI-style</button>
+        <button id="btn-spawn">+ Box (E)</button>
+        <button id="btn-reset">Reset</button>
+      </div>
+
+      <div class="hint">
+        <b>Управление:</b> WASD — бег, Shift — спринт, Space — прыжок (в 3D), мышь (клик по сцене или зажать ЛКМ) — обзор. Перетащи <code>.glb</code> из Blender прямо в окно!
+      </div>
+
+      <div class="section-title">Пресет шейдера (центральный объект)</div>
+      <div class="row" id="preset-buttons"></div>
+
+      <div class="section-title">Блоки шейдера (конструктор)</div>
+      <div class="blocks-grid" id="block-toggles"></div>
+
+      <div class="section-title">Параметры блоков</div>
+      <label class="slider">Cel Steps: <span id="val-cel">3</span>
+        <input id="sl-cel" type="range" min="2" max="8" step="1" value="3" />
+      </label>
+      <label class="slider">Outline Width: <span id="val-outline">0.03</span>
+        <input id="sl-outline" type="range" min="0" max="0.08" step="0.005" value="0.03" />
+      </label>
+      <label class="slider">Dissolve: <span id="val-dissolve">0.28</span>
+        <input id="sl-dissolve" type="range" min="0" max="1" step="0.02" value="0.28" />
+      </label>
+      <label class="slider">Wave Amp: <span id="val-wave">0.18</span>
+        <input id="sl-wave" type="range" min="0" max="0.6" step="0.02" value="0.18" />
+      </label>
+      <label class="slider">Dither Strength: <span id="val-dither">0.75</span>
+        <input id="sl-dither" type="range" min="0" max="1" step="0.05" value="0.75" />
+      </label>
+    </aside>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
