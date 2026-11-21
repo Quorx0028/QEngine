@@ -16,6 +16,7 @@ import {
   type Vec3Tuple,
 } from 'quark-engine';
 import wasmUrl from 'quark-engine/wasm?url';
+import { startForestEscapeGame, type ForestGameController } from './forestGame';
 import { buildSampleCrystalGlb } from './sampleGlb';
 
 type MoodName = 'daylight' | 'sunset' | 'cyber' | 'pastel';
@@ -77,7 +78,8 @@ async function bootstrap() {
   const engine = await Engine.init({ canvas, wasmUrl });
   const { scene, assets, input, audio } = engine;
 
-  let mode: '3d' | '2d' = '3d';
+  let mode: '3d' | '2d' | 'forest' = '3d';
+  let forestGame: ForestGameController | null = null;
   let sfxEnabled = true;
   let player = 0;
   let crystalEntity = 0;
@@ -116,7 +118,17 @@ async function bootstrap() {
     scene.light.ambientColor = [...m.ambient];
   }
 
+  const forestHudEl = document.getElementById('forest-hud')!;
+  const forestBannerEl = document.getElementById('forest-banner')!;
+
+  function hideForestUi() {
+    forestGame = null;
+    forestHudEl.style.display = 'none';
+    forestBannerEl.style.display = 'none';
+  }
+
   function build3DArena() {
+    hideForestUi();
     scene.clear();
     assets.unloadTag('scene');
     dialogueActive = false;
@@ -125,6 +137,8 @@ async function bootstrap() {
     mode = '3d';
     scene.camera.mode = '3d';
     scene.camera.pixelSnap = false;
+    scene.fogDensity = 0.008;
+    scene.light.intensity = 1.35;
     scene.setGravity(0, -22, 0);
     applyMood((document.getElementById('sel-mood') as HTMLSelectElement).value as MoodName);
 
@@ -299,6 +313,7 @@ async function bootstrap() {
   }
 
   function build2DOMORIStyleScene() {
+    hideForestUi();
     scene.clear();
     assets.unloadTag('scene');
     if (document.pointerLockElement) document.exitPointerLock();
@@ -446,7 +461,7 @@ async function bootstrap() {
     const dx = -Math.sin(yaw) * Math.cos(pitch);
     const dy = Math.sin(pitch);
     const dz = -Math.cos(yaw) * Math.cos(pitch);
-    const hit = scene.raycast3D([ox, oy, oz], [dx, dy, dz], 35);
+    const hit = scene.raycast3D([ox + dx * 0.65, oy + dy * 0.65, oz + dz * 0.65], [dx, dy, dz], 35);
     if (hit && hit.entity !== player) {
       scene.applyImpulse(hit.entity, [dx * 9.5, dy * 9.5 + 3.0, dz * 9.5], hit.point);
       scene.triggerShake(0.08, 0.14);
@@ -583,28 +598,60 @@ async function bootstrap() {
 
   const btn3d = document.getElementById('btn-3d')!;
   const btn2d = document.getElementById('btn-2d')!;
+  const btnForest = document.getElementById('btn-forest')!;
+
+  function startForestMode() {
+    btnForest.classList.add('active');
+    btn3d.classList.remove('active');
+    btn2d.classList.remove('active');
+    dialogueActive = false;
+    dialogueBox.classList.remove('visible');
+    crosshairEl.style.display = 'block';
+    mode = 'forest';
+    forestGame = startForestEscapeGame(
+      engine,
+      {
+        container: forestHudEl,
+        keysText: document.getElementById('forest-keys')!,
+        staminaBar: document.getElementById('forest-stamina')!,
+        flashlightText: document.getElementById('forest-flashlight')!,
+        statusBanner: forestBannerEl,
+        statusTitle: document.getElementById('forest-title')!,
+        statusSub: document.getElementById('forest-sub')!,
+        onEndScreenRestart: startForestMode,
+      },
+      playSfx
+    );
+  }
+
+  document.getElementById('btn-forest-retry')!.onclick = startForestMode;
+
   btn3d.onclick = () => {
     btn3d.classList.add('active');
     btn2d.classList.remove('active');
+    btnForest.classList.remove('active');
     build3DArena();
   };
   btn2d.onclick = () => {
     btn2d.classList.add('active');
     btn3d.classList.remove('active');
+    btnForest.classList.remove('active');
     build2DOMORIStyleScene();
   };
+  btnForest.onclick = startForestMode;
   document.getElementById('btn-spawn-box')!.onclick = () => spawnDynamicBody('box');
   document.getElementById('btn-spawn-sphere')!.onclick = () => spawnDynamicBody('sphere');
   document.getElementById('btn-drop-ramp')!.onclick = () => spawnDynamicBody('box', true);
   document.getElementById('btn-reset')!.onclick = () => {
     if (mode === '3d') build3DArena();
-    else build2DOMORIStyleScene();
+    else if (mode === '2d') build2DOMORIStyleScene();
+    else startForestMode();
   };
 
   canvas.addEventListener('click', () => {
-    if (mode === '3d') {
+    if (mode === '3d' || mode === 'forest') {
       if (!input.isPointerLocked()) input.requestPointerLock();
-      else fireRaycastImpulse();
+      else if (mode === '3d') fireRaycastImpulse();
     }
   });
 
@@ -629,7 +676,11 @@ async function bootstrap() {
     });
   });
 
-  engine.onFixedUpdate(() => {
+  engine.onFixedUpdate((fixedDt) => {
+    if (mode === 'forest' && forestGame) {
+      forestGame.fixedUpdate(fixedDt);
+      return;
+    }
     if (mode === '3d') {
       const forwardX = -Math.sin(yaw);
       const forwardZ = -Math.cos(yaw);
@@ -674,7 +725,9 @@ async function bootstrap() {
     spinTime += dt;
     if (input.wasKeyPressed('KeyH')) hudPanel.classList.toggle('collapsed');
 
-    if (mode === '3d') {
+    if (mode === 'forest' && forestGame) {
+      forestGame.update(dt);
+    } else if (mode === '3d') {
       if (input.wasKeyPressed('KeyE')) spawnDynamicBody('box');
       if (input.wasKeyPressed('KeyQ')) spawnDynamicBody('sphere');
       if (input.wasKeyPressed('KeyR')) spawnDynamicBody('box', true);
@@ -734,7 +787,7 @@ async function bootstrap() {
 
     const st = engine.getStats();
     statsEl.innerHTML =
-      `<b>QuarkEngine</b> (${mode.toUpperCase()})<br>` +
+      `<b>QuarkEngine</b> (${forestGame ? forestGame.getModeLabel() : mode.toUpperCase()})<br>` +
       `FPS: <b>${st.fps}</b> (${st.frameMs} ms)<br>` +
       `Entities: <b>${st.entities}</b> | Draws: <b>${st.drawCalls}</b><br>` +
       `WASM RAM: <b>${Math.round(st.wasmMemoryBytes / 1024)} KB</b>`;

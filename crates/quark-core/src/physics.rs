@@ -1,5 +1,5 @@
 use crate::ecs::{entity_index, Collider2D, Collider3D, EntityHandle, RigidBody, World, INVALID_ENTITY};
-use glam::{Quat, Vec2, Vec3};
+use glam::{Mat3, Quat, Vec2, Vec3};
 
 pub const EVENT_COLLISION_ENTER: u32 = 1;
 pub const EVENT_TRIGGER_ENTER: u32 = 2;
@@ -689,6 +689,7 @@ impl PhysicsWorld {
             collider_inv_inertia(Some(col), rb_a.mass)
         };
 
+        let scale = 1.0 / (contact_count.max(1) as f32);
         for c in &contacts[..contact_count] {
             let n = c.normal;
             let ra = c.point - world.curr_pos[dyn_idx];
@@ -698,7 +699,7 @@ impl PhysicsWorld {
                 let rn = ra.cross(n);
                 let denom = inv_m + rn.length_squared() * inv_i;
                 let e = if vn.abs() < 1.2 { 0.0 } else { rb_a.restitution };
-                let jn = -(1.0 + e) * vn / denom.max(1e-6);
+                let jn = (-(1.0 + e) * vn / denom.max(1e-6)) * scale;
                 let mut impulse = n * jn;
 
                 if rb_a.friction > 0.0 {
@@ -708,7 +709,7 @@ impl PhysicsWorld {
                         let t = tang / t_len;
                         let rt = ra.cross(t);
                         let denom_t = inv_m + rt.length_squared() * inv_i;
-                        let jt = (-va.dot(t) / denom_t.max(1e-6))
+                        let jt = ((-va.dot(t) / denom_t.max(1e-6)) * scale)
                             .clamp(-rb_a.friction * jn, rb_a.friction * jn);
                         impulse += t * jt;
                     }
@@ -724,8 +725,8 @@ impl PhysicsWorld {
                     let t = tang / t_len;
                     let rt = ra.cross(t);
                     let denom_t = inv_m + rt.length_squared() * inv_i;
-                    let max_rest = rb_a.friction * rb_a.mass * 0.25;
-                    let jt = (-va.dot(t) / denom_t.max(1e-6)).clamp(-max_rest, max_rest);
+                    let max_rest = rb_a.friction * rb_a.mass * 0.25 * scale;
+                    let jt = ((-va.dot(t) / denom_t.max(1e-6)) * scale).clamp(-max_rest, max_rest);
                     let imp = t * jt;
                     world.velocities[dyn_idx] += imp * inv_m;
                     if !rb_a.lock_rotation {
@@ -786,16 +787,18 @@ impl PhysicsWorld {
                 continue;
             }
 
-            // Wake sleeping partner on energetic contact
+            // Wake sleeping partner on energetic contact (or if partner was asleep under/on an awake mover)
             let rel_speed_sq = (world.velocities[a] - world.velocities[b]).length_squared();
-            if rel_speed_sq > 0.05 {
-                if let Some(rb) = &mut world.rigid_bodies[a] {
-                    rb.sleeping = false;
-                    rb.sleep_timer = 0.0;
-                }
-                if let Some(rb) = &mut world.rigid_bodies[b] {
-                    rb.sleeping = false;
-                    rb.sleep_timer = 0.0;
+            if rel_speed_sq > 0.02 || !rb_a.sleeping || !rb_b.sleeping {
+                if rel_speed_sq > 0.02 {
+                    if let Some(rb) = &mut world.rigid_bodies[a] {
+                        rb.sleeping = false;
+                        rb.sleep_timer = 0.0;
+                    }
+                    if let Some(rb) = &mut world.rigid_bodies[b] {
+                        rb.sleeping = false;
+                        rb.sleep_timer = 0.0;
+                    }
                 }
             }
 
@@ -832,7 +835,7 @@ impl PhysicsWorld {
                 }
             }
 
-            let scale = 1.0 / (count.min(4) as f32);
+            let scale = 1.0 / (count.max(1) as f32);
             for c in &contacts[..count] {
                 let n = c.normal;
                 let ra = c.point - world.curr_pos[a];
@@ -1266,79 +1269,18 @@ fn collect_3d_contacts(
 ) {
     match (a, b) {
         (Collider3D::Aabb { half_extents: ha }, Collider3D::Aabb { half_extents: hb }) => {
-            let inv_rb = rb.conjugate();
-            let corners_a = obb_corners(pa, ra, ha);
-            for corner in corners_a {
-                let local = inv_rb * (corner - pb);
-                if local.x.abs() < hb.x && local.y.abs() < hb.y && local.z.abs() < hb.z {
-                    let dx_min = local.x + hb.x;
-                    let dx_max = hb.x - local.x;
-                    let dy_min = local.y + hb.y;
-                    let dy_max = hb.y - local.y;
-                    let dz_min = local.z + hb.z;
-                    let dz_max = hb.z - local.z;
-                    let mut best_d = dy_max;
-                    let mut best_ln = Vec3::Y;
-                    for &(d, ln) in &[
-                        (dy_min, Vec3::NEG_Y),
-                        (dx_min, Vec3::NEG_X),
-                        (dx_max, Vec3::X),
-                        (dz_min, Vec3::NEG_Z),
-                        (dz_max, Vec3::Z),
-                    ] {
-                        if d < best_d {
-                            best_d = d;
-                            best_ln = ln;
-                        }
-                    }
-                    push_contact(
-                        contacts,
-                        count,
-                        other_idx,
-                        other_is_dynamic,
-                        corner,
-                        rb * best_ln,
-                        best_d,
-                    );
-                }
-            }
-
-            let inv_ra = ra.conjugate();
-            let corners_b = obb_corners(pb, rb, hb);
-            for corner in corners_b {
-                let local = inv_ra * (corner - pa);
-                if local.x.abs() < ha.x && local.y.abs() < ha.y && local.z.abs() < ha.z {
-                    let dx_min = local.x + ha.x;
-                    let dx_max = ha.x - local.x;
-                    let dy_min = local.y + ha.y;
-                    let dy_max = ha.y - local.y;
-                    let dz_min = local.z + ha.z;
-                    let dz_max = ha.z - local.z;
-                    let mut best_d = dy_max;
-                    let mut best_ln = Vec3::NEG_Y;
-                    for &(d, ln) in &[
-                        (dy_min, Vec3::Y),
-                        (dx_min, Vec3::X),
-                        (dx_max, Vec3::NEG_X),
-                        (dz_min, Vec3::Z),
-                        (dz_max, Vec3::NEG_Z),
-                    ] {
-                        if d < best_d {
-                            best_d = d;
-                            best_ln = ln;
-                        }
-                    }
-                    push_contact(
-                        contacts,
-                        count,
-                        other_idx,
-                        other_is_dynamic,
-                        corner,
-                        ra * best_ln,
-                        best_d,
-                    );
-                }
-            }
+            obb_vs_obb_sat(
+                pa,
+                ra,
+                ha,
+                pb,
+                rb,
+                hb,
+                other_idx,
+                other_is_dynamic,
+                contacts,
+                count,
+            );
         }
         (Collider3D::Sphere { radius }, Collider3D::Aabb { half_extents }) => {
             let local_center = rb.conjugate() * (pa - pb);
@@ -1451,6 +1393,145 @@ fn collect_3d_contacts(
             }
         }
         _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn obb_vs_obb_sat(
+    pa: Vec3,
+    ra: Quat,
+    ha: Vec3,
+    pb: Vec3,
+    rb: Quat,
+    hb: Vec3,
+    other_idx: Option<usize>,
+    other_is_dynamic: bool,
+    contacts: &mut [ContactPoint],
+    count: &mut usize,
+) {
+    let ma = Mat3::from_quat(ra);
+    let mb = Mat3::from_quat(rb);
+    let ax = [ma.x_axis, ma.y_axis, ma.z_axis];
+    let bx = [mb.x_axis, mb.y_axis, mb.z_axis];
+    let t = pa - pb;
+
+    let mut best_score = f32::INFINITY;
+    let mut best_depth = 0.0f32;
+    let mut best_axis = Vec3::Y;
+
+    let mut test_axis = |axis: Vec3, is_edge: bool| -> bool {
+        let len_sq = axis.length_squared();
+        if len_sq < 1e-8 {
+            return true;
+        }
+        let l = axis / len_sq.sqrt();
+        let proj_a = ha.x * ax[0].dot(l).abs() + ha.y * ax[1].dot(l).abs() + ha.z * ax[2].dot(l).abs();
+        let proj_b = hb.x * bx[0].dot(l).abs() + hb.y * bx[1].dot(l).abs() + hb.z * bx[2].dot(l).abs();
+        let dist = t.dot(l).abs();
+        let overlap = proj_a + proj_b - dist;
+        if overlap <= 0.0 {
+            return false;
+        }
+        let score = if is_edge { overlap * 1.04 } else { overlap };
+        if score < best_score {
+            best_score = score;
+            best_depth = overlap;
+            best_axis = l;
+        }
+        true
+    };
+
+    for i in 0..3 {
+        if !test_axis(ax[i], false) {
+            return;
+        }
+    }
+    for i in 0..3 {
+        if !test_axis(bx[i], false) {
+            return;
+        }
+    }
+    for i in 0..3 {
+        for j in 0..3 {
+            if !test_axis(ax[i].cross(bx[j]), true) {
+                return;
+            }
+        }
+    }
+
+    let normal = if t.dot(best_axis) >= 0.0 {
+        best_axis
+    } else {
+        -best_axis
+    };
+
+    let eps = 1e-3;
+    let start_count = *count;
+
+    // Collect penetrating corners of A inside B (using <= so aligned faces emit all 4 support corners!)
+    let inv_rb = rb.conjugate();
+    for corner in obb_corners(pa, ra, ha) {
+        let local = inv_rb * (corner - pb);
+        if local.x.abs() <= hb.x + eps
+            && local.y.abs() <= hb.y + eps
+            && local.z.abs() <= hb.z + eps
+        {
+            push_contact(
+                contacts,
+                count,
+                other_idx,
+                other_is_dynamic,
+                corner,
+                normal,
+                best_depth,
+            );
+        }
+    }
+
+    // Collect penetrating corners of B inside A
+    let inv_ra = ra.conjugate();
+    for corner in obb_corners(pb, rb, hb) {
+        let local = inv_ra * (corner - pa);
+        if local.x.abs() <= ha.x + eps
+            && local.y.abs() <= ha.y + eps
+            && local.z.abs() <= ha.z + eps
+        {
+            push_contact(
+                contacts,
+                count,
+                other_idx,
+                other_is_dynamic,
+                corner,
+                normal,
+                best_depth,
+            );
+        }
+    }
+
+    // Edge-edge or exact parallel face contact where neither corner set fell inside:
+    // emit midpoint between A's and B's support faces along `normal`.
+    if *count == start_count {
+        let sup_a = pa
+            - ma * Vec3::new(
+                if ax[0].dot(normal) >= 0.0 { ha.x } else { -ha.x },
+                if ax[1].dot(normal) >= 0.0 { ha.y } else { -ha.y },
+                if ax[2].dot(normal) >= 0.0 { ha.z } else { -ha.z },
+            );
+        let sup_b = pb
+            + mb * Vec3::new(
+                if bx[0].dot(normal) >= 0.0 { hb.x } else { -hb.x },
+                if bx[1].dot(normal) >= 0.0 { hb.y } else { -hb.y },
+                if bx[2].dot(normal) >= 0.0 { hb.z } else { -hb.z },
+            );
+        push_contact(
+            contacts,
+            count,
+            other_idx,
+            other_is_dynamic,
+            (sup_a + sup_b) * 0.5,
+            normal,
+            best_depth,
+        );
     }
 }
 
@@ -2273,5 +2354,63 @@ mod tests {
             phys.step(&mut world, 1.0 / 60.0);
         }
         assert!(world.curr_pos[entity_index(mover)].x > 12.0);
+    }
+
+    #[test]
+    fn test_aligned_stacked_cubes_do_not_pass_through() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let floor = world.spawn();
+        world.set_transform_immediate(floor, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(floor)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(30.0, 0.5, 30.0),
+        });
+
+        // Stacked cubes with identical X, Z and unrotated IDENTITY orientation
+        let bottom = world.spawn();
+        world.set_transform_immediate(bottom, Vec3::new(0.0, 0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(bottom)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::splat(0.5),
+        });
+        world.rigid_bodies[entity_index(bottom)] = Some(RigidBody::default());
+
+        let top = world.spawn();
+        world.set_transform_immediate(top, Vec3::new(0.0, 1.55, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(top)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::splat(0.5),
+        });
+        world.rigid_bodies[entity_index(top)] = Some(RigidBody::default());
+
+        // Horizontal striker cube at identical Y=0.5, Z=0.0
+        let striker = world.spawn();
+        world.set_transform_immediate(striker, Vec3::new(-2.5, 0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(striker)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::splat(0.5),
+        });
+        world.rigid_bodies[entity_index(striker)] = Some(RigidBody::default());
+        world.velocities[entity_index(striker)] = Vec3::new(6.0, 0.0, 0.0);
+
+        for _ in 0..90 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+
+        let bottom_pos = world.curr_pos[entity_index(bottom)];
+        let top_pos = world.curr_pos[entity_index(top)];
+        let striker_pos = world.curr_pos[entity_index(striker)];
+
+        // Cubes must not pass through each other horizontally or vertically
+        assert!(
+            striker_pos.x < bottom_pos.x - 0.85,
+            "striker cube passed through bottom cube! striker={:?}, bottom={:?}",
+            striker_pos,
+            bottom_pos
+        );
+        assert!(
+            top_pos.y > 1.35 || top_pos.distance(bottom_pos) > 0.9,
+            "top cube fell straight through bottom cube! top={:?}, bottom={:?}",
+            top_pos,
+            bottom_pos
+        );
     }
 }
