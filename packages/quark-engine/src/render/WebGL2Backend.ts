@@ -217,6 +217,7 @@ export class WebGL2Backend implements IRenderBackend {
   private bloomFboB: WebGLFramebuffer | null = null;
   private bloomTexB: WebGLTexture | null = null;
   private dummyBlackTex: WebGLTexture;
+  private dummyWhiteTex: WebGLTexture;
 
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext('webgl2', {
@@ -243,6 +244,12 @@ export class WebGL2Backend implements IRenderBackend {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
     gl.bindTexture(gl.TEXTURE_2D, null);
     this.dummyBlackTex = blackTex;
+
+    const whiteTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, whiteTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 255, 255, 255]));
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.dummyWhiteTex = whiteTex;
 
     // Shadow depth FBO
     const sFbo = gl.createFramebuffer()!;
@@ -645,6 +652,14 @@ export class WebGL2Backend implements IRenderBackend {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     calls++;
 
+    // Unbind FBO textures so next frame's FBO attachments never trigger WebGL2 feedback loops
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+
     gl.bindVertexArray(null);
     gl.depthMask(true);
     return calls;
@@ -721,6 +736,10 @@ export class WebGL2Backend implements IRenderBackend {
     mat4Ortho(-halfSize, halfSize, -halfSize, halfSize, 1.0, 90.0, this.lightProjMat);
     mat4LookAt(lightEye, center, [0, 1, 0], this.lightViewMat);
     mat4Multiply(this.lightProjMat, this.lightViewMat, this.lightVpMat);
+
+    // Ensure shadowDepthTex is not bound to any texture unit before attaching shadowFbo
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
     gl.viewport(0, 0, SHADOW_RES, SHADOW_RES);
@@ -860,12 +879,14 @@ export class WebGL2Backend implements IRenderBackend {
       gl.uniform1f(this.uLoc(prog, 'u_gridScale'), u.gridScale);
 
       const tex = desc.textureId ? this.textures.get(desc.textureId) : undefined;
+      gl.activeTexture(gl.TEXTURE0);
       if (tex) {
-        gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
         gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 1);
       } else {
+        gl.bindTexture(gl.TEXTURE_2D, this.dummyWhiteTex);
+        gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
         gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 0);
       }
 
@@ -947,12 +968,14 @@ export class WebGL2Backend implements IRenderBackend {
       }
 
       const tex = texId ? this.textures.get(texId) : undefined;
+      gl.activeTexture(gl.TEXTURE0);
       if (tex) {
-        gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.uniform1i(this.uLoc(this.spriteProgram, 'u_tex'), 0);
         gl.uniform1i(this.uLoc(this.spriteProgram, 'u_hasTexture'), 1);
       } else {
+        gl.bindTexture(gl.TEXTURE_2D, this.dummyWhiteTex);
+        gl.uniform1i(this.uLoc(this.spriteProgram, 'u_tex'), 0);
         gl.uniform1i(this.uLoc(this.spriteProgram, 'u_hasTexture'), 0);
       }
 
@@ -984,6 +1007,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.deleteFramebuffer(this.shadowFbo);
     gl.deleteTexture(this.shadowDepthTex);
     gl.deleteTexture(this.dummyBlackTex);
+    gl.deleteTexture(this.dummyWhiteTex);
     this.disposePostProcessFbos();
     gl.deleteVertexArray(this.skyVao);
     gl.deleteVertexArray(this.spriteVao);
