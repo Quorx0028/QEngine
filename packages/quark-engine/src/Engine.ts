@@ -11,6 +11,7 @@ export interface EngineOptions {
   wasmUrl?: string | URL;
   wasmBytes?: BufferSource;
   fixedDt?: number;
+  maxDpr?: number;
   backend?: IRenderBackend;
 }
 
@@ -32,6 +33,7 @@ export class Engine {
   readonly canvas: HTMLCanvasElement | null;
 
   private fixedDt: number;
+  private readonly maxDpr: number;
   private accumulator = 0;
   private elapsedTime = 0;
   private rafId = 0;
@@ -49,6 +51,7 @@ export class Engine {
   private constructor(bridge: WasmBridge, options: EngineOptions) {
     this.bridge = bridge;
     this.fixedDt = options.fixedDt ?? 1 / 60;
+    this.maxDpr = Math.max(0.5, options.maxDpr ?? 1.5);
     this.bridge.setFixedDt(this.fixedDt);
     this.scene = new Scene(bridge);
     this.input = new Input();
@@ -103,7 +106,7 @@ export class Engine {
 
   syncCanvasSize(): void {
     if (!this.canvas || typeof window === 'undefined') return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
     const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) {

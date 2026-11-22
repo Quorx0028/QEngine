@@ -285,30 +285,13 @@ float valueNoise3(vec3 p) {
 
   if (has('microDetail')) {
     blockSnippets.push(`
-float fbmMicro(vec3 p) {
-  float v = 0.0;
-  float a = 0.5;
-  for (int i = 0; i < 3; i++) {
-    v += a * valueNoise3(p);
-    p *= 2.07;
-    a *= 0.5;
-  }
-  return v;
-}
-void applyMicroDetail(vec3 wp, inout vec3 n, inout vec3 albedo, inout float roughness) {
-  vec3 p = wp * 3.5;
-  float n0 = fbmMicro(p);
-  float nx = fbmMicro(p + vec3(0.04, 0.0, 0.0));
-  float ny = fbmMicro(p + vec3(0.0, 0.04, 0.0));
-  float nz = fbmMicro(p + vec3(0.0, 0.0, 0.04));
-  vec3 grad = (vec3(nx, ny, nz) - n0) / 0.04;
-  // Project gradient onto surface tangent plane so flat faces get true crisp bump relief
-  vec3 tangGrad = grad - n * dot(grad, n);
-  n = normalize(n - tangGrad * 0.22);
-  float grain = valueNoise3(wp * 24.0);
-  float wear = smoothstep(0.35, 0.72, n0);
-  albedo *= mix(0.78, 1.14, n0 * 0.75 + grain * 0.25);
-  roughness = clamp(mix(roughness * 0.65, min(0.95, roughness + 0.35), wear), 0.06, 0.96);
+void applyMicroDetail(vec3 wp, vec3 camPos, inout float roughness) {
+  float dist = length(camPos - wp);
+  float fade = smoothstep(24.0, 4.0, dist);
+  if (fade <= 0.01) return;
+  float macro = valueNoise3(wp * 0.65);
+  float wear = smoothstep(0.32, 0.72, macro);
+  roughness = clamp(mix(roughness, mix(roughness * 0.82, min(0.92, roughness + 0.14), wear), fade), 0.06, 0.96);
 }
 `);
   }
@@ -437,15 +420,14 @@ float evalShadowMap(sampler2D smap, vec4 sc, vec3 n, vec3 l) {
     return 1.0;
   }
   float bias = max(0.003 * (1.0 - max(dot(n, l), 0.0)), 0.0008);
-  vec2 texelSize = 1.0 / vec2(textureSize(smap, 0));
-  float sum = 0.0;
-  for (int x = -1; x <= 1; x++) {
-    for (int y = -1; y <= 1; y++) {
-      float depth = texture(smap, proj.xy + vec2(x, y) * texelSize).r;
-      sum += (proj.z - bias <= depth) ? 1.0 : 0.0;
-    }
-  }
-  return sum / 9.0;
+  vec2 ts = 1.0 / vec2(textureSize(smap, 0));
+  float z = proj.z - bias;
+  float sum = (z <= texture(smap, proj.xy).r) ? 1.0 : 0.0;
+  sum += (z <= texture(smap, proj.xy + vec2(-ts.x, -ts.y)).r) ? 1.0 : 0.0;
+  sum += (z <= texture(smap, proj.xy + vec2( ts.x, -ts.y)).r) ? 1.0 : 0.0;
+  sum += (z <= texture(smap, proj.xy + vec2(-ts.x,  ts.y)).r) ? 1.0 : 0.0;
+  sum += (z <= texture(smap, proj.xy + vec2( ts.x,  ts.y)).r) ? 1.0 : 0.0;
+  return sum * 0.2;
 }
 
 float evalShadow(vec4 sc, vec3 n, vec3 l) {
@@ -539,7 +521,7 @@ void main() {
     matRoughness *= mr.g;
     matMetallic *= mr.b;
   }
-  ${has('microDetail') ? 'applyMicroDetail(v_worldPos, n, albedo, matRoughness);' : ''}
+  ${has('microDetail') ? 'applyMicroDetail(v_worldPos, u_cameraPos, matRoughness);' : ''}
   float shadowFactor = evalShadow(v_shadowCoord, n, l);
 
   vec3 color;

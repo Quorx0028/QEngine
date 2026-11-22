@@ -390,17 +390,17 @@ async function bootstrap() {
       scene.setMesh3D(stepE, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.5 });
     }
 
-    // Swinging HingeJoint physics door (walk into it or shoot with LMB/F!)
+    // Swinging HingeJoint physics door tucked cleanly on the right side
     const doorPost = scene.createEntity();
-    scene.setTransform(doorPost, { position: [6.0, 1.4, 2.0], scale: [0.35, 2.8, 0.35], immediate: true });
+    scene.setTransform(doorPost, { position: [10.0, 1.4, -2.0], scale: [0.35, 2.8, 0.35], immediate: true });
     scene.setCollider3D(doorPost, { kind: 'aabb', halfExtents: [0.175, 1.4, 0.175] });
     scene.setMesh3D(doorPost, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
 
     const swingDoor = scene.createEntity();
-    scene.setTransform(swingDoor, { position: [7.15, 1.4, 2.0], scale: [1.8, 2.4, 0.18], immediate: true });
+    scene.setTransform(swingDoor, { position: [11.15, 1.4, -2.0], scale: [1.8, 2.4, 0.18], immediate: true });
     scene.setCollider3D(swingDoor, { kind: 'aabb', halfExtents: [0.9, 1.2, 0.09] });
     scene.setRigidBody(swingDoor, { dynamic: true, gravityScale: 0, mass: 2.5, angularDamping: 0.85, linearDamping: 0.5 });
-    scene.setMesh3D(swingDoor, { meshId: boxMesh.meshId, materialId: rampMat, boundsRadius: 2.0 });
+    scene.setMesh3D(swingDoor, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
     scene.addHingeJoint(doorPost, swingDoor, {
       anchorA: [0.22, 0, 0],
       anchorB: [-0.95, 0, 0],

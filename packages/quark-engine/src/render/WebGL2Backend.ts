@@ -61,7 +61,7 @@ interface StoredMaterial {
   program: GpuProgram;
 }
 
-const SHADOW_RES = 2048;
+const SHADOW_RES = 1536;
 const SPOT_SHADOW_RES = 1024;
 
 const SHADOW_VERT = `#version 300 es
