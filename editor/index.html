@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QuarkEngine Studio Editor</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="studio-shell">
+      <header class="topbar" id="topbar">
+        <div class="brand">
+          <span class="dot"></span>
+          <b>QuarkStudio</b>
+          <input id="inp-scene-name" class="scene-name" value="Untitled Scene" />
+        </div>
+
+        <div class="tool-group">
+          <button id="btn-gizmo-move" class="active" title="Move (W)">Move (W)</button>
+          <button id="btn-gizmo-rotate" title="Rotate (E)">Rotate (E)</button>
+          <button id="btn-gizmo-scale" title="Scale (R)">Scale (R)</button>
+        </div>
+
+        <div class="tool-group">
+          <button id="btn-add-box">+ Box</button>
+          <button id="btn-add-sphere">+ Sphere</button>
+          <button id="btn-add-ramp">+ Ramp</button>
+          <button id="btn-add-point">+ PointLight</button>
+          <button id="btn-add-spot">+ SpotLight</button>
+          <button id="btn-import-glb">+ .GLB</button>
+          <input id="file-glb" type="file" accept=".glb,.gltf" hidden />
+        </div>
+
+        <div class="tool-group">
+          <button id="btn-play-test" class="btn-play">▶ Play</button>
+          <button id="btn-stop-test">⏹ Stop</button>
+        </div>
+
+        <div class="tool-group right-actions">
+          <button id="btn-save-json">💾 Save JSON</button>
+          <button id="btn-load-json">📂 Load JSON</button>
+          <input id="file-json" type="file" accept=".json" hidden />
+          <button id="btn-launch-browser" class="btn-launch">🚀 Launch in Browser</button>
+        </div>
+      </header>
+
+      <aside class="panel left-panel" id="left-panel">
+        <div class="panel-header">
+          <span>Hierarchy</span>
+          <div class="mini-actions">
+            <button id="btn-dup-obj" title="Duplicate (Cmd/Ctrl+D)">Dup</button>
+            <button id="btn-del-obj" title="Delete">Del</button>
+          </div>
+        </div>
+        <div id="hierarchy-list" class="scroll-list"></div>
+
+        <div class="panel-header">Environment</div>
+        <div class="inspector-section" id="env-section">
+          <label>PostProcess
+            <select id="env-pp"></select>
+          </label>
+          <label class="inline"><input type="checkbox" id="env-shadows" checked /> Shadows</label>
+          <label>Fog Density <input type="range" id="env-fog" min="0" max="0.06" step="0.002" /></label>
+          <label>Sun Intensity <input type="range" id="env-sun" min="0" max="3" step="0.05" /></label>
+        </div>
+      </aside>
+
+      <main class="viewport-wrap" id="viewport-wrap">
+        <canvas id="gl-canvas"></canvas>
+        <canvas id="gizmo-canvas"></canvas>
+        <div id="viewport-hud" class="viewport-hud">
+          Edit: Left-click select · Drag X/Y/Z axis · Right-drag look + WASD fly · Scroll zoom · Drop .glb
+        </div>
+        <div id="player-hud" class="player-hud" style="display: none;">
+          <b>QuarkEngine Player</b> · WASD Move · Space Jump · Shift Sprint · Click to lock mouse
+          <button id="btn-back-editor" style="margin-left:10px;">Back to Editor UI</button>
+        </div>
+      </main>
+
+      <aside class="panel right-panel" id="right-panel">
+        <div class="panel-header">Inspector</div>
+        <div id="inspector-body" class="scroll-body"></div>
+      </aside>
+
+      <footer class="timeline-dock" id="timeline-dock">
+        <div class="timeline-controls">
+          <button id="btn-anim-play">▶ Anim</button>
+          <button id="btn-add-kf">+ Keyframe (K)</button>
+          <button id="btn-del-kf">Del Keyframe</button>
+          <span id="lbl-anim-time" class="mono">0.00s</span>
+          <label class="inline">Duration <input id="inp-anim-dur" type="number" min="0.5" max="60" step="0.5" value="4" style="width:54px;" /></label>
+          <label class="inline"><input id="chk-anim-loop" type="checkbox" checked /> Loop</label>
+        </div>
+        <div class="timeline-track-wrap">
+          <input id="rng-anim-time" type="range" min="0" max="4" step="0.02" value="0" />
+          <div id="kf-markers" class="kf-markers"></div>
+        </div>
+      </footer>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

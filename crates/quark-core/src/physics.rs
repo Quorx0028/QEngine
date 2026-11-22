@@ -674,7 +674,11 @@ impl PhysicsWorld {
             if !layers_match(Some(rb_a), rb_b) {
                 continue;
             }
+            let stat_handle = make_handle(world, stat_idx);
             let is_trigger_pair = rb_a.is_trigger || rb_b.map_or(false, |r| r.is_trigger);
+            if !is_trigger_pair && self.joints.has_pair(handle_a, stat_handle) {
+                continue;
+            }
             if is_trigger_pair {
                 let mut tmp = [ContactPoint {
                     point: Vec3::ZERO,
@@ -964,6 +968,9 @@ impl PhysicsWorld {
                 continue;
             };
             if !layers_match(Some(rb_a), Some(rb_b)) {
+                continue;
+            }
+            if self.joints.has_pair(make_handle(world, a), make_handle(world, b)) {
                 continue;
             }
             let pos_a = world.curr_pos[a];

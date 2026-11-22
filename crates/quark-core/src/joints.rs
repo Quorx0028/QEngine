@@ -156,6 +156,20 @@ impl JointSolver {
         self.joints.len() != before
     }
 
+    pub fn has_pair(&self, e1: EntityHandle, e2: EntityHandle) -> bool {
+        if e1 == INVALID_ENTITY || e2 == INVALID_ENTITY {
+            return false;
+        }
+        self.joints.iter().any(|j| {
+            let (a, b) = match &j.kind {
+                JointKind::Distance { entity_a, entity_b, .. }
+                | JointKind::Spring { entity_a, entity_b, .. }
+                | JointKind::Hinge { entity_a, entity_b, .. } => (*entity_a, *entity_b),
+            };
+            (a == e1 && b == e2) || (a == e2 && b == e1)
+        })
+    }
+
     pub fn retain_alive(&mut self, world: &World) {
         self.joints.retain(|j| {
             let (a, b) = match &j.kind {

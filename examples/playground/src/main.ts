@@ -397,16 +397,16 @@ async function bootstrap() {
     scene.setMesh3D(doorPost, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
 
     const swingDoor = scene.createEntity();
-    scene.setTransform(swingDoor, { position: [11.15, 1.4, -2.0], scale: [1.8, 2.4, 0.18], immediate: true });
-    scene.setCollider3D(swingDoor, { kind: 'aabb', halfExtents: [0.9, 1.2, 0.09] });
+    scene.setTransform(swingDoor, { position: [11.2, 1.4, -2.0], scale: [1.8, 2.4, 0.16], immediate: true });
+    scene.setCollider3D(swingDoor, { kind: 'aabb', halfExtents: [0.9, 1.2, 0.08] });
     scene.setRigidBody(swingDoor, { dynamic: true, gravityScale: 0, mass: 2.5, angularDamping: 0.85, linearDamping: 0.5 });
     scene.setMesh3D(swingDoor, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
     scene.addHingeJoint(doorPost, swingDoor, {
-      anchorA: [0.22, 0, 0],
-      anchorB: [-0.95, 0, 0],
+      anchorA: [0.24, 0, 0],
+      anchorB: [-0.96, 0, 0],
       axis: [0, 1, 0],
-      minAngle: -1.45,
-      maxAngle: 1.45,
+      minAngle: -1.48,
+      maxAngle: 1.48,
     });
 
     // Glowing Hologram Jump-Pad Trigger Zone (uses Milestone 1 WASM TriggerEnter event!)
