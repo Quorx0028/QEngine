@@ -193,9 +193,14 @@ export class SceneRuntimeBuilder {
         );
       }
 
-      if (!(playMode && obj.lightKind !== 'none' && obj.meshKind === 'lightMarker')) {
+      const hideInPlay =
+        playMode &&
+        ((obj.lightKind !== 'none' && obj.meshKind === 'lightMarker') ||
+          obj.physics.isCharacterController);
+
+      if (!hideInPlay) {
         scene.setMesh3D(entity, {
-          meshId: obj.meshKind === 'glb' ? meshHandle.meshId : meshHandle.meshId,
+          meshId: meshHandle.meshId,
           materialId: obj.meshKind === 'glb' ? (meshHandle.materialIds[0] ?? matId) : matId,
           transparent: obj.material.transparent || isMarker,
           boundsRadius:
@@ -204,7 +209,19 @@ export class SceneRuntimeBuilder {
       }
 
       if (playMode && obj.physics.enabled && obj.physics.colliderKind !== 'none') {
-        if (obj.physics.colliderKind === 'sphere') {
+        if (obj.meshKind === 'plane' && !obj.physics.dynamic) {
+          // Keep visual plane at obj.position.y while placing solid collider top flush at obj.position.y
+          const floorCol = scene.createEntity();
+          scene.setTransform(floorCol, {
+            position: [obj.position[0], obj.position[1] - 0.5, obj.position[2]],
+            rotation: rot,
+            immediate: true,
+          });
+          scene.setCollider3D(floorCol, {
+            kind: 'aabb',
+            halfExtents: [obj.scale[0] * 0.5, 0.5, obj.scale[2] * 0.5],
+          });
+        } else if (obj.physics.colliderKind === 'sphere') {
           scene.setCollider3D(entity, { kind: 'sphere', radius: Math.max(...obj.scale) * 0.5 });
         } else if (obj.physics.colliderKind === 'capsule') {
           scene.setCollider3D(entity, {
@@ -213,10 +230,9 @@ export class SceneRuntimeBuilder {
             halfHeight: Math.max(0.2, obj.scale[1] * 0.35),
           });
         } else {
-          const hy = obj.meshKind === 'plane' ? 0.25 : Math.max(0.05, obj.scale[1] * 0.5);
           scene.setCollider3D(entity, {
             kind: 'aabb',
-            halfExtents: [obj.scale[0] * 0.5, hy, obj.scale[2] * 0.5],
+            halfExtents: [obj.scale[0] * 0.5, Math.max(0.05, obj.scale[1] * 0.5), obj.scale[2] * 0.5],
           });
         }
 
