@@ -54,7 +54,7 @@ precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
 layout(location = 2) in vec2 a_uv;
-layout(location = 4) in uvec4 a_joints;
+layout(location = 4) in vec4 a_joints;
 layout(location = 5) in vec4 a_weights;
 layout(location = 6) in vec4 a_instMat0;
 layout(location = 7) in vec4 a_instMat1;
@@ -87,10 +87,10 @@ void main() {
     float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
     if (wSum > 0.0001) {
       mat4 skinMat =
-        a_weights.x * u_boneMatrices[min(a_joints.x, 63u)] +
-        a_weights.y * u_boneMatrices[min(a_joints.y, 63u)] +
-        a_weights.z * u_boneMatrices[min(a_joints.z, 63u)] +
-        a_weights.w * u_boneMatrices[min(a_joints.w, 63u)];
+        a_weights.x * u_boneMatrices[clamp(int(a_joints.x + 0.5), 0, 63)] +
+        a_weights.y * u_boneMatrices[clamp(int(a_joints.y + 0.5), 0, 63)] +
+        a_weights.z * u_boneMatrices[clamp(int(a_joints.z + 0.5), 0, 63)] +
+        a_weights.w * u_boneMatrices[clamp(int(a_joints.w + 0.5), 0, 63)];
       localPos = (skinMat * vec4(localPos, 1.0)).xyz;
       localNormal = normalize(mat3(skinMat) * localNormal);
     }
@@ -462,8 +462,9 @@ vec3 perturbNormal(vec3 n, vec3 wp, vec2 uv, vec3 mapN) {
   vec3 dp1perp = cross(n, dp1);
   vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;
   vec3 b = dp2perp * duv1.y + dp1perp * duv2.y;
-  float invMax = inversesqrt(max(dot(t, t), dot(b, b)));
-  if (isnan(invMax) || isinf(invMax) || invMax > 1e4) return n;
+  float maxLen = max(dot(t, t), dot(b, b));
+  if (maxLen < 1e-12) return n;
+  float invMax = inversesqrt(maxLen);
   mat3 tbn = mat3(t * invMax, b * invMax, n);
   return normalize(tbn * mapN);
 }

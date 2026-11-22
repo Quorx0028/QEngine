@@ -67,7 +67,7 @@ const SPOT_SHADOW_RES = 1024;
 const SHADOW_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
-layout(location = 4) in uvec4 a_joints;
+layout(location = 4) in vec4 a_joints;
 layout(location = 5) in vec4 a_weights;
 layout(location = 6) in vec4 a_instMat0;
 layout(location = 7) in vec4 a_instMat1;
@@ -84,10 +84,10 @@ void main() {
     float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
     if (wSum > 0.0001) {
       mat4 skinMat =
-        a_weights.x * u_boneMatrices[min(a_joints.x, 63u)] +
-        a_weights.y * u_boneMatrices[min(a_joints.y, 63u)] +
-        a_weights.z * u_boneMatrices[min(a_joints.z, 63u)] +
-        a_weights.w * u_boneMatrices[min(a_joints.w, 63u)];
+        a_weights.x * u_boneMatrices[clamp(int(a_joints.x + 0.5), 0, 63)] +
+        a_weights.y * u_boneMatrices[clamp(int(a_joints.y + 0.5), 0, 63)] +
+        a_weights.z * u_boneMatrices[clamp(int(a_joints.z + 0.5), 0, 63)] +
+        a_weights.w * u_boneMatrices[clamp(int(a_joints.w + 0.5), 0, 63)];
       localPos = (skinMat * vec4(localPos, 1.0)).xyz;
     }
   }
@@ -143,7 +143,7 @@ const OUTLINE_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 3) in vec3 a_smoothNormal;
-layout(location = 4) in uvec4 a_joints;
+layout(location = 4) in vec4 a_joints;
 layout(location = 5) in vec4 a_weights;
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
@@ -157,10 +157,10 @@ void main() {
     float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
     if (wSum > 0.0001) {
       mat4 skinMat =
-        a_weights.x * u_boneMatrices[min(a_joints.x, 63u)] +
-        a_weights.y * u_boneMatrices[min(a_joints.y, 63u)] +
-        a_weights.z * u_boneMatrices[min(a_joints.z, 63u)] +
-        a_weights.w * u_boneMatrices[min(a_joints.w, 63u)];
+        a_weights.x * u_boneMatrices[clamp(int(a_joints.x + 0.5), 0, 63)] +
+        a_weights.y * u_boneMatrices[clamp(int(a_joints.y + 0.5), 0, 63)] +
+        a_weights.z * u_boneMatrices[clamp(int(a_joints.z + 0.5), 0, 63)] +
+        a_weights.w * u_boneMatrices[clamp(int(a_joints.w + 0.5), 0, 63)];
       pos = (skinMat * vec4(pos, 1.0)).xyz;
       nrm = normalize(mat3(skinMat) * nrm);
     }
@@ -358,6 +358,9 @@ export class WebGL2Backend implements IRenderBackend {
     this.spotShadowDepthTex = spotDepth.tex;
 
     this.instVbo = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, this.instScratch, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
     this.skyVao = gl.createVertexArray()!;
 
     const vao = gl.createVertexArray()!;
@@ -402,6 +405,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
     gl.drawBuffers([gl.NONE]);
     gl.readBuffer(gl.NONE);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.bindTexture(gl.TEXTURE_2D, null);
     return { fbo, tex };
@@ -483,7 +487,7 @@ export class WebGL2Backend implements IRenderBackend {
       gl.bindBuffer(gl.ARRAY_BUFFER, jointsVbo);
       gl.bufferData(gl.ARRAY_BUFFER, geom.joints, gl.STATIC_DRAW);
       gl.enableVertexAttribArray(4);
-      gl.vertexAttribIPointer(4, 4, gl.UNSIGNED_SHORT, 8, 0);
+      gl.vertexAttribPointer(4, 4, gl.UNSIGNED_SHORT, false, 8, 0);
 
       weightsVbo = gl.createBuffer()!;
       gl.bindBuffer(gl.ARRAY_BUFFER, weightsVbo);

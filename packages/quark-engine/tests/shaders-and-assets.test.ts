@@ -205,7 +205,7 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
 
   it('includes GPU skinning uniforms and bone attributes in composed vertex shader', () => {
     const { vertexSource } = composeShader({ blocks: ['pbrLighting'] });
-    expect(vertexSource).toContain('layout(location = 4) in uvec4 a_joints;');
+    expect(vertexSource).toContain('layout(location = 4) in vec4 a_joints;');
     expect(vertexSource).toContain('layout(location = 5) in vec4 a_weights;');
     expect(vertexSource).toContain('uniform int u_skinned;');
     expect(vertexSource).toContain('uniform mat4 u_boneMatrices[64];');
