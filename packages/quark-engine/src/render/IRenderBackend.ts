@@ -21,10 +21,22 @@ export type ShaderBlockId =
   | 'envIBL'
   | 'microDetail';
 
+export interface MeshSubmesh {
+  indexOffset: number;
+  indexCount: number;
+  materialId?: number;
+}
+
 export interface MeshGeometry {
   /** Interleaved floats: [px, py, pz, nx, ny, nz, u, v] (8 floats per vertex) */
   vertices: Float32Array;
   indices: Uint32Array;
+  /** Optional packed 4 joint indices per vertex (Uint16Array, length = 4 * vertexCount) */
+  joints?: Uint16Array;
+  /** Optional packed 4 bone weights per vertex (Float32Array, length = 4 * vertexCount) */
+  weights?: Float32Array;
+  /** Optional multi-material submesh draw ranges */
+  submeshes?: MeshSubmesh[];
 }
 
 export interface MaterialUniforms {

@@ -1,7 +1,7 @@
 import { mat4LookAt, mat4Multiply, mat4Ortho, type Vec3Tuple } from '../math/Mat4';
 import type { Scene } from '../Scene';
 import type { WasmBridge } from '../wasm/WasmBridge';
-import type { IRenderBackend, MaterialDesc, MeshGeometry } from './IRenderBackend';
+import type { IRenderBackend, MaterialDesc, MeshGeometry, MeshSubmesh } from './IRenderBackend';
 import { composePostProcessShader, isPostProcessActive, type PostProcessConfig } from './PostProcess';
 import { composeShader } from './ShaderBlocks';
 
@@ -9,8 +9,12 @@ interface GpuMesh {
   vao: WebGLVertexArrayObject;
   vbo: WebGLBuffer;
   smoothVbo: WebGLBuffer;
+  jointsVbo?: WebGLBuffer;
+  weightsVbo?: WebGLBuffer;
   ibo: WebGLBuffer;
   indexCount: number;
+  hasSkinning: boolean;
+  submeshes?: MeshSubmesh[];
 }
 
 /** Averages face normals at shared positions so inverted-hull outlines never split at hard edges. */
@@ -62,10 +66,26 @@ const SHADOW_RES = 2048;
 const SHADOW_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
+layout(location = 4) in uvec4 a_joints;
+layout(location = 5) in vec4 a_weights;
 uniform mat4 u_model;
 uniform mat4 u_lightViewProj;
+uniform int u_skinned;
+uniform mat4 u_boneMatrices[64];
 void main() {
-  gl_Position = u_lightViewProj * u_model * vec4(a_position, 1.0);
+  vec3 localPos = a_position;
+  if (u_skinned == 1) {
+    float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
+    if (wSum > 0.0001) {
+      mat4 skinMat =
+        a_weights.x * u_boneMatrices[min(a_joints.x, 63u)] +
+        a_weights.y * u_boneMatrices[min(a_joints.y, 63u)] +
+        a_weights.z * u_boneMatrices[min(a_joints.z, 63u)] +
+        a_weights.w * u_boneMatrices[min(a_joints.w, 63u)];
+      localPos = (skinMat * vec4(localPos, 1.0)).xyz;
+    }
+  }
+  gl_Position = u_lightViewProj * u_model * vec4(localPos, 1.0);
 }
 `;
 
@@ -116,11 +136,29 @@ const OUTLINE_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 3) in vec3 a_smoothNormal;
+layout(location = 4) in uvec4 a_joints;
+layout(location = 5) in vec4 a_weights;
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
 uniform float u_outlineWidth;
+uniform int u_skinned;
+uniform mat4 u_boneMatrices[64];
 void main() {
-  vec4 world = u_model * vec4(a_position + a_smoothNormal * u_outlineWidth, 1.0);
+  vec3 pos = a_position;
+  vec3 nrm = a_smoothNormal;
+  if (u_skinned == 1) {
+    float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
+    if (wSum > 0.0001) {
+      mat4 skinMat =
+        a_weights.x * u_boneMatrices[min(a_joints.x, 63u)] +
+        a_weights.y * u_boneMatrices[min(a_joints.y, 63u)] +
+        a_weights.z * u_boneMatrices[min(a_joints.z, 63u)] +
+        a_weights.w * u_boneMatrices[min(a_joints.w, 63u)];
+      pos = (skinMat * vec4(pos, 1.0)).xyz;
+      nrm = normalize(mat3(skinMat) * nrm);
+    }
+  }
+  vec4 world = u_model * vec4(pos + nrm * u_outlineWidth, 1.0);
   gl_Position = u_viewProj * world;
 }
 `;
@@ -376,12 +414,41 @@ export class WebGL2Backend implements IRenderBackend {
     gl.enableVertexAttribArray(3);
     gl.vertexAttribPointer(3, 3, gl.FLOAT, false, 12, 0);
 
+    const vCount = Math.floor(geom.vertices.length / 8);
+    let jointsVbo: WebGLBuffer | undefined;
+    let weightsVbo: WebGLBuffer | undefined;
+    let hasSkinning = false;
+    if (geom.joints && geom.weights && geom.joints.length >= vCount * 4 && geom.weights.length >= vCount * 4) {
+      jointsVbo = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, jointsVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, geom.joints, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribIPointer(4, 4, gl.UNSIGNED_SHORT, 8, 0);
+
+      weightsVbo = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, weightsVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, geom.weights, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(5);
+      gl.vertexAttribPointer(5, 4, gl.FLOAT, false, 16, 0);
+      hasSkinning = true;
+    }
+
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geom.indices, gl.STATIC_DRAW);
     gl.bindVertexArray(null);
 
     const id = this.nextMeshId++;
-    this.meshes.set(id, { vao, vbo, smoothVbo, ibo, indexCount: geom.indices.length });
+    this.meshes.set(id, {
+      vao,
+      vbo,
+      smoothVbo,
+      jointsVbo,
+      weightsVbo,
+      ibo,
+      indexCount: geom.indices.length,
+      hasSkinning,
+      submeshes: geom.submeshes,
+    });
     return id;
   }
 
@@ -391,6 +458,8 @@ export class WebGL2Backend implements IRenderBackend {
     this.gl.deleteVertexArray(mesh.vao);
     this.gl.deleteBuffer(mesh.vbo);
     this.gl.deleteBuffer(mesh.smoothVbo);
+    if (mesh.jointsVbo) this.gl.deleteBuffer(mesh.jointsVbo);
+    if (mesh.weightsVbo) this.gl.deleteBuffer(mesh.weightsVbo);
     this.gl.deleteBuffer(mesh.ibo);
     this.meshes.delete(meshId);
   }
@@ -752,6 +821,8 @@ export class WebGL2Backend implements IRenderBackend {
 
     gl.useProgram(this.shadowProgram.program);
     gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_lightViewProj'), false, this.lightVpMat);
+    const paletteOffsets = bridge.getPaletteOffsetsView();
+    const bonePalettes = bridge.getBonePalettesView();
 
     let drawCalls = 0;
     for (let i = 0; i < cmds.length; i += 4) {
@@ -766,6 +837,7 @@ export class WebGL2Backend implements IRenderBackend {
       if (matOffset + 16 > matrices.length) continue;
       this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
       gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_model'), false, this.modelScratch);
+      this.uploadSkinningUniforms(this.shadowProgram, mesh, slot, paletteOffsets, bonePalettes);
       gl.bindVertexArray(mesh.vao);
       gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
       drawCalls++;
@@ -774,6 +846,88 @@ export class WebGL2Backend implements IRenderBackend {
     gl.bindVertexArray(null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return drawCalls;
+  }
+
+  private uploadSkinningUniforms(
+    prog: GpuProgram,
+    mesh: GpuMesh,
+    slot: number,
+    paletteOffsets: Int32Array,
+    bonePalettes: Float32Array
+  ): void {
+    const gl = this.gl;
+    const pOff = slot < paletteOffsets.length ? paletteOffsets[slot] : -1;
+    if (mesh.hasSkinning && pOff >= 0 && pOff + 1024 <= bonePalettes.length) {
+      gl.uniform1i(this.uLoc(prog, 'u_skinned'), 1);
+      gl.uniformMatrix4fv(
+        this.uLoc(prog, 'u_boneMatrices[0]'),
+        false,
+        bonePalettes.subarray(pOff, pOff + 1024)
+      );
+    } else {
+      gl.uniform1i(this.uLoc(prog, 'u_skinned'), 0);
+    }
+  }
+
+  private bindPassGlobals(
+    prog: GpuProgram,
+    scene: Scene,
+    viewProj: Float32Array,
+    timeSec: number,
+    ptCount: number
+  ): void {
+    const gl = this.gl;
+    gl.uniformMatrix4fv(this.uLoc(prog, 'u_viewProj'), false, viewProj);
+    gl.uniformMatrix4fv(this.uLoc(prog, 'u_lightViewProj'), false, this.lightVpMat);
+    gl.uniform3fv(this.uLoc(prog, 'u_cameraPos'), scene.camera.position);
+    gl.uniform1f(this.uLoc(prog, 'u_time'), timeSec);
+    gl.uniform3fv(this.uLoc(prog, 'u_lightDir'), scene.light.direction);
+    gl.uniform3fv(this.uLoc(prog, 'u_lightColor'), scene.light.color);
+    gl.uniform1f(this.uLoc(prog, 'u_lightIntensity'), scene.light.intensity);
+    gl.uniform3fv(this.uLoc(prog, 'u_ambientColor'), scene.light.ambientColor);
+    gl.uniform3fv(this.uLoc(prog, 'u_fogColor'), scene.fogColor);
+    gl.uniform1f(this.uLoc(prog, 'u_fogDensity'), scene.fogDensity);
+    gl.uniform1i(this.uLoc(prog, 'u_shadowsEnabled'), scene.shadowsEnabled ? 1 : 0);
+    gl.uniform1i(this.uLoc(prog, 'u_shadowMap'), 1);
+    gl.uniform1i(this.uLoc(prog, 'u_pointLightCount'), ptCount);
+    if (ptCount > 0) {
+      gl.uniform3fv(this.uLoc(prog, 'u_pointPos[0]'), this.ptPosScratch);
+      gl.uniform3fv(this.uLoc(prog, 'u_pointColor[0]'), this.ptColScratch);
+      gl.uniform1fv(this.uLoc(prog, 'u_pointRadius[0]'), this.ptRadScratch);
+    }
+  }
+
+  private applyMaterialUniforms(prog: GpuProgram, desc: MaterialDesc): void {
+    const gl = this.gl;
+    const u = desc.uniforms;
+    gl.uniformMatrix4fv(this.uLoc(prog, 'u_model'), false, this.modelScratch);
+    gl.uniform4fv(this.uLoc(prog, 'u_baseColor'), u.baseColor);
+    gl.uniform3fv(this.uLoc(prog, 'u_shadowTint'), u.shadowTint);
+    gl.uniform3fv(this.uLoc(prog, 'u_rimColor'), u.rimColor);
+    gl.uniform3fv(this.uLoc(prog, 'u_glowColor'), u.glowColor);
+    gl.uniform3fv(this.uLoc(prog, 'u_edgeColor'), u.edgeColor);
+    gl.uniform1f(this.uLoc(prog, 'u_metallic'), u.metallic);
+    gl.uniform1f(this.uLoc(prog, 'u_roughness'), u.roughness);
+    gl.uniform1f(this.uLoc(prog, 'u_celSteps'), u.celSteps);
+    gl.uniform1f(this.uLoc(prog, 'u_rimPower'), u.rimPower);
+    gl.uniform1f(this.uLoc(prog, 'u_fresnelPower'), u.fresnelPower);
+    gl.uniform1f(this.uLoc(prog, 'u_waveAmp'), u.waveAmp);
+    gl.uniform1f(this.uLoc(prog, 'u_waveFreq'), u.waveFreq);
+    gl.uniform1f(this.uLoc(prog, 'u_dissolve'), u.dissolve);
+    gl.uniform1f(this.uLoc(prog, 'u_ditherStrength'), u.ditherStrength);
+    gl.uniform1f(this.uLoc(prog, 'u_gridScale'), u.gridScale);
+
+    const tex = desc.textureId ? this.textures.get(desc.textureId) : undefined;
+    gl.activeTexture(gl.TEXTURE0);
+    if (tex) {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
+      gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 1);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, this.dummyWhiteTex);
+      gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
+      gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 0);
+    }
   }
 
   private render3DPass(
@@ -786,6 +940,8 @@ export class WebGL2Backend implements IRenderBackend {
     const cmds = bridge.getRender3DView();
     if (cmds.length === 0) return 0;
     const matrices = bridge.getWorldMatricesView();
+    const paletteOffsets = bridge.getPaletteOffsetsView();
+    const bonePalettes = bridge.getBonePalettesView();
 
     // Pack up to 4 point lights
     const ptCount = Math.min(scene.pointLights.length, 4);
@@ -810,105 +966,68 @@ export class WebGL2Backend implements IRenderBackend {
 
     for (let i = 0; i < cmds.length; i += 4) {
       const meshId = cmds[i];
-      const matId = cmds[i + 1];
+      const defaultMatId = cmds[i + 1];
       const slot = cmds[i + 2];
       const mesh = this.meshes.get(meshId);
-      const mat = this.materials.get(matId);
-      if (!mesh || !mat) continue;
+      const defaultMat = this.materials.get(defaultMatId);
+      if (!mesh || !defaultMat) continue;
 
       const matOffset = slot * 16;
       if (matOffset + 16 > matrices.length) continue;
       this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
 
-      const desc = mat.desc;
-      if (desc.transparent) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.depthMask(false);
-      } else {
-        gl.disable(gl.BLEND);
-        gl.depthMask(true);
-      }
-
-      if (desc.doubleSided) {
-        gl.disable(gl.CULL_FACE);
-      } else {
-        gl.enable(gl.CULL_FACE);
-        gl.cullFace(gl.BACK);
-      }
-
-      const prog = mat.program;
-      if (prog !== lastProg) {
-        gl.useProgram(prog.program);
-        lastProg = prog;
-        gl.uniformMatrix4fv(this.uLoc(prog, 'u_viewProj'), false, viewProj);
-        gl.uniformMatrix4fv(this.uLoc(prog, 'u_lightViewProj'), false, this.lightVpMat);
-        gl.uniform3fv(this.uLoc(prog, 'u_cameraPos'), scene.camera.position);
-        gl.uniform1f(this.uLoc(prog, 'u_time'), timeSec);
-        gl.uniform3fv(this.uLoc(prog, 'u_lightDir'), scene.light.direction);
-        gl.uniform3fv(this.uLoc(prog, 'u_lightColor'), scene.light.color);
-        gl.uniform1f(this.uLoc(prog, 'u_lightIntensity'), scene.light.intensity);
-        gl.uniform3fv(this.uLoc(prog, 'u_ambientColor'), scene.light.ambientColor);
-        gl.uniform3fv(this.uLoc(prog, 'u_fogColor'), scene.fogColor);
-        gl.uniform1f(this.uLoc(prog, 'u_fogDensity'), scene.fogDensity);
-        gl.uniform1i(this.uLoc(prog, 'u_shadowsEnabled'), scene.shadowsEnabled ? 1 : 0);
-        gl.uniform1i(this.uLoc(prog, 'u_shadowMap'), 1);
-        gl.uniform1i(this.uLoc(prog, 'u_pointLightCount'), ptCount);
-        if (ptCount > 0) {
-          gl.uniform3fv(this.uLoc(prog, 'u_pointPos[0]'), this.ptPosScratch);
-          gl.uniform3fv(this.uLoc(prog, 'u_pointColor[0]'), this.ptColScratch);
-          gl.uniform1fv(this.uLoc(prog, 'u_pointRadius[0]'), this.ptRadScratch);
-        }
-      }
-
-      const u = desc.uniforms;
-      gl.uniformMatrix4fv(this.uLoc(prog, 'u_model'), false, this.modelScratch);
-      gl.uniform4fv(this.uLoc(prog, 'u_baseColor'), u.baseColor);
-      gl.uniform3fv(this.uLoc(prog, 'u_shadowTint'), u.shadowTint);
-      gl.uniform3fv(this.uLoc(prog, 'u_rimColor'), u.rimColor);
-      gl.uniform3fv(this.uLoc(prog, 'u_glowColor'), u.glowColor);
-      gl.uniform3fv(this.uLoc(prog, 'u_edgeColor'), u.edgeColor);
-      gl.uniform1f(this.uLoc(prog, 'u_metallic'), u.metallic);
-      gl.uniform1f(this.uLoc(prog, 'u_roughness'), u.roughness);
-      gl.uniform1f(this.uLoc(prog, 'u_celSteps'), u.celSteps);
-      gl.uniform1f(this.uLoc(prog, 'u_rimPower'), u.rimPower);
-      gl.uniform1f(this.uLoc(prog, 'u_fresnelPower'), u.fresnelPower);
-      gl.uniform1f(this.uLoc(prog, 'u_waveAmp'), u.waveAmp);
-      gl.uniform1f(this.uLoc(prog, 'u_waveFreq'), u.waveFreq);
-      gl.uniform1f(this.uLoc(prog, 'u_dissolve'), u.dissolve);
-      gl.uniform1f(this.uLoc(prog, 'u_ditherStrength'), u.ditherStrength);
-      gl.uniform1f(this.uLoc(prog, 'u_gridScale'), u.gridScale);
-
-      const tex = desc.textureId ? this.textures.get(desc.textureId) : undefined;
-      gl.activeTexture(gl.TEXTURE0);
-      if (tex) {
-        gl.bindTexture(gl.TEXTURE_2D, tex);
-        gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
-        gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 1);
-      } else {
-        gl.bindTexture(gl.TEXTURE_2D, this.dummyWhiteTex);
-        gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
-        gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 0);
-      }
-
       gl.bindVertexArray(mesh.vao);
-      gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
-      drawCalls++;
+      const submeshes = mesh.submeshes && mesh.submeshes.length > 0
+        ? mesh.submeshes
+        : [{ indexOffset: 0, indexCount: mesh.indexCount, materialId: defaultMatId }];
 
-      if (desc.outlineWidth && desc.outlineWidth > 0 && !desc.transparent) {
-        gl.enable(gl.CULL_FACE);
-        gl.cullFace(gl.FRONT);
-        gl.useProgram(this.outlineProgram.program);
-        gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_viewProj'), false, viewProj);
-        gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_model'), false, this.modelScratch);
-        gl.uniform1f(this.uLoc(this.outlineProgram, 'u_outlineWidth'), desc.outlineWidth);
-        gl.uniform3fv(
-          this.uLoc(this.outlineProgram, 'u_outlineColor'),
-          desc.outlineColor ?? [0.06, 0.05, 0.1]
-        );
-        gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
+      for (const sm of submeshes) {
+        const activeMat = (sm.materialId ? this.materials.get(sm.materialId) : undefined) ?? defaultMat;
+        const desc = activeMat.desc;
+        if (desc.transparent) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthMask(false);
+        } else {
+          gl.disable(gl.BLEND);
+          gl.depthMask(true);
+        }
+
+        if (desc.doubleSided) {
+          gl.disable(gl.CULL_FACE);
+        } else {
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(gl.BACK);
+        }
+
+        const prog = activeMat.program;
+        if (prog !== lastProg) {
+          gl.useProgram(prog.program);
+          lastProg = prog;
+          this.bindPassGlobals(prog, scene, viewProj, timeSec, ptCount);
+        }
+
+        this.applyMaterialUniforms(prog, desc);
+        this.uploadSkinningUniforms(prog, mesh, slot, paletteOffsets, bonePalettes);
+        gl.drawElements(gl.TRIANGLES, sm.indexCount, gl.UNSIGNED_INT, sm.indexOffset * 4);
         drawCalls++;
-        lastProg = null;
+
+        if (desc.outlineWidth && desc.outlineWidth > 0 && !desc.transparent) {
+          gl.enable(gl.CULL_FACE);
+          gl.cullFace(gl.FRONT);
+          gl.useProgram(this.outlineProgram.program);
+          gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_viewProj'), false, viewProj);
+          gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_model'), false, this.modelScratch);
+          gl.uniform1f(this.uLoc(this.outlineProgram, 'u_outlineWidth'), desc.outlineWidth);
+          gl.uniform3fv(
+            this.uLoc(this.outlineProgram, 'u_outlineColor'),
+            desc.outlineColor ?? [0.06, 0.05, 0.1]
+          );
+          this.uploadSkinningUniforms(this.outlineProgram, mesh, slot, paletteOffsets, bonePalettes);
+          gl.drawElements(gl.TRIANGLES, sm.indexCount, gl.UNSIGNED_INT, sm.indexOffset * 4);
+          drawCalls++;
+          lastProg = null;
+        }
       }
     }
 

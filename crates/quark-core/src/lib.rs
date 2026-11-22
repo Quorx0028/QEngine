@@ -1,8 +1,10 @@
+pub mod animation;
 pub mod ecs;
 pub mod gltf_loader;
 pub mod physics;
 pub mod render;
 
+use animation::AnimationSystem;
 use ecs::{
     entity_index, Collider2D, Collider3D, EntityHandle, MeshInstance3D, RigidBody, Sprite2D, World,
 };
@@ -20,6 +22,7 @@ pub struct EngineCore {
     pub world: World,
     pub physics: PhysicsWorld,
     pub render_queue: RenderQueue,
+    pub animations: AnimationSystem,
     pub last_glb: Option<ParsedGlb>,
     pub glb_bounds: [f32; 6],
 }
@@ -30,6 +33,7 @@ impl EngineCore {
             world: World::new(),
             physics: PhysicsWorld::new(PhysicsConfig::default()),
             render_queue: RenderQueue::new(),
+            animations: AnimationSystem::new(),
             last_glb: None,
             glb_bounds: [0.0; 6],
         }
@@ -90,6 +94,7 @@ pub unsafe extern "C" fn core_clear(ptr: *mut EngineCore) {
     let core = &mut *ptr;
     core.world.clear();
     core.physics.clear_static_geometry();
+    core.animations.clear();
     core.render_queue.items_2d.clear();
     core.render_queue.tex_ids_2d.clear();
     core.render_queue.items_3d.clear();
@@ -521,6 +526,12 @@ pub unsafe extern "C" fn core_step(
     let core = &mut *ptr;
     core.physics.clear_events();
     let res = core.physics.step(&mut core.world, frame_dt);
+    let anim_dt = if frame_dt.is_finite() {
+        frame_dt.clamp(0.0, 0.1)
+    } else {
+        0.0
+    };
+    core.animations.step(&core.world, anim_dt);
     core.render_queue.build_2d(&core.world);
     let vp = if view_proj_ptr.is_null() {
         Mat4::IDENTITY
@@ -682,6 +693,202 @@ pub unsafe extern "C" fn core_glb_submeshes_len(ptr: *const EngineCore) -> usize
 #[no_mangle]
 pub unsafe extern "C" fn core_glb_bounds_ptr(ptr: *const EngineCore) -> *const f32 {
     (*ptr).glb_bounds.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_joints_ptr(ptr: *const EngineCore) -> *const u16 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(std::ptr::null(), |g| g.joints.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_joints_len(ptr: *const EngineCore) -> usize {
+    (*ptr).last_glb.as_ref().map_or(0, |g| g.joints.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_weights_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(std::ptr::null(), |g| g.weights.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_weights_len(ptr: *const EngineCore) -> usize {
+    (*ptr).last_glb.as_ref().map_or(0, |g| g.weights.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_image_count(ptr: *const EngineCore) -> usize {
+    (*ptr).last_glb.as_ref().map_or(0, |g| g.images.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_image_ptr(ptr: *const EngineCore, idx: usize) -> *const u8 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .and_then(|g| g.images.get(idx))
+        .map_or(std::ptr::null(), |img| img.bytes.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_image_len(ptr: *const EngineCore, idx: usize) -> usize {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .and_then(|g| g.images.get(idx))
+        .map_or(0, |img| img.bytes.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_image_mime_ptr(ptr: *const EngineCore, idx: usize) -> *const u8 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .and_then(|g| g.images.get(idx))
+        .map_or(std::ptr::null(), |img| img.mime_type.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_image_mime_len(ptr: *const EngineCore, idx: usize) -> usize {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .and_then(|g| g.images.get(idx))
+        .map_or(0, |img| img.mime_type.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_triggers_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(std::ptr::null(), |g| g.trigger_floats.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_triggers_len(ptr: *const EngineCore) -> usize {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(0, |g| g.trigger_floats.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_collider_tris_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(std::ptr::null(), |g| g.collider_triangles.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_collider_tris_len(ptr: *const EngineCore) -> usize {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(0, |g| g.collider_triangles.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_has_skeleton(ptr: *const EngineCore) -> i32 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .map_or(0, |g| if g.skeleton.is_some() { 1 } else { 0 })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_clip_count(ptr: *const EngineCore) -> usize {
+    (*ptr).last_glb.as_ref().map_or(0, |g| g.clips.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_clip_name_ptr(ptr: *const EngineCore, idx: usize) -> *const u8 {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .and_then(|g| g.clips.get(idx))
+        .map_or(std::ptr::null(), |c| c.name.as_ptr())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_clip_name_len(ptr: *const EngineCore, idx: usize) -> usize {
+    (*ptr)
+        .last_glb
+        .as_ref()
+        .and_then(|g| g.clips.get(idx))
+        .map_or(0, |c| c.name.len())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_glb_register_animations(
+    ptr: *mut EngineCore,
+    out_first_clip_id: *mut u32,
+) -> i32 {
+    let core = &mut *ptr;
+    let Some(glb) = core.last_glb.as_ref() else {
+        return -1;
+    };
+    let Some(skel) = glb.skeleton.clone() else {
+        return -1;
+    };
+    let skel_id = core.animations.register_skeleton(skel);
+    let mut first_clip = 0u32;
+    for (i, clip) in glb.clips.iter().cloned().enumerate() {
+        let cid = core.animations.register_clip(skel_id, clip);
+        if i == 0 {
+            first_clip = cid;
+        }
+    }
+    if !out_first_clip_id.is_null() {
+        *out_first_clip_id = first_clip;
+    }
+    skel_id as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_play_animation(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    skeleton_id: u32,
+    clip_id: u32,
+    speed: f32,
+    looping: i32,
+    fade_sec: f32,
+) {
+    (*ptr).animations.play_on_entity(
+        entity,
+        skeleton_id,
+        clip_id,
+        speed,
+        looping != 0,
+        fade_sec,
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_bone_palettes_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr).animations.bone_palettes.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_bone_palettes_len(ptr: *const EngineCore) -> usize {
+    (*ptr).animations.bone_palettes.len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_palette_offsets_ptr(ptr: *const EngineCore) -> *const i32 {
+    (*ptr).animations.entity_palette_offsets.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_palette_offsets_len(ptr: *const EngineCore) -> usize {
+    (*ptr).animations.entity_palette_offsets.len()
 }
 
 #[no_mangle]

@@ -1,13 +1,31 @@
+export interface ParsedGlbSubmesh {
+  indexOffset: number;
+  indexCount: number;
+  baseColor: [number, number, number, number];
+  metallic: number;
+  roughness: number;
+  emissiveFactor: [number, number, number];
+  baseColorTexIndex: number;
+  normalTexIndex: number;
+  metallicRoughnessTexIndex: number;
+  emissiveTexIndex: number;
+  role: number;
+}
+
 export interface ParsedGlbResult {
   vertices: Float32Array;
   indices: Uint32Array;
-  submeshes: Array<{
-    indexOffset: number;
-    indexCount: number;
-    baseColor: [number, number, number, number];
-    metallic: number;
-    roughness: number;
+  joints: Uint16Array;
+  weights: Float32Array;
+  submeshes: ParsedGlbSubmesh[];
+  images: Array<{ mimeType: string; bytes: Uint8Array }>;
+  colliderTriangles: Float32Array;
+  triggerBoxes: Array<{
+    center: [number, number, number];
+    halfExtents: [number, number, number];
   }>;
+  skeletonId: number | null;
+  clips: Array<{ clipId: number; name: string }>;
   boundsMin: [number, number, number];
   boundsMax: [number, number, number];
 }
@@ -148,6 +166,37 @@ interface CoreExports {
   core_glb_submeshes_ptr(ptr: number): number;
   core_glb_submeshes_len(ptr: number): number;
   core_glb_bounds_ptr(ptr: number): number;
+  core_glb_joints_ptr(ptr: number): number;
+  core_glb_joints_len(ptr: number): number;
+  core_glb_weights_ptr(ptr: number): number;
+  core_glb_weights_len(ptr: number): number;
+  core_glb_image_count(ptr: number): number;
+  core_glb_image_ptr(ptr: number, idx: number): number;
+  core_glb_image_len(ptr: number, idx: number): number;
+  core_glb_image_mime_ptr(ptr: number, idx: number): number;
+  core_glb_image_mime_len(ptr: number, idx: number): number;
+  core_glb_triggers_ptr(ptr: number): number;
+  core_glb_triggers_len(ptr: number): number;
+  core_glb_collider_tris_ptr(ptr: number): number;
+  core_glb_collider_tris_len(ptr: number): number;
+  core_glb_has_skeleton(ptr: number): number;
+  core_glb_clip_count(ptr: number): number;
+  core_glb_clip_name_ptr(ptr: number, idx: number): number;
+  core_glb_clip_name_len(ptr: number, idx: number): number;
+  core_glb_register_animations(ptr: number, outFirstClipPtr: number): number;
+  core_play_animation(
+    ptr: number,
+    entity: number,
+    skeletonId: number,
+    clipId: number,
+    speed: number,
+    looping: number,
+    fadeSec: number
+  ): void;
+  core_bone_palettes_ptr(ptr: number): number;
+  core_bone_palettes_len(ptr: number): number;
+  core_palette_offsets_ptr(ptr: number): number;
+  core_palette_offsets_len(ptr: number): number;
   core_glb_clear(ptr: number): void;
 }
 
@@ -156,9 +205,12 @@ export class WasmBridge {
   private corePtr: number;
   private scratchPtr: number;
   private readonly scratchBytes = 64 * 4; // 64 floats scratch (viewProj + vec3 + rayhit)
+  private readonly textDecoder = new TextDecoder();
 
   private f32View: Float32Array;
+  private i32View: Int32Array;
   private u32View: Uint32Array;
+  private u16View: Uint16Array;
   private u8View: Uint8Array;
   private lastBuffer: ArrayBuffer;
 
@@ -174,7 +226,9 @@ export class WasmBridge {
     this.scratchPtr = exports.quark_alloc(this.scratchBytes);
     this.lastBuffer = exports.memory.buffer;
     this.f32View = new Float32Array(this.lastBuffer);
+    this.i32View = new Int32Array(this.lastBuffer);
     this.u32View = new Uint32Array(this.lastBuffer);
+    this.u16View = new Uint16Array(this.lastBuffer);
     this.u8View = new Uint8Array(this.lastBuffer);
   }
 
@@ -201,7 +255,9 @@ export class WasmBridge {
     if (buf !== this.lastBuffer) {
       this.lastBuffer = buf;
       this.f32View = new Float32Array(buf);
+      this.i32View = new Int32Array(buf);
       this.u32View = new Uint32Array(buf);
+      this.u16View = new Uint16Array(buf);
       this.u8View = new Uint8Array(buf);
     }
   }
@@ -519,6 +575,43 @@ export class WasmBridge {
     }
   }
 
+  playAnimation(
+    entity: number,
+    skeletonId: number,
+    clipId: number,
+    speed = 1.0,
+    loop = true,
+    fadeSec = 0.2
+  ): void {
+    this.exports.core_play_animation(
+      this.corePtr,
+      entity,
+      skeletonId,
+      clipId,
+      speed,
+      loop ? 1 : 0,
+      fadeSec
+    );
+  }
+
+  getBonePalettesView(): Float32Array {
+    this.refreshViews();
+    const ptr = this.exports.core_bone_palettes_ptr(this.corePtr);
+    const len = this.exports.core_bone_palettes_len(this.corePtr);
+    if (!ptr || len === 0) return new Float32Array(0);
+    const start = ptr >>> 2;
+    return this.f32View.subarray(start, start + len);
+  }
+
+  getPaletteOffsetsView(): Int32Array {
+    this.refreshViews();
+    const ptr = this.exports.core_palette_offsets_ptr(this.corePtr);
+    const len = this.exports.core_palette_offsets_len(this.corePtr);
+    if (!ptr || len === 0) return new Int32Array(0);
+    const start = ptr >>> 2;
+    return this.i32View.subarray(start, start + len);
+  }
+
   parseGlb(bytes: Uint8Array): ParsedGlbResult {
     const ptr = this.alloc(bytes.byteLength);
     try {
@@ -534,12 +627,19 @@ export class WasmBridge {
       const vLen = this.exports.core_glb_vertices_len(this.corePtr);
       const iPtr = this.exports.core_glb_indices_ptr(this.corePtr);
       const iLen = this.exports.core_glb_indices_len(this.corePtr);
+      const jPtr = this.exports.core_glb_joints_ptr(this.corePtr);
+      const jLen = this.exports.core_glb_joints_len(this.corePtr);
+      const wPtr = this.exports.core_glb_weights_ptr(this.corePtr);
+      const wLen = this.exports.core_glb_weights_len(this.corePtr);
       const sPtr = this.exports.core_glb_submeshes_ptr(this.corePtr);
       const sLen = this.exports.core_glb_submeshes_len(this.corePtr);
       const bPtr = this.exports.core_glb_bounds_ptr(this.corePtr);
 
       const vertices = this.f32View.slice(vPtr >>> 2, (vPtr >>> 2) + vLen);
       const indices = this.u32View.slice(iPtr >>> 2, (iPtr >>> 2) + iLen);
+      const joints = jPtr && jLen > 0 ? this.u16View.slice(jPtr >>> 1, (jPtr >>> 1) + jLen) : new Uint16Array(0);
+      const weights = wPtr && wLen > 0 ? this.f32View.slice(wPtr >>> 2, (wPtr >>> 2) + wLen) : new Float32Array(0);
+
       const subFloats = this.f32View.subarray(sPtr >>> 2, (sPtr >>> 2) + sLen);
       const bOff = bPtr >>> 2;
       const boundsMin: [number, number, number] = [
@@ -553,18 +653,87 @@ export class WasmBridge {
         this.f32View[bOff + 5],
       ];
 
-      const submeshes: ParsedGlbResult['submeshes'] = [];
-      for (let i = 0; i < subFloats.length; i += 8) {
+      const submeshes: ParsedGlbSubmesh[] = [];
+      for (let i = 0; i + 15 < subFloats.length; i += 16) {
         submeshes.push({
           indexOffset: subFloats[i],
           indexCount: subFloats[i + 1],
           baseColor: [subFloats[i + 2], subFloats[i + 3], subFloats[i + 4], subFloats[i + 5]],
           metallic: subFloats[i + 6],
           roughness: subFloats[i + 7],
+          emissiveFactor: [subFloats[i + 8], subFloats[i + 9], subFloats[i + 10]],
+          baseColorTexIndex: Math.round(subFloats[i + 11]),
+          normalTexIndex: Math.round(subFloats[i + 12]),
+          metallicRoughnessTexIndex: Math.round(subFloats[i + 13]),
+          emissiveTexIndex: Math.round(subFloats[i + 14]),
+          role: Math.round(subFloats[i + 15]),
         });
       }
 
-      return { vertices, indices, submeshes, boundsMin, boundsMax };
+      const images: ParsedGlbResult['images'] = [];
+      const imgCount = this.exports.core_glb_image_count(this.corePtr);
+      for (let i = 0; i < imgCount; i++) {
+        const dPtr = this.exports.core_glb_image_ptr(this.corePtr, i);
+        const dLen = this.exports.core_glb_image_len(this.corePtr, i);
+        const mPtr = this.exports.core_glb_image_mime_ptr(this.corePtr, i);
+        const mLen = this.exports.core_glb_image_mime_len(this.corePtr, i);
+        const imgBytes = dPtr && dLen > 0 ? this.u8View.slice(dPtr, dPtr + dLen) : new Uint8Array(0);
+        const mimeType = mPtr && mLen > 0 ? this.textDecoder.decode(this.u8View.subarray(mPtr, mPtr + mLen)) : 'image/png';
+        images.push({ mimeType, bytes: imgBytes });
+      }
+
+      const colPtr = this.exports.core_glb_collider_tris_ptr(this.corePtr);
+      const colLen = this.exports.core_glb_collider_tris_len(this.corePtr);
+      const colliderTriangles =
+        colPtr && colLen > 0 ? this.f32View.slice(colPtr >>> 2, (colPtr >>> 2) + colLen) : new Float32Array(0);
+
+      const trigPtr = this.exports.core_glb_triggers_ptr(this.corePtr);
+      const trigLen = this.exports.core_glb_triggers_len(this.corePtr);
+      const triggerBoxes: ParsedGlbResult['triggerBoxes'] = [];
+      if (trigPtr && trigLen >= 6) {
+        const tf = this.f32View.subarray(trigPtr >>> 2, (trigPtr >>> 2) + trigLen);
+        for (let i = 0; i + 5 < tf.length; i += 6) {
+          triggerBoxes.push({
+            center: [tf[i], tf[i + 1], tf[i + 2]],
+            halfExtents: [tf[i + 3], tf[i + 4], tf[i + 5]],
+          });
+        }
+      }
+
+      let skeletonId: number | null = null;
+      const clips: ParsedGlbResult['clips'] = [];
+      if (this.exports.core_glb_has_skeleton(this.corePtr) !== 0) {
+        const skelRes = this.exports.core_glb_register_animations(this.corePtr, this.scratchPtr);
+        this.refreshViews();
+        if (skelRes >= 0) {
+          skeletonId = skelRes;
+          const firstClipId = this.u32View[this.scratchPtr >>> 2];
+          const clipCount = this.exports.core_glb_clip_count(this.corePtr);
+          for (let i = 0; i < clipCount; i++) {
+            const nPtr = this.exports.core_glb_clip_name_ptr(this.corePtr, i);
+            const nLen = this.exports.core_glb_clip_name_len(this.corePtr, i);
+            const name = nPtr && nLen > 0
+              ? this.textDecoder.decode(this.u8View.subarray(nPtr, nPtr + nLen))
+              : `Clip_${i}`;
+            clips.push({ clipId: firstClipId + i, name });
+          }
+        }
+      }
+
+      return {
+        vertices,
+        indices,
+        joints,
+        weights,
+        submeshes,
+        images,
+        colliderTriangles,
+        triggerBoxes,
+        skeletonId,
+        clips,
+        boundsMin,
+        boundsMax,
+      };
     } finally {
       this.exports.core_glb_clear(this.corePtr);
       this.dealloc(ptr, bytes.byteLength);

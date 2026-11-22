@@ -355,6 +355,22 @@ export class Scene {
     );
   }
 
+  playAnimation(
+    entity: EntityId,
+    skeletonId: number,
+    clipId: number,
+    opts: { speed?: number; loop?: boolean; fadeSec?: number } = {}
+  ): void {
+    this.bridge.playAnimation(
+      entity,
+      skeletonId,
+      clipId,
+      opts.speed ?? 1.0,
+      opts.loop ?? true,
+      opts.fadeSec ?? 0.2
+    );
+  }
+
   raycast3D(origin: Vec3Tuple, dir: Vec3Tuple, maxDist = 100) {
     return this.bridge.raycast3D(origin[0], origin[1], origin[2], dir[0], dir[1], dir[2], maxDist);
   }

@@ -54,6 +54,8 @@ precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
 layout(location = 2) in vec2 a_uv;
+layout(location = 4) in uvec4 a_joints;
+layout(location = 5) in vec4 a_weights;
 
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
@@ -61,6 +63,8 @@ uniform mat4 u_lightViewProj;
 uniform float u_time;
 uniform float u_waveAmp;
 uniform float u_waveFreq;
+uniform int u_skinned;
+uniform mat4 u_boneMatrices[64];
 
 out vec3 v_worldPos;
 out vec3 v_normal;
@@ -71,11 +75,24 @@ ${vertexWaveFn}
 
 void main() {
   vec3 localPos = a_position;
+  vec3 localNormal = a_normal;
+  if (u_skinned == 1) {
+    float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
+    if (wSum > 0.0001) {
+      mat4 skinMat =
+        a_weights.x * u_boneMatrices[min(a_joints.x, 63u)] +
+        a_weights.y * u_boneMatrices[min(a_joints.y, 63u)] +
+        a_weights.z * u_boneMatrices[min(a_joints.z, 63u)] +
+        a_weights.w * u_boneMatrices[min(a_joints.w, 63u)];
+      localPos = (skinMat * vec4(localPos, 1.0)).xyz;
+      localNormal = normalize(mat3(skinMat) * localNormal);
+    }
+  }
   ${has('vertexWave') ? 'localPos = applyVertexWave(localPos, u_time, u_waveAmp, u_waveFreq);' : ''}
   ${config.customVertexSnippet ?? ''}
   vec4 world = u_model * vec4(localPos, 1.0);
   v_worldPos = world.xyz;
-  v_normal = normalize(transpose(inverse(mat3(u_model))) * a_normal);
+  v_normal = normalize(transpose(inverse(mat3(u_model))) * localNormal);
   v_uv = a_uv;
   v_shadowCoord = u_lightViewProj * vec4(world.xyz + v_normal * 0.05, 1.0);
   gl_Position = u_viewProj * world;

@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bytemuck = { version = "1.19", features = ["derive"] }
 glam = { version = "0.29", default-features = false, features = ["libm"] }
-gltf = { version = "1.4", default-features = false, features = ["utils"] }
+gltf = { version = "1.4", default-features = false, features = ["utils", "names"] }
 
 [profile.release]
 opt-level = "z"
