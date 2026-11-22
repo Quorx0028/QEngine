@@ -525,6 +525,106 @@ async function bootstrap() {
     colKindLbl.appendChild(colSel);
     secPhys.appendChild(colKindLbl);
 
+    const physNumInputs: Record<string, HTMLInputElement> = {};
+    const addPhysNum = (
+      key: string,
+      title: string,
+      val: number,
+      min: number,
+      max: number,
+      step: number,
+      onChange: (n: number) => void
+    ) => {
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.min = String(min);
+      inp.max = String(max);
+      inp.step = String(step);
+      inp.value = String(val);
+      inp.oninput = () => {
+        const parsed = Number(inp.value);
+        if (Number.isFinite(parsed)) {
+          onChange(Math.max(min, Math.min(max, parsed)));
+          saveToLocal();
+        }
+      };
+      physNumInputs[key] = inp;
+      const lbl = document.createElement('label');
+      lbl.textContent = title;
+      lbl.appendChild(inp);
+      secPhys.appendChild(lbl);
+    };
+
+    addPhysNum('mass', 'Mass (kg)', obj.physics.mass, 0.05, 500, 0.1, (n) => {
+      obj.physics.mass = n;
+    });
+    addPhysNum('friction', 'Friction', obj.physics.friction, 0, 2, 0.05, (n) => {
+      obj.physics.friction = n;
+    });
+    addPhysNum('restitution', 'Restitution (Bounce)', obj.physics.restitution, 0, 1, 0.05, (n) => {
+      obj.physics.restitution = n;
+    });
+    addPhysNum('gravityScale', 'Gravity Scale', obj.physics.gravityScale, -3, 5, 0.1, (n) => {
+      obj.physics.gravityScale = n;
+    });
+    addPhysNum('linearDamping', 'Linear Damping', obj.physics.linearDamping ?? 0.12, 0, 5, 0.05, (n) => {
+      obj.physics.linearDamping = n;
+    });
+    addPhysNum('angularDamping', 'Angular Damping', obj.physics.angularDamping ?? 0.35, 0, 5, 0.05, (n) => {
+      obj.physics.angularDamping = n;
+    });
+
+    const lockChk = document.createElement('input');
+    lockChk.type = 'checkbox';
+    lockChk.checked = obj.physics.lockRotation;
+    lockChk.onchange = () => {
+      obj.physics.lockRotation = lockChk.checked;
+      saveToLocal();
+    };
+    const lockLbl = document.createElement('label');
+    lockLbl.className = 'inline';
+    lockLbl.append(lockChk, 'Lock Rotation');
+    secPhys.appendChild(lockLbl);
+
+    const trigChk = document.createElement('input');
+    trigChk.type = 'checkbox';
+    trigChk.checked = obj.physics.isTrigger;
+    trigChk.onchange = () => {
+      obj.physics.isTrigger = trigChk.checked;
+      saveToLocal();
+    };
+    const trigLbl = document.createElement('label');
+    trigLbl.className = 'inline';
+    trigLbl.append(trigChk, 'Is Trigger Volume');
+    secPhys.appendChild(trigLbl);
+
+    const presetRow = document.createElement('div');
+    presetRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;';
+    const physPresets: Array<{ label: string; mass: number; friction: number; restitution: number; linearDamping: number }> = [
+      { label: 'Wood 1kg', mass: 1, friction: 0.78, restitution: 0.12, linearDamping: 0.12 },
+      { label: 'Steel 20kg', mass: 20, friction: 0.65, restitution: 0.08, linearDamping: 0.08 },
+      { label: 'Ice', mass: 1, friction: 0.02, restitution: 0.05, linearDamping: 0.02 },
+      { label: 'Rubber', mass: 1.5, friction: 0.9, restitution: 0.85, linearDamping: 0.05 },
+    ];
+    for (const pr of physPresets) {
+      const btn = document.createElement('button');
+      btn.textContent = pr.label;
+      btn.style.fontSize = '11px';
+      btn.onclick = () => {
+        obj.physics.mass = pr.mass;
+        obj.physics.friction = pr.friction;
+        obj.physics.restitution = pr.restitution;
+        obj.physics.linearDamping = pr.linearDamping;
+        physNumInputs.mass.value = String(pr.mass);
+        physNumInputs.friction.value = String(pr.friction);
+        physNumInputs.restitution.value = String(pr.restitution);
+        physNumInputs.linearDamping.value = String(pr.linearDamping);
+        saveToLocal();
+      };
+      presetRow.appendChild(btn);
+    }
+    secPhys.appendChild(presetRow);
+
     inspectorBody.appendChild(secPhys);
   }
 

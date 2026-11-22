@@ -245,12 +245,20 @@ export class SceneRuntimeBuilder {
             friction: obj.physics.friction,
             restitution: obj.physics.restitution,
             gravityScale: obj.physics.gravityScale,
+            linearDamping: obj.physics.linearDamping ?? 0.12,
+            angularDamping: obj.physics.angularDamping ?? 0.35,
             lockRotation: obj.physics.lockRotation || obj.physics.isCharacterController,
           });
           if (obj.physics.isCharacterController) {
             scene.setCharacterController(entity, { stepHeight: 0.48, maxSlopeDeg: 50 });
             this.playerEntity = entity;
           }
+        } else {
+          scene.setRigidBody(entity, {
+            dynamic: false,
+            friction: obj.physics.friction,
+            restitution: obj.physics.restitution,
+          });
         }
       }
 

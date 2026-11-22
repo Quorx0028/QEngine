@@ -18,6 +18,8 @@ export interface EditorPhysicsConfig {
   friction: number;
   restitution: number;
   gravityScale: number;
+  linearDamping?: number;
+  angularDamping?: number;
   lockRotation: boolean;
   colliderKind: EditorColliderKind;
   isTrigger: boolean;
@@ -120,6 +122,8 @@ export function createDefaultObject(
       friction: 0.75,
       restitution: 0.15,
       gravityScale: 1,
+      linearDamping: 0.12,
+      angularDamping: 0.35,
       lockRotation: false,
       colliderKind: meshKind === 'sphere' ? 'sphere' : 'aabb',
       isTrigger: false,

@@ -321,20 +321,43 @@ async function bootstrap() {
     scene.setMesh3D(ramp2, { meshId: rampSteepMesh.meshId, materialId: rampMat, boundsRadius: 6 });
     scene.addStaticMeshTriangles(ramp2, extractColliderTriangles(rampSteepGeom, [-7.5, 0, 2.1]));
 
-    // Stackable physics cube pyramid to knock over
+    // Stackable physics cube pyramid + 4-cube vertical tower (rests cleanly without jitter!)
     const crateRows = [3, 2, 1];
     crateRows.forEach((count, row) => {
       for (let col = 0; col < count; col++) {
-        const x = 3.5 + (col - (count - 1) * 0.5) * 1.15;
-        const y = 0.55 + row * 1.05;
+        const x = 2.6 + (col - (count - 1) * 0.5) * 1.04;
+        const y = 0.501 + row * 1.005;
         const z = -7.5;
         const c = scene.createEntity();
         scene.setTransform(c, { position: [x, y, z], immediate: true });
         scene.setCollider3D(c, { kind: 'aabb', halfExtents: [0.5, 0.5, 0.5] });
-        scene.setRigidBody(c, { dynamic: true, friction: 0.78, restitution: 0.12, lockRotation: false });
+        scene.setRigidBody(c, {
+          dynamic: true,
+          mass: 1.5,
+          friction: 0.78,
+          restitution: 0.12,
+          linearDamping: 0.12,
+          angularDamping: 0.35,
+          lockRotation: false,
+        });
         scene.setMesh3D(c, { meshId: boxMesh.meshId, materialId: propsMatId, boundsRadius: 1.2 });
       }
     });
+    for (let row = 0; row < 4; row++) {
+      const c = scene.createEntity();
+      scene.setTransform(c, { position: [6.0, 0.501 + row * 1.005, -7.5], immediate: true });
+      scene.setCollider3D(c, { kind: 'aabb', halfExtents: [0.5, 0.5, 0.5] });
+      scene.setRigidBody(c, {
+        dynamic: true,
+        mass: row === 0 ? 4.0 : 1.0,
+        friction: 0.8,
+        restitution: 0.08,
+        linearDamping: 0.12,
+        angularDamping: 0.35,
+        lockRotation: false,
+      });
+      scene.setMesh3D(c, { meshId: boxMesh.meshId, materialId: propsMatId, boundsRadius: 1.2 });
+    }
 
     // Showcase row of all 6 built-in presets
     SHADER_PRESET_NAMES.forEach((presetName, idx) => {
@@ -541,6 +564,16 @@ async function bootstrap() {
       vel = [fx * 7.5, 3.2, fz * 7.5];
     }
 
+    const physSel = document.getElementById('sel-phys-mat') as HTMLSelectElement | null;
+    const physPreset = physSel?.value ?? 'wood';
+    const physTable: Record<string, { mass: number; friction: number; restitution: number; linearDamping: number }> = {
+      wood: { mass: 1.0, friction: 0.78, restitution: kind === 'sphere' ? 0.45 : 0.12, linearDamping: 0.1 },
+      steel: { mass: 18.0, friction: 0.65, restitution: 0.08, linearDamping: 0.06 },
+      ice: { mass: 1.0, friction: 0.02, restitution: 0.05, linearDamping: 0.02 },
+      rubber: { mass: 1.5, friction: 0.9, restitution: 0.85, linearDamping: 0.05 },
+    };
+    const phys = physTable[physPreset] ?? physTable.wood;
+
     const e = scene.createEntity();
     scene.setTransform(e, { position: spawnPos, immediate: true });
     if (kind === 'box') {
@@ -550,10 +583,11 @@ async function bootstrap() {
     }
     scene.setRigidBody(e, {
       dynamic: true,
+      mass: phys.mass,
       gravityScale: 1,
-      restitution: kind === 'sphere' ? 0.52 : 0.14,
-      friction: kind === 'sphere' ? 0.42 : 0.78,
-      linearDamping: 0.1,
+      restitution: phys.restitution,
+      friction: phys.friction,
+      linearDamping: phys.linearDamping,
       angularDamping: 0.35,
       lockRotation: false,
     });

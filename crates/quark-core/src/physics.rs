@@ -26,7 +26,7 @@ impl Default for PhysicsConfig {
             max_frame_dt: 0.1,
             gravity: Vec3::new(0.0, -20.0, 0.0),
             max_substeps: 6,
-            solver_iterations: 6,
+            solver_iterations: 16,
         }
     }
 }
@@ -277,11 +277,43 @@ impl StaticTriMesh {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct ContactPoint {
     point: Vec3,
     normal: Vec3,
     depth: f32,
+    other_idx: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ManifoldContact {
+    a: usize,
+    b: usize,
+    is_dynamic_b: bool,
+    normal: Vec3,
+    t1: Vec3,
+    t2: Vec3,
+    depth: f32,
+    init_pos_a: Vec3,
+    init_pos_b: Vec3,
+    ra: Vec3,
+    rb: Vec3,
+    inv_m_a: f32,
+    inv_m_b: f32,
+    inv_i_a: Mat3,
+    inv_i_b: Mat3,
+    eff_mass_n: f32,
+    eff_mass_t1: f32,
+    eff_mass_t2: f32,
+    vel_bias: f32,
+    friction: f32,
+    allow_friction: bool,
+    lock_rot_a: bool,
+    lock_rot_b: bool,
+    acc_n: f32,
+    acc_t1: f32,
+    acc_t2: f32,
+    local_a: Vec3,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -295,6 +327,17 @@ struct OverlapPair {
     a: EntityHandle,
     b: EntityHandle,
     is_trigger: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CachedImpulse {
+    a: usize,
+    b: usize,
+    gen_a: u16,
+    local_a: Vec3,
+    normal: Vec3,
+    acc_n: f32,
+    tang_imp: Vec3,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -321,6 +364,8 @@ pub struct PhysicsWorld {
     dyn_cells: Vec<(u64, usize)>,
     pair_scratch: Vec<(usize, usize)>,
     bvh_scratch: Vec<usize>,
+    manifolds: Vec<ManifoldContact>,
+    prev_impulses: Vec<CachedImpulse>,
 
     prev_overlaps: Vec<OverlapPair>,
     curr_overlaps: Vec<OverlapPair>,
@@ -347,6 +392,8 @@ impl PhysicsWorld {
             dyn_cells: Vec::new(),
             pair_scratch: Vec::new(),
             bvh_scratch: Vec::new(),
+            manifolds: Vec::new(),
+            prev_impulses: Vec::new(),
             prev_overlaps: Vec::new(),
             curr_overlaps: Vec::new(),
             events: Vec::new(),
@@ -381,6 +428,8 @@ impl PhysicsWorld {
         self.ground_support.clear();
         self.prev_overlaps.clear();
         self.curr_overlaps.clear();
+        self.prev_impulses.clear();
+        self.manifolds.clear();
         self.clear_events();
         self.accumulator = 0.0;
     }
@@ -427,8 +476,8 @@ impl PhysicsWorld {
         if !lock_rot {
             if let Some(pt) = world_point {
                 let r = pt - world.curr_pos[idx];
-                let inv_i = collider_inv_inertia(world.colliders_3d[idx], mass);
-                world.angular_velocities[idx] += r.cross(impulse) * inv_i;
+                let inv_i = collider_inv_inertia_world(world.colliders_3d[idx], world.curr_rot[idx], mass);
+                world.angular_velocities[idx] += inv_i * r.cross(impulse);
             }
         }
         true
@@ -476,7 +525,7 @@ impl PhysicsWorld {
         self.joints.retain_alive(world);
         self.joints.apply_springs(world, dt);
 
-        // Wake riders whose supporting platform moved
+        // Wake riders whose supporting platform moved or disappeared
         for i in 0..count {
             if !world.alive[i] {
                 self.ground_support[i] = None;
@@ -492,6 +541,10 @@ impl PhysicsWorld {
                     }
                 } else {
                     self.ground_support[i] = None;
+                    if let Some(rb) = &mut world.rigid_bodies[i] {
+                        rb.sleeping = false;
+                        rb.sleep_timer = 0.0;
+                    }
                 }
             }
         }
@@ -551,22 +604,26 @@ impl PhysicsWorld {
         self.static_meshes
             .retain(|m| m.entity == INVALID_ENTITY || world.is_alive(m.entity));
 
-        // Build spatial hash candidate pairs for dynamic 3D bodies once per fixed tick.
+        // 1. Broadphase & one-shot 3D contact manifold generation + warm start
         self.build_dynamic_pairs(world);
+        self.gather_3d_manifolds(world);
+        self.warm_start_manifolds(world);
 
+        // 2. Sequential Impulse (Symmetric PGS) velocity solver with clamped accumulated Coulomb friction
         for iter in 0..self.config.solver_iterations {
+            self.solve_3d_velocity_constraints(world, iter);
             for idx_pos in 0..self.awake_indices.len() {
                 let dyn_idx = self.awake_indices[idx_pos];
-                if world.colliders_3d[dyn_idx].is_some() {
-                    self.resolve_3d_static(world, dyn_idx, iter == 0);
-                }
                 if world.colliders_2d[dyn_idx].is_some() {
                     self.resolve_2d_entity(world, dyn_idx);
                 }
             }
-            self.resolve_3d_dynamic_pairs(world, iter == 0);
             self.joints.solve_constraints(world, dt);
         }
+        self.save_warm_impulses(world);
+
+        // 3. Split-impulse position stabilization (prevents sinking without adding bounce energy)
+        self.solve_3d_position_constraints(world);
 
         // Snapshot updated platform positions for next tick's rider carry
         for i in 0..self.ground_support.len() {
@@ -687,11 +744,7 @@ impl PhysicsWorld {
                 continue;
             }
             if is_trigger_pair {
-                let mut tmp = [ContactPoint {
-                    point: Vec3::ZERO,
-                    normal: Vec3::ZERO,
-                    depth: 0.0,
-                }; 4];
+                let mut tmp = [ContactPoint::default(); 4];
                 let mut tmp_count = 0usize;
                 collect_3d_contacts(
                     col,
@@ -773,10 +826,16 @@ impl PhysicsWorld {
                 }
                 if best_depth > 0.0 && contact_count < contacts.len() {
                     let _ = best_h;
+                    let terr_idx = if self.terrain_entity != INVALID_ENTITY {
+                        Some(entity_index(self.terrain_entity))
+                    } else {
+                        None
+                    };
                     contacts[contact_count] = ContactPoint {
                         point: best_pt,
                         normal: best_n,
                         depth: best_depth,
+                        other_idx: terr_idx,
                     };
                     contact_count += 1;
                 }
@@ -786,9 +845,15 @@ impl PhysicsWorld {
             let qmin = pos_a - Vec3::splat(r_bound);
             let qmax = pos_a + Vec3::splat(r_bound);
             for m_idx in 0..self.static_meshes.len() {
+                let mesh_stat = if self.static_meshes[m_idx].entity != INVALID_ENTITY {
+                    Some(entity_index(self.static_meshes[m_idx].entity))
+                } else {
+                    None
+                };
                 self.static_meshes[m_idx].query_aabb(qmin, qmax, &mut self.bvh_scratch);
                 for &t_idx in &self.bvh_scratch {
                     let tri = self.static_meshes[m_idx].triangles[t_idx];
+                    let before = contact_count;
                     collect_triangle_contacts(
                         col,
                         pos_a,
@@ -797,6 +862,9 @@ impl PhysicsWorld {
                         contacts,
                         &mut contact_count,
                     );
+                    for c in &mut contacts[before..contact_count] {
+                        c.other_idx = mesh_stat;
+                    }
                 }
             }
         }
@@ -813,11 +881,7 @@ impl PhysicsWorld {
         test_pos: Vec3,
         slope_cos: f32,
     ) -> bool {
-        let mut probe = [ContactPoint {
-            point: Vec3::ZERO,
-            normal: Vec3::ZERO,
-            depth: 0.0,
-        }; 32];
+        let mut probe = [ContactPoint::default(); 32];
         let count = self.gather_static_contacts(
             world,
             dyn_idx,
@@ -835,7 +899,7 @@ impl PhysicsWorld {
         })
     }
 
-    fn resolve_3d_static(&mut self, world: &mut World, dyn_idx: usize, record_overlaps: bool) {
+    fn gather_static_manifolds_for_entity(&mut self, world: &mut World, dyn_idx: usize) {
         let Some(col) = world.colliders_3d[dyn_idx] else {
             return;
         };
@@ -843,11 +907,7 @@ impl PhysicsWorld {
             return;
         };
 
-        let mut contacts = [ContactPoint {
-            point: Vec3::ZERO,
-            normal: Vec3::ZERO,
-            depth: 0.0,
-        }; 32];
+        let mut contacts = [ContactPoint::default(); 32];
         let pos_a = world.curr_pos[dyn_idx];
         let rot_a = world.curr_rot[dyn_idx];
         let handle_a = make_handle(world, dyn_idx);
@@ -858,11 +918,10 @@ impl PhysicsWorld {
             pos_a,
             rot_a,
             rb_a,
-            record_overlaps,
+            true,
             handle_a,
             &mut contacts,
         );
-
         if contact_count == 0 {
             return;
         }
@@ -871,7 +930,7 @@ impl PhysicsWorld {
         let slope_cos = cc.map_or(0.45, |c| c.max_slope_cos);
 
         // Stair auto-step-up for CharacterController when horizontal motion meets a low curb/step
-        if record_overlaps && !rb_a.is_trigger {
+        if !rb_a.is_trigger {
             if let Some(ctrl) = cc {
                 if ctrl.step_height > 0.01 {
                     let has_wall = contacts[..contact_count]
@@ -917,95 +976,50 @@ impl PhysicsWorld {
             }
         }
 
-        if contact_count == 0 {
+        if contact_count == 0 || rb_a.is_trigger {
             return;
         }
 
-        contacts[..contact_count].sort_by(|a, b| {
-            let a_floor = a.normal.y > 0.5;
-            let b_floor = b.normal.y > 0.5;
-            b_floor
-                .cmp(&a_floor)
-                .then_with(|| b.depth.total_cmp(&a.depth))
-        });
-
-        let mut max_push = Vec3::ZERO;
         for c in &contacts[..contact_count] {
             if c.normal.y >= slope_cos {
                 if let Some(rb) = &mut world.rigid_bodies[dyn_idx] {
                     rb.grounded = true;
                 }
             }
-            let push_mag = (c.depth - 0.0005).max(0.0);
-            let candidate = c.normal * push_mag;
-            if candidate.length_squared() > max_push.length_squared() {
-                max_push = candidate;
-            }
-        }
-        world.curr_pos[dyn_idx] += max_push;
-
-        let inv_m = 1.0 / rb_a.mass.max(0.01);
-        let inv_i = if rb_a.lock_rotation {
-            0.0
-        } else {
-            collider_inv_inertia(Some(col), rb_a.mass)
-        };
-
-        let scale = 1.0 / (contact_count.max(1) as f32);
-        for c in &contacts[..contact_count] {
-            let n = c.normal;
-            let ra = c.point - world.curr_pos[dyn_idx];
-            let va = world.velocities[dyn_idx] + world.angular_velocities[dyn_idx].cross(ra);
-            let vn = va.dot(n);
-            if vn < 0.0 {
-                let rn = ra.cross(n);
-                let denom = inv_m + rn.length_squared() * inv_i;
-                let e = if vn.abs() < 1.2 { 0.0 } else { rb_a.restitution };
-                let jn = (-(1.0 + e) * vn / denom.max(1e-6)) * scale;
-                let mut impulse = n * jn;
-
-                if rb_a.friction > 0.0 {
-                    let tang = va - n * vn;
-                    let t_len = tang.length();
-                    if t_len > 1e-5 {
-                        let t = tang / t_len;
-                        let rt = ra.cross(t);
-                        let denom_t = inv_m + rt.length_squared() * inv_i;
-                        let jt = ((-va.dot(t) / denom_t.max(1e-6)) * scale)
-                            .clamp(-rb_a.friction * jn, rb_a.friction * jn);
-                        impulse += t * jt;
-                    }
-                }
-                world.velocities[dyn_idx] += impulse * inv_m;
-                if !rb_a.lock_rotation {
-                    world.angular_velocities[dyn_idx] += ra.cross(impulse) * inv_i;
-                }
-            } else if rb_a.friction > 0.0 && c.depth > 0.0 {
-                let tang = va - n * vn;
-                let t_len = tang.length();
-                if t_len > 1e-5 {
-                    let t = tang / t_len;
-                    let rt = ra.cross(t);
-                    let denom_t = inv_m + rt.length_squared() * inv_i;
-                    let max_rest = rb_a.friction * rb_a.mass * 0.25 * scale;
-                    let jt = ((-va.dot(t) / denom_t.max(1e-6)) * scale).clamp(-max_rest, max_rest);
-                    let imp = t * jt;
-                    world.velocities[dyn_idx] += imp * inv_m;
-                    if !rb_a.lock_rotation {
-                        world.angular_velocities[dyn_idx] += ra.cross(imp) * inv_i;
-                    }
-                }
-            }
+            let (stat_friction, stat_restitution) = c
+                .other_idx
+                .and_then(|s_idx| world.rigid_bodies.get(s_idx).copied().flatten())
+                .map_or((rb_a.friction.max(0.0), rb_a.restitution), |rb_s| {
+                    (
+                        (rb_a.friction.max(0.0) * rb_s.friction.max(0.0)).sqrt(),
+                        rb_a.restitution.max(rb_s.restitution),
+                    )
+                });
+            self.push_manifold_contact(
+                world,
+                dyn_idx,
+                usize::MAX,
+                false,
+                *c,
+                stat_friction,
+                stat_restitution,
+                stat_friction > 0.0,
+            );
         }
     }
 
-    fn resolve_3d_dynamic_pairs(&mut self, world: &mut World, record_overlaps: bool) {
-        let mut contacts = [ContactPoint {
-            point: Vec3::ZERO,
-            normal: Vec3::ZERO,
-            depth: 0.0,
-        }; 16];
+    fn gather_3d_manifolds(&mut self, world: &mut World) {
+        self.manifolds.clear();
 
+        let initial_awake = self.awake_indices.len();
+        for idx_pos in 0..initial_awake {
+            let dyn_idx = self.awake_indices[idx_pos];
+            if world.colliders_3d[dyn_idx].is_some() {
+                self.gather_static_manifolds_for_entity(world, dyn_idx);
+            }
+        }
+
+        let mut contacts = [ContactPoint::default(); 16];
         for p_idx in 0..self.pair_scratch.len() {
             let (a, b) = self.pair_scratch[p_idx];
             let (Some(col_a), Some(col_b)) = (world.colliders_3d[a], world.colliders_3d[b]) else {
@@ -1045,52 +1059,51 @@ impl PhysicsWorld {
             }
 
             let is_trigger_pair = rb_a.is_trigger || rb_b.is_trigger;
-            if record_overlaps {
-                self.record_overlap(make_handle(world, a), make_handle(world, b), is_trigger_pair);
-            }
+            self.record_overlap(make_handle(world, a), make_handle(world, b), is_trigger_pair);
             if is_trigger_pair {
                 continue;
             }
 
-            // Wake sleeping partner on energetic contact (or if partner was asleep under/on an awake mover)
+            let mut max_depth = 0.0f32;
+            let mut max_ny = 0.0f32;
+            let mut min_ny = 0.0f32;
+            for c in &contacts[..count] {
+                max_depth = max_depth.max(c.depth);
+                max_ny = max_ny.max(c.normal.y);
+                min_ny = min_ny.min(c.normal.y);
+            }
+
+            // Wake sleeping partner only on real dynamic contact (speed > 0.07 m/s or deep intrusion > 1.2 cm),
+            // never from tiny resting penetration (~0.7 cm under gravity).
             let rel_speed_sq = (world.velocities[a] - world.velocities[b]).length_squared();
-            if rel_speed_sq > 0.02 || !rb_a.sleeping || !rb_b.sleeping {
-                if rel_speed_sq > 0.02 {
-                    if let Some(rb) = &mut world.rigid_bodies[a] {
-                        rb.sleeping = false;
-                        rb.sleep_timer = 0.0;
+            if rel_speed_sq > 0.005 || max_depth > 0.012 {
+                let mut woke = None;
+                if let Some(rb) = &mut world.rigid_bodies[a] {
+                    if rb.sleeping {
+                        woke = Some(a);
                     }
-                    if let Some(rb) = &mut world.rigid_bodies[b] {
-                        rb.sleeping = false;
-                        rb.sleep_timer = 0.0;
+                    rb.sleeping = false;
+                    rb.sleep_timer = 0.0;
+                }
+                if let Some(w_idx) = woke {
+                    self.awake_indices.push(w_idx);
+                    self.gather_static_manifolds_for_entity(world, w_idx);
+                }
+                let mut woke_b = None;
+                if let Some(rb) = &mut world.rigid_bodies[b] {
+                    if rb.sleeping {
+                        woke_b = Some(b);
                     }
+                    rb.sleeping = false;
+                    rb.sleep_timer = 0.0;
+                }
+                if let Some(w_idx) = woke_b {
+                    self.awake_indices.push(w_idx);
+                    self.gather_static_manifolds_for_entity(world, w_idx);
                 }
             }
 
-            let inv_m_a = 1.0 / rb_a.mass.max(0.01);
-            let inv_m_b = 1.0 / rb_b.mass.max(0.01);
-            let inv_i_a = if rb_a.lock_rotation {
-                0.0
-            } else {
-                collider_inv_inertia(Some(col_a), rb_a.mass)
-            };
-            let inv_i_b = if rb_b.lock_rotation {
-                0.0
-            } else {
-                collider_inv_inertia(Some(col_b), rb_b.mass)
-            };
-
-            let mut deepest = contacts[0];
-            for c in &contacts[1..count] {
-                if c.depth > deepest.depth {
-                    deepest = *c;
-                }
-            }
-            let total_inv_m = (inv_m_a + inv_m_b).max(1e-6);
-            let push_dist = (deepest.depth - 0.0005).max(0.0);
-            world.curr_pos[a] += deepest.normal * (push_dist * (inv_m_a / total_inv_m));
-            world.curr_pos[b] -= deepest.normal * (push_dist * (inv_m_b / total_inv_m));
-            if deepest.normal.y > 0.45 {
+            if max_ny > 0.45 {
                 if let Some(rb) = &mut world.rigid_bodies[a] {
                     rb.grounded = true;
                 }
@@ -1098,7 +1111,7 @@ impl PhysicsWorld {
                     self.ground_support[a] = Some((b, world.curr_pos[b]));
                 }
             }
-            if deepest.normal.y < -0.45 {
+            if min_ny < -0.45 {
                 if let Some(rb) = &mut world.rigid_bodies[b] {
                     rb.grounded = true;
                 }
@@ -1107,58 +1120,367 @@ impl PhysicsWorld {
                 }
             }
 
-            let scale = 1.0 / (count.max(1) as f32);
             let cc_a = self.character_controllers.get(a).copied().flatten().is_some();
             let cc_b = self.character_controllers.get(b).copied().flatten().is_some();
-            for c in &contacts[..count] {
-                let n = c.normal;
-                let ra = c.point - world.curr_pos[a];
-                let rb = c.point - world.curr_pos[b];
-                let va = world.velocities[a] + world.angular_velocities[a].cross(ra);
-                let vb = world.velocities[b] + world.angular_velocities[b].cross(rb);
-                let v_rel = va - vb;
-                let vn = v_rel.dot(n);
-                if vn >= 0.0 {
-                    continue;
-                }
-                let denom = inv_m_a
-                    + inv_m_b
-                    + ra.cross(n).length_squared() * inv_i_a
-                    + rb.cross(n).length_squared() * inv_i_b;
-                if denom < 1e-8 {
-                    continue;
-                }
-                let e = if vn.abs() < 1.2 {
-                    0.0
-                } else {
-                    rb_a.restitution.max(rb_b.restitution)
-                };
-                let jn = (-(1.0 + e) * vn / denom) * scale;
-                let mut impulse_a = n * jn;
-                let mut impulse_b = -n * jn;
+            let friction = (rb_a.friction.max(0.0) * rb_b.friction.max(0.0)).sqrt();
+            let restitution = rb_a.restitution.max(rb_b.restitution);
+            let allow_friction = friction > 0.0 && !(cc_a || cc_b);
 
-                let mu = (rb_a.friction + rb_b.friction) * 0.5;
-                if mu > 0.0 && !(cc_a || cc_b) {
-                    let tang = v_rel - n * vn;
-                    let t_len = tang.length();
-                    if t_len > 1e-5 {
-                        let t = tang / t_len;
-                        let denom_t = inv_m_a
-                            + inv_m_b
-                            + ra.cross(t).length_squared() * inv_i_a
-                            + rb.cross(t).length_squared() * inv_i_b;
-                        let jt = (-v_rel.dot(t) / denom_t.max(1e-6)).clamp(-mu * jn, mu * jn);
-                        impulse_a += t * jt;
-                        impulse_b -= t * jt;
+            for c in &contacts[..count] {
+                self.push_manifold_contact(
+                    world,
+                    a,
+                    b,
+                    true,
+                    *c,
+                    friction,
+                    restitution,
+                    allow_friction,
+                );
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_manifold_contact(
+        &mut self,
+        world: &World,
+        a: usize,
+        b: usize,
+        is_dynamic_b: bool,
+        c: ContactPoint,
+        friction: f32,
+        restitution: f32,
+        allow_friction: bool,
+    ) {
+        let Some(rb_a) = world.rigid_bodies[a] else {
+            return;
+        };
+        let inv_m_a = 1.0 / rb_a.mass.max(0.01);
+        let inv_i_a = if rb_a.lock_rotation {
+            Mat3::ZERO
+        } else {
+            collider_inv_inertia_world(world.colliders_3d[a], world.curr_rot[a], rb_a.mass)
+        };
+        let (inv_m_b, inv_i_b, lock_rot_b, pos_b, vel_b, ang_b) = if is_dynamic_b {
+            let Some(rb_b) = world.rigid_bodies[b] else {
+                return;
+            };
+            let ib = if rb_b.lock_rotation {
+                Mat3::ZERO
+            } else {
+                collider_inv_inertia_world(world.colliders_3d[b], world.curr_rot[b], rb_b.mass)
+            };
+            (
+                1.0 / rb_b.mass.max(0.01),
+                ib,
+                rb_b.lock_rotation,
+                world.curr_pos[b],
+                world.velocities[b],
+                world.angular_velocities[b],
+            )
+        } else {
+            (0.0, Mat3::ZERO, true, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO)
+        };
+
+        let n = c.normal.normalize_or_zero();
+        if n.length_squared() < 0.5 {
+            return;
+        }
+        let t1 = if n.x.abs() >= 0.57735 {
+            Vec3::new(n.y, -n.x, 0.0).normalize()
+        } else {
+            Vec3::new(0.0, n.z, -n.y).normalize()
+        };
+        let t2 = n.cross(t1);
+
+        let pos_a = world.curr_pos[a];
+        let ra = c.point - pos_a;
+        let rb = if is_dynamic_b { c.point - pos_b } else { Vec3::ZERO };
+
+        let eff_mass = |dir: Vec3| -> f32 {
+            let r_xa = ra.cross(dir);
+            let r_xb = rb.cross(dir);
+            let ang_a = if rb_a.lock_rotation {
+                0.0
+            } else {
+                r_xa.dot(inv_i_a * r_xa)
+            };
+            let ang_b = if lock_rot_b {
+                0.0
+            } else {
+                r_xb.dot(inv_i_b * r_xb)
+            };
+            let denom = inv_m_a + inv_m_b + ang_a + ang_b;
+            if denom > 1e-8 { 1.0 / denom } else { 0.0 }
+        };
+
+        let eff_mass_n = eff_mass(n);
+        if eff_mass_n <= 0.0 {
+            return;
+        }
+        let eff_mass_t1 = eff_mass(t1);
+        let eff_mass_t2 = eff_mass(t2);
+
+        let va = world.velocities[a] + world.angular_velocities[a].cross(ra);
+        let vb = vel_b + ang_b.cross(rb);
+        let vn_init = (va - vb).dot(n);
+        let vel_bias = if vn_init < -1.1 {
+            -restitution * vn_init
+        } else {
+            0.0
+        };
+
+        let local_a = world.curr_rot[a].conjugate() * ra;
+
+        self.manifolds.push(ManifoldContact {
+            a,
+            b,
+            is_dynamic_b,
+            normal: n,
+            t1,
+            t2,
+            depth: c.depth,
+            init_pos_a: pos_a,
+            init_pos_b: pos_b,
+            ra,
+            rb,
+            inv_m_a,
+            inv_m_b,
+            inv_i_a,
+            inv_i_b,
+            eff_mass_n,
+            eff_mass_t1,
+            eff_mass_t2,
+            vel_bias,
+            friction,
+            allow_friction,
+            lock_rot_a: rb_a.lock_rotation,
+            lock_rot_b,
+            acc_n: 0.0,
+            acc_t1: 0.0,
+            acc_t2: 0.0,
+            local_a,
+        });
+    }
+
+    fn warm_start_manifolds(&mut self, world: &mut World) {
+        if self.prev_impulses.is_empty() || self.manifolds.is_empty() {
+            return;
+        }
+        for c in &mut self.manifolds {
+            // Skip warm start on energetic bounces
+            if c.vel_bias > 0.0 {
+                continue;
+            }
+            let a = c.a;
+            let b = c.b;
+            let gen_a = world.generations[a];
+            let start = self.prev_impulses.partition_point(|p| (p.a, p.b) < (a, b));
+            for p in &self.prev_impulses[start..] {
+                if p.a != a || p.b != b {
+                    break;
+                }
+                if p.gen_a != gen_a {
+                    continue;
+                }
+                if p.normal.dot(c.normal) > 0.92 && p.local_a.distance_squared(c.local_a) < 0.0025 {
+                    c.acc_n = p.acc_n * 0.96;
+                    if c.allow_friction {
+                        c.acc_t1 = p.tang_imp.dot(c.t1) * 0.90;
+                        c.acc_t2 = p.tang_imp.dot(c.t2) * 0.90;
+                    }
+                    let imp = c.normal * c.acc_n + c.t1 * c.acc_t1 + c.t2 * c.acc_t2;
+                    world.velocities[a] += imp * c.inv_m_a;
+                    if !c.lock_rot_a {
+                        world.angular_velocities[a] += c.inv_i_a * c.ra.cross(imp);
+                    }
+                    if c.is_dynamic_b {
+                        world.velocities[b] -= imp * c.inv_m_b;
+                        if !c.lock_rot_b {
+                            world.angular_velocities[b] -= c.inv_i_b * c.rb.cross(imp);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn save_warm_impulses(&mut self, world: &World) {
+        self.prev_impulses.clear();
+        for c in &self.manifolds {
+            if c.acc_n <= 1e-6 {
+                continue;
+            }
+            self.prev_impulses.push(CachedImpulse {
+                a: c.a,
+                b: c.b,
+                gen_a: world.generations[c.a],
+                local_a: c.local_a,
+                normal: c.normal,
+                acc_n: c.acc_n,
+                tang_imp: c.t1 * c.acc_t1 + c.t2 * c.acc_t2,
+            });
+        }
+        self.prev_impulses.sort_unstable_by_key(|p| (p.a, p.b));
+    }
+
+    fn solve_3d_velocity_constraints(&mut self, world: &mut World, iter: u32) {
+        let len = self.manifolds.len();
+        if len == 0 {
+            return;
+        }
+        let reverse = (iter & 1) == 1;
+
+        // Pass A: normal impulses first (symmetric Gauss-Seidel so towers converge equally top-down & bottom-up,
+        // and multi-corner torques balance out before tangential friction evaluates w x r)
+        for step_i in 0..len {
+            let i = if reverse { len - 1 - step_i } else { step_i };
+            let c = &mut self.manifolds[i];
+            let a = c.a;
+            let b = c.b;
+
+            let va = world.velocities[a] + world.angular_velocities[a].cross(c.ra);
+            let vb = if c.is_dynamic_b {
+                world.velocities[b] + world.angular_velocities[b].cross(c.rb)
+            } else {
+                Vec3::ZERO
+            };
+            let vn = (va - vb).dot(c.normal);
+            let omega = if iter + 2 < self.config.solver_iterations { 0.72 } else { 1.0 };
+            let djn_raw = -(vn - c.vel_bias) * c.eff_mass_n * omega;
+            let old_n = c.acc_n;
+            c.acc_n = (old_n + djn_raw).max(0.0);
+            let djn = c.acc_n - old_n;
+            if djn.abs() > 1e-8 {
+                let imp_n = c.normal * djn;
+                world.velocities[a] += imp_n * c.inv_m_a;
+                if !c.lock_rot_a {
+                    world.angular_velocities[a] += c.inv_i_a * c.ra.cross(imp_n);
+                }
+                if c.is_dynamic_b {
+                    world.velocities[b] -= imp_n * c.inv_m_b;
+                    if !c.lock_rot_b {
+                        world.angular_velocities[b] -= c.inv_i_b * c.rb.cross(imp_n);
                     }
                 }
-                world.velocities[a] += impulse_a * inv_m_a;
-                world.velocities[b] += impulse_b * inv_m_b;
-                if !rb_a.lock_rotation {
-                    world.angular_velocities[a] += ra.cross(impulse_a) * inv_i_a;
+            }
+        }
+
+        // Wait 3 normal passes so multi-corner contacts settle before friction evaluates w x r
+        if iter < 3 {
+            return;
+        }
+
+        // Pass B: 3D Coulomb friction cone (clamped to |acc_t| <= mu * acc_n)
+        for step_i in 0..len {
+            let i = if reverse { len - 1 - step_i } else { step_i };
+            let c = &mut self.manifolds[i];
+            if !c.allow_friction || c.acc_n <= 0.0 {
+                continue;
+            }
+            let a = c.a;
+            let b = c.b;
+            let va = world.velocities[a] + world.angular_velocities[a].cross(c.ra);
+            let vb = if c.is_dynamic_b {
+                world.velocities[b] + world.angular_velocities[b].cross(c.rb)
+            } else {
+                Vec3::ZERO
+            };
+            let v_rel = va - vb;
+            let mut new_t1 = c.acc_t1 - v_rel.dot(c.t1) * c.eff_mass_t1;
+            let mut new_t2 = c.acc_t2 - v_rel.dot(c.t2) * c.eff_mass_t2;
+            let max_f = c.friction * c.acc_n;
+            let f_sq = new_t1 * new_t1 + new_t2 * new_t2;
+            if f_sq > max_f * max_f {
+                let s = max_f / f_sq.sqrt().max(1e-8);
+                new_t1 *= s;
+                new_t2 *= s;
+            }
+            let djt1 = new_t1 - c.acc_t1;
+            let djt2 = new_t2 - c.acc_t2;
+            c.acc_t1 = new_t1;
+            c.acc_t2 = new_t2;
+
+            if djt1.abs() > 1e-8 || djt2.abs() > 1e-8 {
+                let imp_t = c.t1 * djt1 + c.t2 * djt2;
+                world.velocities[a] += imp_t * c.inv_m_a;
+                if !c.lock_rot_a {
+                    world.angular_velocities[a] += c.inv_i_a * c.ra.cross(imp_t);
                 }
-                if !rb_b.lock_rotation {
-                    world.angular_velocities[b] += rb.cross(impulse_b) * inv_i_b;
+                if c.is_dynamic_b {
+                    world.velocities[b] -= imp_t * c.inv_m_b;
+                    if !c.lock_rot_b {
+                        world.angular_velocities[b] -= c.inv_i_b * c.rb.cross(imp_t);
+                    }
+                }
+            }
+        }
+    }
+
+    fn solve_3d_position_constraints(&self, world: &mut World) {
+        const POS_SLOP: f32 = 0.0015;
+        const DYN_ERP: f32 = 0.72;
+        const STAT_ERP: f32 = 0.88;
+        const MAX_CORR: f32 = 0.14;
+
+        for _ in 0..4 {
+            for c in &self.manifolds {
+                if c.is_dynamic_b {
+                    continue;
+                }
+                let sep_a = world.curr_pos[c.a] - c.init_pos_a;
+                let rem = c.depth - sep_a.dot(c.normal) - POS_SLOP;
+                if rem <= 0.0 {
+                    continue;
+                }
+                let corr = (rem * STAT_ERP).min(MAX_CORR);
+                let horiz_speed_sq =
+                    Vec3::new(world.velocities[c.a].x, 0.0, world.velocities[c.a].z).length_squared();
+                if c.allow_friction
+                    && c.friction > 0.25
+                    && c.normal.y > 0.85
+                    && horiz_speed_sq < 0.04
+                {
+                    world.curr_pos[c.a].y += corr / c.normal.y;
+                } else {
+                    world.curr_pos[c.a] += c.normal * corr;
+                }
+            }
+            for c in &self.manifolds {
+                if !c.is_dynamic_b {
+                    continue;
+                }
+                let sep_a = world.curr_pos[c.a] - c.init_pos_a;
+                let sep_b = world.curr_pos[c.b] - c.init_pos_b;
+                let rem = c.depth - (sep_a - sep_b).dot(c.normal) - POS_SLOP;
+                if rem <= 0.0 {
+                    continue;
+                }
+                let corr = (rem * DYN_ERP).min(MAX_CORR);
+                // Shock propagation: when one body rests on a ground/support below, push the upper body rather than squishing the base down
+                let (w_a, w_b) = if c.normal.y < -0.6 && world.rigid_bodies[c.a].map_or(false, |r| r.grounded) {
+                    (0.12 * c.inv_m_a, c.inv_m_b)
+                } else if c.normal.y > 0.6 && world.rigid_bodies[c.b].map_or(false, |r| r.grounded) {
+                    (c.inv_m_a, 0.12 * c.inv_m_b)
+                } else {
+                    (c.inv_m_a, c.inv_m_b)
+                };
+                let total_w = (w_a + w_b).max(1e-6);
+                let rel_v = world.velocities[c.a] - world.velocities[c.b];
+                let horiz_rel_sq = rel_v.x * rel_v.x + rel_v.z * rel_v.z;
+                if c.allow_friction
+                    && c.friction > 0.25
+                    && c.normal.y.abs() > 0.85
+                    && horiz_rel_sq < 0.04
+                {
+                    let dy = (corr / c.normal.y.abs()) * c.normal.y.signum();
+                    world.curr_pos[c.a].y += dy * (w_a / total_w);
+                    world.curr_pos[c.b].y -= dy * (w_b / total_w);
+                } else {
+                    world.curr_pos[c.a] += c.normal * (corr * (w_a / total_w));
+                    world.curr_pos[c.b] -= c.normal * (corr * (w_b / total_w));
                 }
             }
         }
@@ -1529,20 +1851,30 @@ fn layers_match(a: Option<RigidBody>, b: Option<RigidBody>) -> bool {
 }
 
 #[inline]
-fn collider_inv_inertia(col: Option<Collider3D>, mass: f32) -> f32 {
+fn collider_inv_inertia_world(col: Option<Collider3D>, rot: Quat, mass: f32) -> Mat3 {
     let m = mass.max(0.01);
-    let r_sq = match col {
-        Some(Collider3D::Aabb { half_extents }) => {
-            let e = half_extents * 2.0;
-            (e.x * e.x + e.y * e.y + e.z * e.z) / 12.0
+    let diag = match col {
+        Some(Collider3D::Aabb { half_extents: h }) => {
+            // I_x = (1/3) * m * (h_y^2 + h_z^2), etc. (for full box size 2h)
+            let ix = (m * (h.y * h.y + h.z * h.z) / 3.0).max(0.005);
+            let iy = (m * (h.x * h.x + h.z * h.z) / 3.0).max(0.005);
+            let iz = (m * (h.x * h.x + h.y * h.y) / 3.0).max(0.005);
+            Vec3::new(1.0 / ix, 1.0 / iy, 1.0 / iz)
         }
-        Some(Collider3D::Sphere { radius }) => 0.4 * radius * radius,
+        Some(Collider3D::Sphere { radius }) => {
+            let i = (0.4 * m * radius * radius).max(0.005);
+            Vec3::splat(1.0 / i)
+        }
         Some(Collider3D::Capsule { radius, half_height }) => {
-            0.4 * (radius + half_height) * (radius + half_height)
+            let r_eq = radius + half_height;
+            let i_xz = (0.4 * m * r_eq * r_eq).max(0.005);
+            let i_y = (0.5 * m * radius * radius).max(0.005);
+            Vec3::new(1.0 / i_xz, 1.0 / i_y, 1.0 / i_xz)
         }
-        None => 0.5,
+        None => Vec3::splat(1.0 / (0.5 * m).max(0.01)),
     };
-    1.0 / (m * r_sq.max(0.02))
+    let r = Mat3::from_quat(rot);
+    r * Mat3::from_diagonal(diag) * r.transpose()
 }
 
 #[inline]
@@ -1561,7 +1893,7 @@ fn collider3d_bounding_radius(col: Collider3D) -> f32 {
 fn push_contact(
     contacts: &mut [ContactPoint],
     count: &mut usize,
-    _other_idx: Option<usize>,
+    other_idx: Option<usize>,
     _other_is_dynamic: bool,
     point: Vec3,
     normal: Vec3,
@@ -1572,6 +1904,40 @@ fn push_contact(
             point,
             normal,
             depth,
+            other_idx,
+        };
+        *count += 1;
+    }
+}
+
+#[inline]
+fn push_manifold_point_dedup(
+    contacts: &mut [ContactPoint],
+    count: &mut usize,
+    start_count: usize,
+    other_idx: Option<usize>,
+    point: Vec3,
+    normal: Vec3,
+    depth: f32,
+) {
+    if depth <= 0.0 {
+        return;
+    }
+    for existing in &mut contacts[start_count..*count] {
+        if existing.point.distance_squared(point) < 0.0004 {
+            if depth > existing.depth {
+                existing.depth = depth;
+                existing.point = point;
+            }
+            return;
+        }
+    }
+    if *count < contacts.len() {
+        contacts[*count] = ContactPoint {
+            point,
+            normal,
+            depth,
+            other_idx,
         };
         *count += 1;
     }
@@ -1740,6 +2106,39 @@ fn collect_3d_contacts(
     }
 }
 
+fn clip_poly_plane(
+    pts: &[Vec3; 16],
+    len: usize,
+    plane_pt: Vec3,
+    plane_n: Vec3,
+    out: &mut [Vec3; 16],
+) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let mut out_len = 0usize;
+    let mut a = pts[len - 1];
+    let mut da = (a - plane_pt).dot(plane_n);
+    for &b in &pts[..len] {
+        let db = (b - plane_pt).dot(plane_n);
+        if (da <= 0.0 && db > 0.0) || (da > 0.0 && db <= 0.0) {
+            let denom = da - db;
+            let t = if denom.abs() > 1e-8 { (da / denom).clamp(0.0, 1.0) } else { 0.5 };
+            if out_len < 16 {
+                out[out_len] = a + (b - a) * t;
+                out_len += 1;
+            }
+        }
+        if db <= 0.0 && out_len < 16 {
+            out[out_len] = b;
+            out_len += 1;
+        }
+        a = b;
+        da = db;
+    }
+    out_len
+}
+
 #[allow(clippy::too_many_arguments)]
 fn obb_vs_obb_sat(
     pa: Vec3,
@@ -1762,6 +2161,7 @@ fn obb_vs_obb_sat(
     let mut best_score = f32::INFINITY;
     let mut best_depth = 0.0f32;
     let mut best_axis = Vec3::Y;
+    let mut best_is_edge = false;
 
     let mut test_axis = |axis: Vec3, is_edge: bool| -> bool {
         let len_sq = axis.length_squared();
@@ -1776,11 +2176,12 @@ fn obb_vs_obb_sat(
         if overlap <= 0.0 {
             return false;
         }
-        let score = if is_edge { overlap * 1.04 } else { overlap };
+        let score = if is_edge { overlap * 1.05 + 0.001 } else { overlap };
         if score < best_score {
             best_score = score;
             best_depth = overlap;
             best_axis = l;
+            best_is_edge = is_edge;
         }
         true
     };
@@ -1808,52 +2209,100 @@ fn obb_vs_obb_sat(
     } else {
         -best_axis
     };
-
-    let eps = 1e-3;
     let start_count = *count;
 
-    // Collect penetrating corners of A inside B (using <= so aligned faces emit all 4 support corners!)
-    let inv_rb = rb.conjugate();
-    for corner in obb_corners(pa, ra, ha) {
-        let local = inv_rb * (corner - pb);
-        if local.x.abs() <= hb.x + eps
-            && local.y.abs() <= hb.y + eps
-            && local.z.abs() <= hb.z + eps
-        {
-            push_contact(
-                contacts,
-                count,
-                other_idx,
-                other_is_dynamic,
-                corner,
-                normal,
-                best_depth,
-            );
+    if !best_is_edge {
+        // Choose most aligned face axis among A (facing -normal) and B (facing +normal)
+        let ha_arr = [ha.x, ha.y, ha.z];
+        let hb_arr = [hb.x, hb.y, hb.z];
+        let mut best_align = -1.0f32;
+        let mut ref_is_a = false;
+        let mut ref_idx = 0usize;
+        for i in 0..3 {
+            let da = ax[i].dot(normal).abs();
+            if da > best_align {
+                best_align = da;
+                ref_is_a = true;
+                ref_idx = i;
+            }
+            let db = bx[i].dot(normal).abs();
+            if db > best_align {
+                best_align = db;
+                ref_is_a = false;
+                ref_idx = i;
+            }
+        }
+
+        let (ref_pos, ref_axes, ref_h, inc_pos, inc_axes, inc_h, ref_n) = if ref_is_a {
+            let dir = if ax[ref_idx].dot(normal) <= 0.0 { ax[ref_idx] } else { -ax[ref_idx] };
+            (pa, ax, ha_arr, pb, bx, hb_arr, dir)
+        } else {
+            let dir = if bx[ref_idx].dot(normal) >= 0.0 { bx[ref_idx] } else { -bx[ref_idx] };
+            (pb, bx, hb_arr, pa, ax, ha_arr, dir)
+        };
+
+        let ref_center = ref_pos + ref_n * ref_h[ref_idx];
+        let u_idx = (ref_idx + 1) % 3;
+        let v_idx = (ref_idx + 2) % 3;
+        let u = ref_axes[u_idx];
+        let v = ref_axes[v_idx];
+        let hu = ref_h[u_idx];
+        let hv = ref_h[v_idx];
+
+        // Incident face most opposite to ref_n
+        let mut inc_idx = 0usize;
+        let mut min_dot = f32::INFINITY;
+        let mut inc_dir = Vec3::Y;
+        for i in 0..3 {
+            let d = inc_axes[i].dot(ref_n);
+            if d < min_dot {
+                min_dot = d;
+                inc_idx = i;
+                inc_dir = inc_axes[i];
+            }
+            if -d < min_dot {
+                min_dot = -d;
+                inc_idx = i;
+                inc_dir = -inc_axes[i];
+            }
+        }
+        let iu_idx = (inc_idx + 1) % 3;
+        let iv_idx = (inc_idx + 2) % 3;
+        let inc_center = inc_pos + inc_dir * inc_h[inc_idx];
+        let iu = inc_axes[iu_idx] * inc_h[iu_idx];
+        let iv = inc_axes[iv_idx] * inc_h[iv_idx];
+
+        let mut poly_a = [Vec3::ZERO; 16];
+        let mut poly_b = [Vec3::ZERO; 16];
+        poly_a[0] = inc_center - iu - iv;
+        poly_a[1] = inc_center + iu - iv;
+        poly_a[2] = inc_center + iu + iv;
+        poly_a[3] = inc_center - iu + iv;
+        let mut plen = 4usize;
+
+        let margin = 1e-4;
+        plen = clip_poly_plane(&poly_a, plen, ref_center + u * (hu + margin), u, &mut poly_b);
+        plen = clip_poly_plane(&poly_b, plen, ref_center - u * (hu + margin), -u, &mut poly_a);
+        plen = clip_poly_plane(&poly_a, plen, ref_center + v * (hv + margin), v, &mut poly_b);
+        plen = clip_poly_plane(&poly_b, plen, ref_center - v * (hv + margin), -v, &mut poly_a);
+
+        for &pt in &poly_a[..plen] {
+            let c_depth = (ref_center - pt).dot(ref_n);
+            if c_depth > -1e-4 {
+                push_manifold_point_dedup(
+                    contacts,
+                    count,
+                    start_count,
+                    other_idx,
+                    pt,
+                    normal,
+                    c_depth.max(1e-5),
+                );
+            }
         }
     }
 
-    // Collect penetrating corners of B inside A
-    let inv_ra = ra.conjugate();
-    for corner in obb_corners(pb, rb, hb) {
-        let local = inv_ra * (corner - pa);
-        if local.x.abs() <= ha.x + eps
-            && local.y.abs() <= ha.y + eps
-            && local.z.abs() <= ha.z + eps
-        {
-            push_contact(
-                contacts,
-                count,
-                other_idx,
-                other_is_dynamic,
-                corner,
-                normal,
-                best_depth,
-            );
-        }
-    }
-
-    // Edge-edge or exact parallel face contact where neither corner set fell inside:
-    // emit midpoint between A's and B's support faces along `normal`.
+    // Edge-edge or fallback contact: emit midpoint between A's and B's support faces along `normal`.
     if *count == start_count {
         let sup_a = pa
             - ma * Vec3::new(
@@ -2908,5 +3357,164 @@ mod tests {
         assert_eq!(hit_mask2.map(|h| h.entity), Some(wall_layer2));
         let miss_mask1 = phys.raycast_3d_ex(&world, Vec3::new(0.8, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 20.0, 0b01, 0.45);
         assert!(miss_mask1.is_none());
+    }
+
+    #[test]
+    fn test_cube_tower_and_pyramid_rest_without_bouncing_or_toppling() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let floor = world.spawn();
+        world.set_transform_immediate(floor, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(floor)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(30.0, 0.5, 30.0),
+        });
+
+        // 4-cube vertical tower with full rotation enabled
+        let mut tower = Vec::new();
+        for i in 0..4 {
+            let e = world.spawn();
+            world.set_transform_immediate(e, Vec3::new(0.0, 0.5 + (i as f32) * 1.01, 0.0), Quat::IDENTITY, Vec3::ONE);
+            world.colliders_3d[entity_index(e)] = Some(Collider3D::Aabb { half_extents: Vec3::splat(0.5) });
+            world.rigid_bodies[entity_index(e)] = Some(RigidBody {
+                friction: 0.78,
+                restitution: 0.12,
+                ..Default::default()
+            });
+            tower.push(e);
+        }
+
+        // 3-2-1 pyramid offset to the side
+        let mut pyramid = Vec::new();
+        for (row, count) in [3usize, 2, 1].iter().enumerate() {
+            for col in 0..*count {
+                let x = 6.0 + (col as f32 - ((*count - 1) as f32) * 0.5) * 1.08;
+                let y = 0.5 + (row as f32) * 1.01;
+                let e = world.spawn();
+                world.set_transform_immediate(e, Vec3::new(x, y, 0.0), Quat::IDENTITY, Vec3::ONE);
+                world.colliders_3d[entity_index(e)] = Some(Collider3D::Aabb { half_extents: Vec3::splat(0.5) });
+                world.rigid_bodies[entity_index(e)] = Some(RigidBody {
+                    friction: 0.78,
+                    restitution: 0.12,
+                    ..Default::default()
+                });
+                pyramid.push((e, x, y));
+            }
+        }
+
+        for _ in 0..240 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+
+        // Tower must stand upright without bouncing or falling over
+        for (i, &e) in tower.iter().enumerate() {
+            let idx = entity_index(e);
+            let p = world.curr_pos[idx];
+            let v = world.velocities[idx];
+            let expected_y = 0.5 + i as f32;
+            assert!(
+                (p.y - expected_y).abs() < 0.03 && p.x.abs() < 0.04 && p.z.abs() < 0.04,
+                "tower cube {i} toppled or bounced! pos={p:?}, vel={v:?}"
+            );
+            assert!(v.length() < 0.05, "tower cube {i} still jittering! vel={v:?}");
+        }
+
+        // Pyramid apex must stay centered on top (~2.5m) and settle to sleep
+        let (apex, _, _) = pyramid.last().copied().unwrap();
+        let apex_p = world.curr_pos[entity_index(apex)];
+        assert!(
+            apex_p.y > 2.4 && (apex_p.x - 6.0).abs() < 0.12,
+            "pyramid collapsed! apex pos={apex_p:?}"
+        );
+        let settled_count = pyramid
+            .iter()
+            .filter(|&&(e, _, _)| world.rigid_bodies[entity_index(e)].unwrap().sleeping)
+            .count();
+        assert_eq!(settled_count, 6, "pyramid should settle to sleep, settled={settled_count}/6");
+    }
+
+    #[test]
+    fn test_mass_ratio_and_coulomb_friction() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig {
+            gravity: Vec3::ZERO,
+            ..Default::default()
+        });
+
+        let heavy = world.spawn();
+        world.set_transform_immediate(heavy, Vec3::new(0.0, 1.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(heavy)] = Some(Collider3D::Aabb { half_extents: Vec3::splat(0.5) });
+        world.rigid_bodies[entity_index(heavy)] = Some(RigidBody {
+            mass: 50.0,
+            restitution: 1.0,
+            friction: 0.0,
+            linear_damping: 0.0,
+            ..Default::default()
+        });
+        world.velocities[entity_index(heavy)] = Vec3::new(4.0, 0.0, 0.0);
+
+        let light = world.spawn();
+        world.set_transform_immediate(light, Vec3::new(1.5, 1.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(light)] = Some(Collider3D::Aabb { half_extents: Vec3::splat(0.5) });
+        world.rigid_bodies[entity_index(light)] = Some(RigidBody {
+            mass: 1.0,
+            restitution: 1.0,
+            friction: 0.0,
+            linear_damping: 0.0,
+            ..Default::default()
+        });
+
+        for _ in 0..30 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+        let vh = world.velocities[entity_index(heavy)].x;
+        let vl = world.velocities[entity_index(light)].x;
+        // Elastic collision: m1=50, m2=1 -> v2 ≈ 2*50/51 * 4 ≈ 7.84, v1 ≈ 49/51 * 4 ≈ 3.84
+        assert!(vl > 6.8, "light mass should bounce fast when struck by heavy! vl={vl}");
+        assert!(vh > 3.2, "heavy mass should barely slow down! vh={vh}");
+
+        // Part 2: Static Coulomb friction (0.85 holds 20 deg slope, 0.02 ice slides smoothly)
+        let mut slope_w = World::new();
+        let mut slope_p = PhysicsWorld::new(PhysicsConfig::default());
+        let tilt = Quat::from_rotation_z(-20.0f32.to_radians());
+
+        let ramp = slope_w.spawn();
+        slope_w.set_transform_immediate(ramp, Vec3::new(0.0, -0.5, 0.0), tilt, Vec3::ONE);
+        slope_w.colliders_3d[entity_index(ramp)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(15.0, 0.5, 10.0),
+        });
+        slope_w.rigid_bodies[entity_index(ramp)] = Some(RigidBody {
+            dynamic: false,
+            friction: 0.9,
+            restitution: 0.0,
+            ..Default::default()
+        });
+
+        let grippy = slope_w.spawn();
+        slope_w.set_transform_immediate(grippy, tilt * Vec3::new(0.0, 0.501, -3.0) + Vec3::new(0.0, -0.5, 0.0), tilt, Vec3::ONE);
+        slope_w.colliders_3d[entity_index(grippy)] = Some(Collider3D::Aabb { half_extents: Vec3::splat(0.5) });
+        slope_w.rigid_bodies[entity_index(grippy)] = Some(RigidBody {
+            friction: 0.9,
+            restitution: 0.0,
+            ..Default::default()
+        });
+
+        let icy = slope_w.spawn();
+        slope_w.set_transform_immediate(icy, tilt * Vec3::new(0.0, 0.501, 3.0) + Vec3::new(0.0, -0.5, 0.0), tilt, Vec3::ONE);
+        slope_w.colliders_3d[entity_index(icy)] = Some(Collider3D::Aabb { half_extents: Vec3::splat(0.5) });
+        slope_w.rigid_bodies[entity_index(icy)] = Some(RigidBody {
+            friction: 0.01,
+            restitution: 0.0,
+            linear_damping: 0.0,
+            ..Default::default()
+        });
+
+        for _ in 0..90 {
+            slope_p.step(&mut slope_w, 1.0 / 60.0);
+        }
+        let g_pos = slope_w.curr_pos[entity_index(grippy)];
+        let i_pos = slope_w.curr_pos[entity_index(icy)];
+        assert!(g_pos.x < 0.25, "high-friction block should hold on 20 deg slope, x={}", g_pos.x);
+        assert!(i_pos.x > 2.5, "icy low-friction block should slide fast down slope, x={}", i_pos.x);
     }
 }
