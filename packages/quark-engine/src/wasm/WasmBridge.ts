@@ -97,6 +97,52 @@ interface CoreExports {
   ): void;
   core_set_collision_filter(ptr: number, entity: number, layer: number, mask: number): void;
   core_set_trigger(ptr: number, entity: number, isTrigger: number): void;
+  core_set_character_controller(ptr: number, entity: number, stepHeight: number, maxSlopeDeg: number): void;
+  core_add_distance_joint(
+    ptr: number,
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    restLength: number,
+    stiffness: number
+  ): number;
+  core_add_spring_joint(
+    ptr: number,
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    restLength: number,
+    stiffness: number,
+    damping: number
+  ): number;
+  core_add_hinge_joint(
+    ptr: number,
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    axisX: number,
+    axisY: number,
+    axisZ: number,
+    hasLimits: number,
+    minAngle: number,
+    maxAngle: number
+  ): number;
+  core_remove_joint(ptr: number, jointId: number): number;
   core_is_sleeping(ptr: number, entity: number): number;
   core_is_grounded(ptr: number, entity: number): number;
   core_set_collider_3d(ptr: number, entity: number, kind: number, a: number, b: number, c: number): void;
@@ -548,6 +594,105 @@ export class WasmBridge {
 
   setTrigger(entity: number, isTrigger: boolean): void {
     this.exports.core_set_trigger(this.corePtr, entity, isTrigger ? 1 : 0);
+  }
+
+  setCharacterController(entity: number, stepHeight: number, maxSlopeDeg: number): void {
+    this.exports.core_set_character_controller(this.corePtr, entity, stepHeight, maxSlopeDeg);
+  }
+
+  addDistanceJoint(
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    restLength: number,
+    stiffness: number
+  ): number {
+    return this.exports.core_add_distance_joint(
+      this.corePtr,
+      entityA,
+      entityB,
+      ax,
+      ay,
+      az,
+      bx,
+      by,
+      bz,
+      restLength,
+      stiffness
+    );
+  }
+
+  addSpringJoint(
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    restLength: number,
+    stiffness: number,
+    damping: number
+  ): number {
+    return this.exports.core_add_spring_joint(
+      this.corePtr,
+      entityA,
+      entityB,
+      ax,
+      ay,
+      az,
+      bx,
+      by,
+      bz,
+      restLength,
+      stiffness,
+      damping
+    );
+  }
+
+  addHingeJoint(
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    axisX: number,
+    axisY: number,
+    axisZ: number,
+    hasLimits: boolean,
+    minAngle: number,
+    maxAngle: number
+  ): number {
+    return this.exports.core_add_hinge_joint(
+      this.corePtr,
+      entityA,
+      entityB,
+      ax,
+      ay,
+      az,
+      bx,
+      by,
+      bz,
+      axisX,
+      axisY,
+      axisZ,
+      hasLimits ? 1 : 0,
+      minAngle,
+      maxAngle
+    );
+  }
+
+  removeJoint(jointId: number): boolean {
+    return this.exports.core_remove_joint(this.corePtr, jointId) !== 0;
   }
 
   isSleeping(entity: number): boolean {

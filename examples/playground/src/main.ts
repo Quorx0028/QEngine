@@ -5,6 +5,7 @@ import {
   createPresetMaterial,
   createRampGeometry,
   createSphereGeometry,
+  DialogueRunner,
   Engine,
   extractColliderTriangles,
   POST_PROCESS_PRESET_NAMES,
@@ -97,11 +98,29 @@ async function bootstrap() {
   let spinTime = 0;
   let wasGrounded = true;
 
-  // 2D dialogue state
+  // 2D dialogue state backed by DialogueRunner
+  const dialogueRunner = new DialogueRunner([
+    {
+      id: 'aubrey_1',
+      speaker: 'AUBREY',
+      text: 'Привет! Видишь 2D фонарь, мягкие тени и Y-сортировку без зацепов на тайлах?',
+      nextId: 'aubrey_2',
+    },
+    {
+      id: 'aubrey_2',
+      speaker: 'AUBREY',
+      text: 'Нажми E ещё раз, чтобы закрыть диалог, и загляни в 3D Arena — там лестница и дверь на петлях!',
+    },
+    {
+      id: 'kel_1',
+      speaker: 'KEL',
+      text: 'Попробуй переключиться в Forest Escape! Теперь фонарик — настоящий GPU SpotLight с тенями и светлячками.',
+    },
+  ]);
   let dialogueFull = '';
   let dialogueShown = 0;
   let dialogueActive = false;
-  let npcs2d: Array<{ x: number; y: number; name: string; lines: string }> = [];
+  let npcs2d: Array<{ x: number; y: number; startNode: string }> = [];
 
   const crystalDesc: MaterialDesc = createPresetMaterial('animeToon');
   const propsDesc: MaterialDesc = createPresetMaterial('ultraRealism', {
@@ -347,7 +366,7 @@ async function bootstrap() {
       boundsRadius: 3,
     });
 
-    // Player capsule (lockRotation: true so character stays upright on ramps!)
+    // Player capsule + CharacterController (stair auto-step + moving platforms!)
     player = scene.createEntity();
     scene.setTransform(player, { position: [0, 1.3, 8], immediate: true });
     scene.setCollider3D(player, { kind: 'capsule', radius: 0.42, halfHeight: 0.55 });
@@ -358,8 +377,37 @@ async function bootstrap() {
       linearDamping: 0,
       lockRotation: true,
     });
+    scene.setCharacterController(player, { stepHeight: 0.5, maxSlopeDeg: 50 });
     yaw = 0;
     pitch = -0.15;
+
+    // 5-step staircase to test CharacterController automatic stair step-up
+    for (let s = 0; s < 5; s++) {
+      const h = (s + 1) * 0.3;
+      const stepE = scene.createEntity();
+      scene.setTransform(stepE, { position: [-6.5, h * 0.5, -1 - s * 0.9], scale: [3.2, h, 0.9], immediate: true });
+      scene.setCollider3D(stepE, { kind: 'aabb', halfExtents: [1.6, h * 0.5, 0.45] });
+      scene.setMesh3D(stepE, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.5 });
+    }
+
+    // Swinging HingeJoint physics door (walk into it or shoot with LMB/F!)
+    const doorPost = scene.createEntity();
+    scene.setTransform(doorPost, { position: [6.0, 1.4, 2.0], scale: [0.35, 2.8, 0.35], immediate: true });
+    scene.setCollider3D(doorPost, { kind: 'aabb', halfExtents: [0.175, 1.4, 0.175] });
+    scene.setMesh3D(doorPost, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
+
+    const swingDoor = scene.createEntity();
+    scene.setTransform(swingDoor, { position: [7.15, 1.4, 2.0], scale: [1.8, 2.4, 0.18], immediate: true });
+    scene.setCollider3D(swingDoor, { kind: 'aabb', halfExtents: [0.9, 1.2, 0.09] });
+    scene.setRigidBody(swingDoor, { dynamic: true, gravityScale: 0, mass: 2.5, angularDamping: 0.85, linearDamping: 0.5 });
+    scene.setMesh3D(swingDoor, { meshId: boxMesh.meshId, materialId: rampMat, boundsRadius: 2.0 });
+    scene.addHingeJoint(doorPost, swingDoor, {
+      anchorA: [0.22, 0, 0],
+      anchorB: [-0.95, 0, 0],
+      axis: [0, 1, 0],
+      minAngle: -1.45,
+      maxAngle: 1.45,
+    });
 
     // Glowing Hologram Jump-Pad Trigger Zone (uses Milestone 1 WASM TriggerEnter event!)
     const padMat = assets.createPreset('jump-pad', 'hologram', {
@@ -446,18 +494,8 @@ async function bootstrap() {
     scene.addTileGrid2D([-8.5, -6.5], 1.0, w, h, solid);
 
     npcs2d = [
-      {
-        x: -2,
-        y: 2,
-        name: 'AUBREY',
-        lines: 'Привет! Видишь, как плавно работает Y-сортировка и коллизии без зацепов на углах тайлов?',
-      },
-      {
-        x: 3.5,
-        y: -1.5,
-        name: 'KEL',
-        lines: 'Попробуй переключиться обратно в 3D Arena и сбросить куб на трамплин клавишей R!',
-      },
+      { x: -2, y: 2, startNode: 'aubrey_1' },
+      { x: 3.5, y: -1.5, startNode: 'kel_1' },
     ];
     npcs2d.forEach((npc, i) => {
       const e = scene.createEntity();
@@ -476,6 +514,14 @@ async function bootstrap() {
     scene.setCollider2D(hero2d, { kind: 'circle2d', radius: 0.36 });
     scene.setRigidBody(hero2d, { dynamic: true, gravityScale: 0, lockRotation: true });
     scene.setSprite2D(hero2d, { size: [0.95, 0.95], textureId: heroTex, color: [1, 1, 1, 1], layer: 1 });
+
+    // Moody 2D RPG lantern & campfire dynamic lighting
+    scene.lights2d.ambientColor = [0.36, 0.40, 0.58];
+    scene.lights2d.lights.push(
+      { position: [0, 0], color: [1.0, 0.9, 0.65], radius: 5.5, intensity: 0.95 },
+      { position: [-2, 2], color: [0.6, 0.95, 1.0], radius: 3.5, intensity: 0.65 },
+      { position: [3.5, -1.5], color: [1.0, 0.65, 0.3], radius: 3.5, intensity: 0.65 }
+    );
   }
 
   function spawnDynamicBody(kind: 'box' | 'sphere', onRamp = false) {
@@ -813,7 +859,13 @@ async function bootstrap() {
     if (!file || !file.name.toLowerCase().endsWith('.glb')) return;
     if (mode !== '3d') build3DArena();
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const handle = await assets.loadGLB(bytes, { name: file.name, tag: 'scene', preset: activePreset });
+    const handle = await assets.loadGLB(bytes, {
+      name: file.name,
+      tag: 'scene',
+      preset: activePreset,
+      scene,
+      autoColliders: true,
+    });
     const [px, py, pz] = scene.getPosition(player);
     const eId = scene.createEntity();
     scene.setTransform(eId, {
@@ -822,9 +874,13 @@ async function bootstrap() {
     });
     scene.setMesh3D(eId, {
       meshId: handle.meshId,
-      materialId: crystalMatId,
+      materialId: handle.materialIds[0] ?? crystalMatId,
       boundsRadius: handle.boundsRadius,
     });
+    const clipNames = Object.keys(handle.clips);
+    if (handle.skeletonId !== null && clipNames.length > 0) {
+      scene.playAnimation(eId, handle.skeletonId, handle.clips[clipNames[0]], { loop: true });
+    }
   });
 
   engine.onFixedUpdate((fixedDt) => {
@@ -907,18 +963,30 @@ async function bootstrap() {
       const [hx, hy] = scene.getPosition(hero2d);
       scene.camera.position = [hx, hy, 10];
       scene.camera.target = [hx, hy, 0];
+      if (scene.lights2d.lights.length > 0) {
+        scene.lights2d.lights[0].position = [hx, hy];
+      }
 
       if (input.wasKeyPressed('KeyE') || input.wasKeyPressed('Space')) {
         if (dialogueActive) {
-          dialogueActive = false;
-          dialogueBox.classList.remove('visible');
+          const next = dialogueRunner.advance();
+          if (next) {
+            dialogueFull = next.text;
+            dialogueShown = 0;
+            dialogueNameEl.textContent = next.speaker;
+            dialogueTextEl.textContent = '';
+          } else {
+            dialogueActive = false;
+            dialogueBox.classList.remove('visible');
+          }
         } else {
           const near = npcs2d.find((n) => Math.hypot(n.x - hx, n.y - hy) < 1.8);
-          if (near) {
+          const node = near ? dialogueRunner.start(near.startNode) : null;
+          if (node) {
             dialogueActive = true;
-            dialogueFull = near.lines;
+            dialogueFull = node.text;
             dialogueShown = 0;
-            dialogueNameEl.textContent = near.name;
+            dialogueNameEl.textContent = node.speaker;
             dialogueTextEl.textContent = '';
             dialogueBox.classList.add('visible');
           }

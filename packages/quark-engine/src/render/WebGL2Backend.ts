@@ -219,6 +219,42 @@ void main() {
 }
 `;
 
+const LIGHT2D_VERT = `#version 300 es
+precision highp float;
+uniform vec2 u_camCenter;
+uniform vec2 u_camHalfSize;
+out vec2 v_worldPos;
+void main() {
+  vec2 ndc = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+  v_worldPos = u_camCenter + ndc * u_camHalfSize;
+  gl_Position = vec4(ndc, 0.0, 1.0);
+}
+`;
+
+const LIGHT2D_FRAG = `#version 300 es
+precision highp float;
+in vec2 v_worldPos;
+uniform vec3 u_ambient2d;
+uniform int u_light2dCount;
+uniform vec2 u_light2dPos[16];
+uniform vec3 u_light2dColor[16];
+uniform float u_light2dRadius[16];
+out vec4 fragColor;
+void main() {
+  vec3 acc = u_ambient2d;
+  for (int i = 0; i < 16; i++) {
+    if (i >= u_light2dCount) break;
+    float r = max(u_light2dRadius[i], 0.05);
+    float d = length(v_worldPos - u_light2dPos[i]);
+    if (d < r) {
+      float t = 1.0 - d / r;
+      acc += u_light2dColor[i] * (t * t);
+    }
+  }
+  fragColor = vec4(clamp(acc, 0.0, 2.0), 1.0);
+}
+`;
+
 export class WebGL2Backend implements IRenderBackend {
   private readonly gl: WebGL2RenderingContext;
   private readonly meshes = new Map<number, GpuMesh>();
@@ -256,10 +292,14 @@ export class WebGL2Backend implements IRenderBackend {
   private skyVao: WebGLVertexArrayObject;
   private outlineProgram: GpuProgram;
   private spriteProgram: GpuProgram;
+  private light2dProgram: GpuProgram;
   private spriteVao: WebGLVertexArrayObject;
   private spriteQuadVbo: WebGLBuffer;
   private spriteInstVbo: WebGLBuffer;
   private spriteInstScratch = new Float32Array(16 * 128);
+  private readonly light2dPosScratch = new Float32Array(32);
+  private readonly light2dColScratch = new Float32Array(48);
+  private readonly light2dRadScratch = new Float32Array(16);
 
   private ppBrightProgram: GpuProgram;
   private ppBlurProgram: GpuProgram;
@@ -290,6 +330,7 @@ export class WebGL2Backend implements IRenderBackend {
     this.skyProgram = this.compileProgram('__sky__', SKY_VERT, SKY_FRAG);
     this.outlineProgram = this.compileProgram('__outline__', OUTLINE_VERT, OUTLINE_FRAG);
     this.spriteProgram = this.compileProgram('__sprite2d__', SPRITE_VERT, SPRITE_FRAG);
+    this.light2dProgram = this.compileProgram('__light2d__', LIGHT2D_VERT, LIGHT2D_FRAG);
 
     const ppSrc = composePostProcessShader();
     this.ppBrightProgram = this.compileProgram('__pp_bright__', ppSrc.vertexSource, ppSrc.brightFragmentSource);
@@ -663,7 +704,7 @@ export class WebGL2Backend implements IRenderBackend {
       drawCalls += this.renderSkyPass(scene, aspect);
       drawCalls += this.render3DPass(bridge, scene, viewProj, timeSec);
     }
-    drawCalls += this.render2DPass(bridge, viewProj);
+    drawCalls += this.render2DPass(bridge, scene, viewProj, aspect);
 
     if (usePp) {
       drawCalls += this.renderPostProcess(canvas.width, canvas.height, scene.postProcess, timeSec);
@@ -1252,7 +1293,12 @@ export class WebGL2Backend implements IRenderBackend {
     return drawCalls;
   }
 
-  private render2DPass(bridge: WasmBridge, viewProj: Float32Array): number {
+  private render2DPass(
+    bridge: WasmBridge,
+    scene: Scene,
+    viewProj: Float32Array,
+    aspect: number
+  ): number {
     const gl = this.gl;
     const items = bridge.getRender2DView();
     const texIds = bridge.getRender2DTexView();
@@ -1323,6 +1369,44 @@ export class WebGL2Backend implements IRenderBackend {
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, batchLen);
       drawCalls++;
       batchStart = batchEnd;
+    }
+
+    const amb = scene.lights2d.ambientColor;
+    const isLit2D =
+      scene.camera.mode === '2d' &&
+      (amb[0] < 0.99 || amb[1] < 0.99 || amb[2] < 0.99 || scene.lights2d.lights.length > 0);
+    if (isLit2D) {
+      const lCount = Math.min(scene.lights2d.lights.length, 16);
+      for (let i = 0; i < lCount; i++) {
+        const l = scene.lights2d.lights[i];
+        const inten = l.intensity ?? 1.0;
+        this.light2dPosScratch[i * 2] = l.position[0];
+        this.light2dPosScratch[i * 2 + 1] = l.position[1];
+        this.light2dColScratch[i * 3] = l.color[0] * inten;
+        this.light2dColScratch[i * 3 + 1] = l.color[1] * inten;
+        this.light2dColScratch[i * 3 + 2] = l.color[2] * inten;
+        this.light2dRadScratch[i] = l.radius;
+      }
+      const halfH = (scene.camera.orthoHeight / Math.max(scene.camera.zoom, 0.1)) * 0.5;
+      const halfW = halfH * Math.max(aspect, 0.001);
+      gl.blendFunc(gl.DST_COLOR, gl.ZERO);
+      gl.useProgram(this.light2dProgram.program);
+      gl.uniform2f(
+        this.uLoc(this.light2dProgram, 'u_camCenter'),
+        scene.camera.position[0],
+        scene.camera.position[1]
+      );
+      gl.uniform2f(this.uLoc(this.light2dProgram, 'u_camHalfSize'), halfW, halfH);
+      gl.uniform3fv(this.uLoc(this.light2dProgram, 'u_ambient2d'), amb);
+      gl.uniform1i(this.uLoc(this.light2dProgram, 'u_light2dCount'), lCount);
+      if (lCount > 0) {
+        gl.uniform2fv(this.uLoc(this.light2dProgram, 'u_light2dPos[0]'), this.light2dPosScratch);
+        gl.uniform3fv(this.uLoc(this.light2dProgram, 'u_light2dColor[0]'), this.light2dColScratch);
+        gl.uniform1fv(this.uLoc(this.light2dProgram, 'u_light2dRadius[0]'), this.light2dRadScratch);
+      }
+      gl.bindVertexArray(this.skyVao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      drawCalls++;
     }
 
     gl.bindVertexArray(null);

@@ -3,6 +3,7 @@ import {
   createPlaneGeometry,
   createPresetMaterial,
   Engine,
+  ParticleEmitter,
   quatFromEuler,
   type EntityId,
   type MeshGeometry,
@@ -270,14 +271,39 @@ export function startForestEscapeGame(
   scene.setParent(eyeR, monster);
   scene.setMesh3D(eyeR, { meshId: boxMesh.meshId, materialId: monsterEyeMat, boundsRadius: 0.5 });
 
-  // Point lights: [0] flashlight target, [1] player ambient glow, [2] monster red glow, [3] exit/beacon glow
+  // SpotLight flashlight + point fill/glow lights: [0] flashlight fill, [1] player ambient, [2] monster glow, [3] exit beacon
+  scene.spotLights.length = 0;
+  scene.spotLights.push({
+    position: [0, 1.8, 20],
+    direction: [0, 0, -1],
+    color: [1.0, 0.94, 0.78],
+    intensity: 5.2,
+    range: 28,
+    innerConeDeg: 14,
+    outerConeDeg: 34,
+    castsShadow: true,
+  });
+
   scene.pointLights.length = 0;
   scene.pointLights.push(
-    { position: [0, 1.6, 14], color: [1.0, 0.93, 0.74], intensity: 3.8, radius: 13.5 },
-    { position: [0, 1.6, 20], color: [0.65, 0.75, 0.95], intensity: 0.85, radius: 4.5 },
+    { position: [0, 1.6, 14], color: [1.0, 0.93, 0.74], intensity: 0.9, radius: 7.5 },
+    { position: [0, 1.6, 20], color: [0.65, 0.75, 0.95], intensity: 0.7, radius: 4.5 },
     { position: [4, 2.2, -18], color: [1.0, 0.12, 0.1], intensity: 2.8, radius: 10.5 },
     { position: [0, 2.5, -25], color: [1.0, 0.25, 0.2], intensity: 2.2, radius: 12.0 }
   );
+
+  const fireflies = new ParticleEmitter(scene, {
+    maxParticles: 24,
+    lifetime: 2.4,
+    gravity: 0.2,
+    size: [0.16, 0.16],
+    startColor: [0.55, 1.0, 0.72, 0.85],
+    endColor: [0.25, 0.8, 1.0, 0],
+    speedMin: 0.2,
+    speedMax: 0.7,
+    spread: [1.5, 0.5, 1.5],
+  });
+  let particleTimer = 0;
 
   let yaw = 0;
   let pitch = -0.05;
@@ -451,24 +477,29 @@ export function startForestEscapeGame(
       const [mx, my, mz] = scene.getPosition(monster);
       const monsterDist = Math.hypot(mx - px, mz - pz);
 
-      // Flashlight beam placement via real WASM raycast (start outside player's 0.42m capsule)
+      // Real shadow-casting GPU SpotLight flashlight + subtle bounce point light
       if (flashlightOn) {
-        const hit = scene.raycast3D(
-          [px + lookX * 0.65, eyeY + lookY * 0.65, pz + lookZ * 0.65],
-          [lookX, lookY, lookZ],
-          11.5
-        );
-        const beamDist = hit ? Math.max(1.2, hit.distance) : 8.5;
         const flicker = monsterDist < 10 ? 0.72 + Math.sin(elapsed * 37) * 0.28 : 1.0;
-        scene.pointLights[0].position = [px + lookX * beamDist, eyeY + lookY * beamDist, pz + lookZ * beamDist];
-        scene.pointLights[0].intensity = 4.0 * flicker;
+        scene.spotLights[0].position = [px + lookX * 0.35, eyeY - 0.08 + lookY * 0.35, pz + lookZ * 0.35];
+        scene.spotLights[0].direction = [lookX, lookY, lookZ];
+        scene.spotLights[0].intensity = 5.4 * flicker;
+        scene.pointLights[0].position = [px + lookX * 2.5, eyeY + lookY * 2.5, pz + lookZ * 2.5];
+        scene.pointLights[0].intensity = 1.0 * flicker;
         scene.pointLights[1].position = [px, eyeY, pz];
-        scene.pointLights[1].intensity = 0.9;
+        scene.pointLights[1].intensity = 0.7;
       } else {
+        scene.spotLights[0].intensity = 0;
         scene.pointLights[0].intensity = 0;
         scene.pointLights[1].position = [px, eyeY, pz];
         scene.pointLights[1].intensity = 0.35;
       }
+
+      particleTimer += dt;
+      if (particleTimer >= 0.2) {
+        particleTimer = 0;
+        fireflies.emit(1, [px + (Math.random() - 0.5) * 10, 0.6 + Math.random() * 1.4, pz + (Math.random() - 0.5) * 10]);
+      }
+      fireflies.update(dt);
 
       scene.pointLights[2].position = [mx, my + 0.9, mz];
 

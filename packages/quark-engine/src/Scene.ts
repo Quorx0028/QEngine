@@ -89,6 +89,13 @@ export interface SpotLight {
   castsShadow?: boolean;
 }
 
+export interface Light2D {
+  position: [number, number];
+  color: Vec3Tuple;
+  radius: number;
+  intensity?: number;
+}
+
 export interface CollisionEvent {
   entityA: EntityId;
   entityB: EntityId;
@@ -128,6 +135,10 @@ export class Scene {
 
   readonly pointLights: PointLight[] = [];
   readonly spotLights: SpotLight[] = [];
+  readonly lights2d: { ambientColor: Vec3Tuple; lights: Light2D[] } = {
+    ambientColor: [1, 1, 1],
+    lights: [],
+  };
   postProcess: PostProcessConfig = createPostProcessPreset('none');
   shadowsEnabled = true;
   skyTopColor: Vec3Tuple = [0.08, 0.16, 0.32];
@@ -263,6 +274,98 @@ export class Scene {
 
   setTrigger(entity: EntityId, isTrigger: boolean): void {
     this.bridge.setTrigger(entity, isTrigger);
+  }
+
+  setCharacterController(
+    entity: EntityId,
+    opts: { stepHeight?: number; maxSlopeDeg?: number } = {}
+  ): void {
+    this.bridge.setCharacterController(entity, opts.stepHeight ?? 0.45, opts.maxSlopeDeg ?? 50);
+  }
+
+  addDistanceJoint(
+    entityA: EntityId,
+    entityB: EntityId,
+    opts: { anchorA?: Vec3Tuple; anchorB?: Vec3Tuple; restLength: number; stiffness?: number }
+  ): number {
+    const a = opts.anchorA ?? [0, 0, 0];
+    const b = opts.anchorB ?? [0, 0, 0];
+    return this.bridge.addDistanceJoint(
+      entityA,
+      entityB,
+      a[0],
+      a[1],
+      a[2],
+      b[0],
+      b[1],
+      b[2],
+      opts.restLength,
+      opts.stiffness ?? 1.0
+    );
+  }
+
+  addSpringJoint(
+    entityA: EntityId,
+    entityB: EntityId,
+    opts: {
+      anchorA?: Vec3Tuple;
+      anchorB?: Vec3Tuple;
+      restLength: number;
+      stiffness: number;
+      damping?: number;
+    }
+  ): number {
+    const a = opts.anchorA ?? [0, 0, 0];
+    const b = opts.anchorB ?? [0, 0, 0];
+    return this.bridge.addSpringJoint(
+      entityA,
+      entityB,
+      a[0],
+      a[1],
+      a[2],
+      b[0],
+      b[1],
+      b[2],
+      opts.restLength,
+      opts.stiffness,
+      opts.damping ?? 1.0
+    );
+  }
+
+  addHingeJoint(
+    entityA: EntityId,
+    entityB: EntityId,
+    opts: {
+      anchorA?: Vec3Tuple;
+      anchorB?: Vec3Tuple;
+      axis: Vec3Tuple;
+      minAngle?: number;
+      maxAngle?: number;
+    }
+  ): number {
+    const a = opts.anchorA ?? [0, 0, 0];
+    const b = opts.anchorB ?? [0, 0, 0];
+    const hasLimits = opts.minAngle !== undefined || opts.maxAngle !== undefined;
+    return this.bridge.addHingeJoint(
+      entityA,
+      entityB,
+      a[0],
+      a[1],
+      a[2],
+      b[0],
+      b[1],
+      b[2],
+      opts.axis[0],
+      opts.axis[1],
+      opts.axis[2],
+      hasLimits,
+      opts.minAngle ?? -Math.PI,
+      opts.maxAngle ?? Math.PI
+    );
+  }
+
+  removeJoint(jointId: number): boolean {
+    return this.bridge.removeJoint(jointId);
   }
 
   onCollisionEnter(cb: (ev: CollisionEvent) => void): () => void {
@@ -423,6 +526,10 @@ export class Scene {
     this.collisionEnterListeners.clear();
     this.triggerEnterListeners.clear();
     this.triggerExitListeners.clear();
+    this.pointLights.length = 0;
+    this.spotLights.length = 0;
+    this.lights2d.ambientColor = [1, 1, 1];
+    this.lights2d.lights.length = 0;
     this.bridge.clear();
   }
 }

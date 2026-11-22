@@ -1,4 +1,5 @@
 use crate::ecs::{entity_index, Collider2D, Collider3D, EntityHandle, RigidBody, World, INVALID_ENTITY};
+use crate::joints::JointSolver;
 use glam::{Mat3, Quat, Vec2, Vec3};
 
 pub const EVENT_COLLISION_ENTER: u32 = 1;
@@ -295,11 +296,20 @@ struct OverlapPair {
     is_trigger: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct CharacterController {
+    pub step_height: f32,
+    pub max_slope_cos: f32,
+}
+
 pub struct PhysicsWorld {
     pub config: PhysicsConfig,
     accumulator: f32,
     pub tile_grids_2d: Vec<TileGrid2D>,
     pub static_meshes: Vec<StaticTriMesh>,
+    pub joints: JointSolver,
+    pub character_controllers: Vec<Option<CharacterController>>,
+    ground_support: Vec<Option<(usize, Vec3)>>,
     dynamic_indices: Vec<usize>,
     awake_indices: Vec<usize>,
     static_indices_3d: Vec<usize>,
@@ -322,6 +332,9 @@ impl PhysicsWorld {
             accumulator: 0.0,
             tile_grids_2d: Vec::new(),
             static_meshes: Vec::new(),
+            joints: JointSolver::new(),
+            character_controllers: Vec::new(),
+            ground_support: Vec::new(),
             dynamic_indices: Vec::new(),
             awake_indices: Vec::new(),
             static_indices_3d: Vec::new(),
@@ -336,9 +349,29 @@ impl PhysicsWorld {
         }
     }
 
+    pub fn set_character_controller(
+        &mut self,
+        entity: EntityHandle,
+        step_height: f32,
+        max_slope_deg: f32,
+    ) {
+        let idx = entity_index(entity);
+        if idx >= self.character_controllers.len() {
+            self.character_controllers.resize(idx + 1, None);
+        }
+        let cos = max_slope_deg.clamp(1.0, 89.0).to_radians().cos();
+        self.character_controllers[idx] = Some(CharacterController {
+            step_height: step_height.max(0.0),
+            max_slope_cos: cos,
+        });
+    }
+
     pub fn clear_static_geometry(&mut self) {
         self.tile_grids_2d.clear();
         self.static_meshes.clear();
+        self.joints.clear();
+        self.character_controllers.clear();
+        self.ground_support.clear();
         self.prev_overlaps.clear();
         self.curr_overlaps.clear();
         self.clear_events();
@@ -428,6 +461,34 @@ impl PhysicsWorld {
         self.curr_overlaps.clear();
 
         let count = world.alive.len();
+        if self.ground_support.len() < count {
+            self.ground_support.resize(count, None);
+        }
+
+        // Apply spring joint impulses before integration
+        self.joints.retain_alive(world);
+        self.joints.apply_springs(world, dt);
+
+        // Wake riders whose supporting platform moved
+        for i in 0..count {
+            if !world.alive[i] {
+                self.ground_support[i] = None;
+                continue;
+            }
+            if let Some((plat_idx, last_pos)) = self.ground_support[i] {
+                if plat_idx < count && world.alive[plat_idx] {
+                    if world.curr_pos[plat_idx].distance_squared(last_pos) > 1e-8 {
+                        if let Some(rb) = &mut world.rigid_bodies[i] {
+                            rb.sleeping = false;
+                            rb.sleep_timer = 0.0;
+                        }
+                    }
+                } else {
+                    self.ground_support[i] = None;
+                }
+            }
+        }
+
         for i in 0..count {
             if !world.alive[i] {
                 continue;
@@ -467,6 +528,19 @@ impl PhysicsWorld {
             }
         }
 
+        // Carry grounded riders along moving platforms (using net delta since previous substep)
+        for &i in &self.awake_indices {
+            if let Some((plat_idx, last_pos)) = self.ground_support[i] {
+                if plat_idx < count && world.alive[plat_idx] {
+                    let delta = world.curr_pos[plat_idx] - last_pos;
+                    if delta.length_squared() > 1e-10 {
+                        world.curr_pos[i] += delta;
+                    }
+                }
+                self.ground_support[i] = None;
+            }
+        }
+
         self.static_meshes
             .retain(|m| m.entity == INVALID_ENTITY || world.is_alive(m.entity));
 
@@ -484,6 +558,18 @@ impl PhysicsWorld {
                 }
             }
             self.resolve_3d_dynamic_pairs(world, iter == 0);
+            self.joints.solve_constraints(world, dt);
+        }
+
+        // Snapshot updated platform positions for next tick's rider carry
+        for i in 0..self.ground_support.len() {
+            if let Some((plat_idx, _)) = self.ground_support[i] {
+                if plat_idx < count && world.alive[plat_idx] {
+                    self.ground_support[i] = Some((plat_idx, world.curr_pos[plat_idx]));
+                } else {
+                    self.ground_support[i] = None;
+                }
+            }
         }
 
         // Update sleeping timers
@@ -562,24 +648,21 @@ impl PhysicsWorld {
         self.pair_scratch.dedup();
     }
 
-    fn resolve_3d_static(&mut self, world: &mut World, dyn_idx: usize, record_overlaps: bool) {
-        let Some(col) = world.colliders_3d[dyn_idx] else {
-            return;
-        };
-        let Some(rb_a) = world.rigid_bodies[dyn_idx] else {
-            return;
-        };
-
-        let mut contacts = [ContactPoint {
-            point: Vec3::ZERO,
-            normal: Vec3::ZERO,
-            depth: 0.0,
-        }; 32];
+    #[allow(clippy::too_many_arguments)]
+    fn gather_static_contacts(
+        &mut self,
+        world: &World,
+        dyn_idx: usize,
+        col: Collider3D,
+        pos_a: Vec3,
+        rot_a: Quat,
+        rb_a: RigidBody,
+        record_overlaps: bool,
+        handle_a: EntityHandle,
+        contacts: &mut [ContactPoint; 32],
+    ) -> usize {
         let mut contact_count = 0usize;
-
-        let pos_a = world.curr_pos[dyn_idx];
-        let rot_a = world.curr_rot[dyn_idx];
-        let handle_a = make_handle(world, dyn_idx);
+        let mut ground_stat_idx: Option<usize> = None;
 
         // 1. Static AABB / Sphere / Capsule entities (including triggers)
         for s_pos in 0..self.static_indices_3d.len() {
@@ -626,11 +709,23 @@ impl PhysicsWorld {
                 world.curr_rot[stat_idx],
                 Some(stat_idx),
                 false,
-                &mut contacts,
+                contacts,
                 &mut contact_count,
             );
-            if contact_count > before && record_overlaps {
-                self.record_overlap(handle_a, make_handle(world, stat_idx), false);
+            if contact_count > before {
+                if record_overlaps {
+                    self.record_overlap(handle_a, make_handle(world, stat_idx), false);
+                }
+                if contacts[before..contact_count].iter().any(|c| c.normal.y > 0.45) {
+                    ground_stat_idx = Some(stat_idx);
+                }
+            }
+        }
+        if record_overlaps {
+            if let Some(p_idx) = ground_stat_idx {
+                if dyn_idx < self.ground_support.len() {
+                    self.ground_support[dyn_idx] = Some((p_idx, world.curr_pos[p_idx]));
+                }
             }
         }
 
@@ -648,9 +743,125 @@ impl PhysicsWorld {
                         pos_a,
                         rot_a,
                         tri,
-                        &mut contacts,
+                        contacts,
                         &mut contact_count,
                     );
+                }
+            }
+        }
+        contact_count
+    }
+
+    fn has_blocking_wall(
+        &mut self,
+        world: &World,
+        dyn_idx: usize,
+        col: Collider3D,
+        rot_a: Quat,
+        rb_a: RigidBody,
+        test_pos: Vec3,
+        slope_cos: f32,
+    ) -> bool {
+        let mut probe = [ContactPoint {
+            point: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            depth: 0.0,
+        }; 32];
+        let count = self.gather_static_contacts(
+            world,
+            dyn_idx,
+            col,
+            test_pos,
+            rot_a,
+            rb_a,
+            false,
+            INVALID_ENTITY,
+            &mut probe,
+        );
+        probe[..count].iter().any(|c| {
+            (c.normal.y.abs() < slope_cos && c.depth > 0.025)
+                || (c.normal.y < -0.5 && c.depth > 0.02)
+        })
+    }
+
+    fn resolve_3d_static(&mut self, world: &mut World, dyn_idx: usize, record_overlaps: bool) {
+        let Some(col) = world.colliders_3d[dyn_idx] else {
+            return;
+        };
+        let Some(rb_a) = world.rigid_bodies[dyn_idx] else {
+            return;
+        };
+
+        let mut contacts = [ContactPoint {
+            point: Vec3::ZERO,
+            normal: Vec3::ZERO,
+            depth: 0.0,
+        }; 32];
+        let pos_a = world.curr_pos[dyn_idx];
+        let rot_a = world.curr_rot[dyn_idx];
+        let handle_a = make_handle(world, dyn_idx);
+        let mut contact_count = self.gather_static_contacts(
+            world,
+            dyn_idx,
+            col,
+            pos_a,
+            rot_a,
+            rb_a,
+            record_overlaps,
+            handle_a,
+            &mut contacts,
+        );
+
+        if contact_count == 0 {
+            return;
+        }
+
+        let cc = self.character_controllers.get(dyn_idx).copied().flatten();
+        let slope_cos = cc.map_or(0.45, |c| c.max_slope_cos);
+
+        // Stair auto-step-up for CharacterController when horizontal motion meets a low curb/step
+        if record_overlaps && !rb_a.is_trigger {
+            if let Some(ctrl) = cc {
+                if ctrl.step_height > 0.01 {
+                    let has_wall = contacts[..contact_count]
+                        .iter()
+                        .any(|c| c.normal.y.abs() < ctrl.max_slope_cos && c.depth > 0.005);
+                    let hv = Vec3::new(world.velocities[dyn_idx].x, 0.0, world.velocities[dyn_idx].z);
+                    if has_wall && hv.length_squared() > 0.01 {
+                        let nudge = hv.normalize() * 0.08;
+                        for frac in [0.25f32, 0.5, 0.75, 1.0] {
+                            let h = ctrl.step_height * frac;
+                            let test_pos = pos_a + Vec3::Y * h + nudge;
+                            if !self.has_blocking_wall(
+                                world,
+                                dyn_idx,
+                                col,
+                                rot_a,
+                                rb_a,
+                                test_pos,
+                                ctrl.max_slope_cos,
+                            ) {
+                                let stepped_pos = pos_a + Vec3::Y * (h + 0.01) + nudge * 0.5;
+                                world.curr_pos[dyn_idx] = stepped_pos;
+                                world.velocities[dyn_idx].y = world.velocities[dyn_idx].y.max(0.0);
+                                contact_count = self.gather_static_contacts(
+                                    world,
+                                    dyn_idx,
+                                    col,
+                                    stepped_pos,
+                                    rot_a,
+                                    rb_a,
+                                    false,
+                                    handle_a,
+                                    &mut contacts,
+                                );
+                                if let Some(rb) = &mut world.rigid_bodies[dyn_idx] {
+                                    rb.grounded = true;
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -669,7 +880,7 @@ impl PhysicsWorld {
 
         let mut max_push = Vec3::ZERO;
         for c in &contacts[..contact_count] {
-            if c.normal.y > 0.45 {
+            if c.normal.y >= slope_cos {
                 if let Some(rb) = &mut world.rigid_bodies[dyn_idx] {
                     rb.grounded = true;
                 }
@@ -821,21 +1032,30 @@ impl PhysicsWorld {
                     deepest = *c;
                 }
             }
-            let half_push = deepest.normal * ((deepest.depth - 0.0005).max(0.0) * 0.5);
-            world.curr_pos[a] += half_push;
-            world.curr_pos[b] -= half_push;
+            let total_inv_m = (inv_m_a + inv_m_b).max(1e-6);
+            let push_dist = (deepest.depth - 0.0005).max(0.0);
+            world.curr_pos[a] += deepest.normal * (push_dist * (inv_m_a / total_inv_m));
+            world.curr_pos[b] -= deepest.normal * (push_dist * (inv_m_b / total_inv_m));
             if deepest.normal.y > 0.45 {
                 if let Some(rb) = &mut world.rigid_bodies[a] {
                     rb.grounded = true;
+                }
+                if a < self.ground_support.len() {
+                    self.ground_support[a] = Some((b, world.curr_pos[b]));
                 }
             }
             if deepest.normal.y < -0.45 {
                 if let Some(rb) = &mut world.rigid_bodies[b] {
                     rb.grounded = true;
                 }
+                if b < self.ground_support.len() {
+                    self.ground_support[b] = Some((a, world.curr_pos[a]));
+                }
             }
 
             let scale = 1.0 / (count.max(1) as f32);
+            let cc_a = self.character_controllers.get(a).copied().flatten().is_some();
+            let cc_b = self.character_controllers.get(b).copied().flatten().is_some();
             for c in &contacts[..count] {
                 let n = c.normal;
                 let ra = c.point - world.curr_pos[a];
@@ -860,10 +1080,11 @@ impl PhysicsWorld {
                     rb_a.restitution.max(rb_b.restitution)
                 };
                 let jn = (-(1.0 + e) * vn / denom) * scale;
-                let mut impulse = n * jn;
+                let mut impulse_a = n * jn;
+                let mut impulse_b = -n * jn;
 
                 let mu = (rb_a.friction + rb_b.friction) * 0.5;
-                if mu > 0.0 {
+                if mu > 0.0 && !(cc_a || cc_b) {
                     let tang = v_rel - n * vn;
                     let t_len = tang.length();
                     if t_len > 1e-5 {
@@ -873,16 +1094,17 @@ impl PhysicsWorld {
                             + ra.cross(t).length_squared() * inv_i_a
                             + rb.cross(t).length_squared() * inv_i_b;
                         let jt = (-v_rel.dot(t) / denom_t.max(1e-6)).clamp(-mu * jn, mu * jn);
-                        impulse += t * jt;
+                        impulse_a += t * jt;
+                        impulse_b -= t * jt;
                     }
                 }
-                world.velocities[a] += impulse * inv_m_a;
-                world.velocities[b] -= impulse * inv_m_b;
+                world.velocities[a] += impulse_a * inv_m_a;
+                world.velocities[b] += impulse_b * inv_m_b;
                 if !rb_a.lock_rotation {
-                    world.angular_velocities[a] += ra.cross(impulse) * inv_i_a;
+                    world.angular_velocities[a] += ra.cross(impulse_a) * inv_i_a;
                 }
                 if !rb_b.lock_rotation {
-                    world.angular_velocities[b] -= rb.cross(impulse) * inv_i_b;
+                    world.angular_velocities[b] += rb.cross(impulse_b) * inv_i_b;
                 }
             }
         }
@@ -1392,7 +1614,14 @@ fn collect_3d_contacts(
                 );
             }
         }
-        _ => {}
+        (Collider3D::Aabb { .. }, Collider3D::Capsule { .. })
+        | (Collider3D::Sphere { .. }, Collider3D::Capsule { .. }) => {
+            let before = *count;
+            collect_3d_contacts(b, pb, rb, a, pa, ra, other_idx, other_is_dynamic, contacts, count);
+            for c in &mut contacts[before..*count] {
+                c.normal = -c.normal;
+            }
+        }
     }
 }
 
@@ -2411,6 +2640,99 @@ mod tests {
             "top cube fell straight through bottom cube! top={:?}, bottom={:?}",
             top_pos,
             bottom_pos
+        );
+    }
+
+    #[test]
+    fn test_character_controller_steps_up_stair() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let floor = world.spawn();
+        world.set_transform_immediate(floor, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(floor)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(20.0, 0.5, 20.0),
+        });
+
+        // Step 0.35m tall from y=0..0.35 at z = 1..5
+        let step = world.spawn();
+        world.set_transform_immediate(step, Vec3::new(0.0, 0.175, 3.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(step)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(3.0, 0.175, 2.0),
+        });
+
+        let player = world.spawn();
+        world.set_transform_immediate(player, Vec3::new(0.0, 0.9, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(player)] = Some(Collider3D::Capsule {
+            radius: 0.4,
+            half_height: 0.5,
+        });
+        world.rigid_bodies[entity_index(player)] = Some(RigidBody {
+            dynamic: true,
+            lock_rotation: true,
+            friction: 0.0,
+            ..Default::default()
+        });
+        phys.set_character_controller(player, 0.5, 50.0);
+
+        for _ in 0..70 {
+            world.velocities[entity_index(player)].z = 4.0;
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+
+        let pos = world.curr_pos[entity_index(player)];
+        assert!(pos.z > 1.2, "character blocked by stair step instead of climbing: {pos:?}");
+        assert!(pos.y >= 1.15, "character did not rise onto step: {pos:?}");
+    }
+
+    #[test]
+    fn test_character_controller_rides_moving_platform() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let plat = world.spawn();
+        world.set_transform_immediate(plat, Vec3::new(0.0, 0.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(plat)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(3.0, 0.25, 3.0),
+        });
+        world.rigid_bodies[entity_index(plat)] = Some(RigidBody {
+            dynamic: true,
+            gravity_scale: 0.0,
+            mass: 500.0,
+            lock_rotation: true,
+            linear_damping: 0.0,
+            ..Default::default()
+        });
+
+        let rider = world.spawn();
+        world.set_transform_immediate(rider, Vec3::new(0.0, 1.15, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(rider)] = Some(Collider3D::Capsule {
+            radius: 0.4,
+            half_height: 0.5,
+        });
+        world.rigid_bodies[entity_index(rider)] = Some(RigidBody {
+            dynamic: true,
+            lock_rotation: true,
+            ..Default::default()
+        });
+        phys.set_character_controller(rider, 0.4, 50.0);
+
+        // Settle onto platform
+        for _ in 0..20 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+        let start_x = world.curr_pos[entity_index(rider)].x;
+
+        // Move platform sideways at 3 m/s
+        for _ in 0..60 {
+            world.velocities[entity_index(plat)] = Vec3::new(3.0, 0.0, 0.0);
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+        let end_x = world.curr_pos[entity_index(rider)].x;
+        let plat_x = world.curr_pos[entity_index(plat)].x;
+        assert!(
+            end_x - start_x > 2.2 && (end_x - plat_x).abs() < 0.4,
+            "rider slipped off moving platform: rider_x={end_x}, plat_x={plat_x}"
         );
     }
 }

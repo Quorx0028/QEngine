@@ -1,6 +1,7 @@
 pub mod animation;
 pub mod ecs;
 pub mod gltf_loader;
+pub mod joints;
 pub mod physics;
 pub mod render;
 
@@ -319,6 +320,110 @@ pub unsafe extern "C" fn core_set_trigger(
             ..Default::default()
         });
         rb.is_trigger = is_trigger != 0;
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_character_controller(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    step_height: f32,
+    max_slope_deg: f32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        core.physics
+            .set_character_controller(entity, step_height, max_slope_deg);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_distance_joint(
+    ptr: *mut EngineCore,
+    entity_a: EntityHandle,
+    entity_b: EntityHandle,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+    rest_length: f32,
+    stiffness: f32,
+) -> u32 {
+    (*ptr).physics.joints.add_distance(
+        entity_a,
+        entity_b,
+        Vec3::new(ax, ay, az),
+        Vec3::new(bx, by, bz),
+        rest_length,
+        stiffness,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_spring_joint(
+    ptr: *mut EngineCore,
+    entity_a: EntityHandle,
+    entity_b: EntityHandle,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+    rest_length: f32,
+    stiffness: f32,
+    damping: f32,
+) -> u32 {
+    (*ptr).physics.joints.add_spring(
+        entity_a,
+        entity_b,
+        Vec3::new(ax, ay, az),
+        Vec3::new(bx, by, bz),
+        rest_length,
+        stiffness,
+        damping,
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_hinge_joint(
+    ptr: *mut EngineCore,
+    entity_a: EntityHandle,
+    entity_b: EntityHandle,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+    axis_x: f32,
+    axis_y: f32,
+    axis_z: f32,
+    has_limits: i32,
+    min_angle: f32,
+    max_angle: f32,
+) -> u32 {
+    let core = &mut *ptr;
+    core.physics.joints.add_hinge(
+        &core.world,
+        entity_a,
+        entity_b,
+        Vec3::new(ax, ay, az),
+        Vec3::new(bx, by, bz),
+        Vec3::new(axis_x, axis_y, axis_z),
+        if has_limits != 0 { Some(min_angle) } else { None },
+        if has_limits != 0 { Some(max_angle) } else { None },
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_remove_joint(ptr: *mut EngineCore, joint_id: u32) -> i32 {
+    if (*ptr).physics.joints.remove(joint_id) {
+        1
+    } else {
+        0
     }
 }
 

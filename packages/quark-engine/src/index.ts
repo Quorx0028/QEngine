@@ -46,6 +46,26 @@ export {
 } from './render/ShaderPresets';
 export { computeSmoothNormals, WebGL2Backend } from './render/WebGL2Backend';
 export {
+  DialogueRunner,
+  type DialogueChoice,
+  type DialogueFlagValue,
+  type DialogueNode,
+} from './rpg/DialogueRunner';
+export {
+  SpriteAnimator,
+  type SpriteAnimClip,
+  type SpriteAnimatorOptions,
+} from './rpg/SpriteAnimator';
+export {
+  Tilemap,
+  type TiledJsonMap,
+  type TiledLayer,
+  type TiledObject,
+  type TilemapLoadOptions,
+  type WorldTiledObject,
+} from './rpg/Tilemap';
+export { ParticleEmitter, type ParticleEmitterOptions } from './render/ParticleEmitter';
+export {
   Scene,
   type CameraState,
   type Collider2DOptions,
@@ -53,6 +73,7 @@ export {
   type CollisionEvent,
   type DirectionalLight,
   type EntityId,
+  type Light2D,
   type Mesh3DOptions,
   type PointLight,
   type SpotLight,
