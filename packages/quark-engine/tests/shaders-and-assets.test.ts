@@ -210,4 +210,21 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(vertexSource).toContain('uniform int u_skinned;');
     expect(vertexSource).toContain('uniform mat4 u_boneMatrices[64];');
   });
+
+  it('includes SpotLight shadow cone, PBR normal/MR/emissive maps, and hardware instancing in composed shaders', () => {
+    const { vertexSource, fragmentSource } = composeShader({ blocks: ['pbrLighting'] });
+    expect(vertexSource).toContain('layout(location = 6) in vec4 a_instMat0;');
+    expect(vertexSource).toContain('uniform int u_instanced;');
+    expect(vertexSource).toContain('uniform mat4 u_spotLightViewProj;');
+    expect(vertexSource).toContain('out vec4 v_spotShadowCoord;');
+
+    expect(fragmentSource).toContain('uniform int u_spotLightCount;');
+    expect(fragmentSource).toContain('uniform sampler2D u_spotShadowMap;');
+    expect(fragmentSource).toContain('evalSpotLights');
+    expect(fragmentSource).toContain('uniform int u_hasNormalMap;');
+    expect(fragmentSource).toContain('perturbNormal');
+    expect(fragmentSource).toContain('uniform int u_hasMetallicRoughnessMap;');
+    expect(fragmentSource).toContain('uniform int u_hasEmissiveMap;');
+    expect(fragmentSource).toContain('uniform vec3 u_emissiveColor;');
+  });
 });

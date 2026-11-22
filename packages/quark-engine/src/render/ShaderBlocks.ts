@@ -56,20 +56,27 @@ layout(location = 1) in vec3 a_normal;
 layout(location = 2) in vec2 a_uv;
 layout(location = 4) in uvec4 a_joints;
 layout(location = 5) in vec4 a_weights;
+layout(location = 6) in vec4 a_instMat0;
+layout(location = 7) in vec4 a_instMat1;
+layout(location = 8) in vec4 a_instMat2;
+layout(location = 9) in vec4 a_instMat3;
 
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
 uniform mat4 u_lightViewProj;
+uniform mat4 u_spotLightViewProj;
 uniform float u_time;
 uniform float u_waveAmp;
 uniform float u_waveFreq;
 uniform int u_skinned;
+uniform int u_instanced;
 uniform mat4 u_boneMatrices[64];
 
 out vec3 v_worldPos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec4 v_shadowCoord;
+out vec4 v_spotShadowCoord;
 
 ${vertexWaveFn}
 
@@ -90,11 +97,13 @@ void main() {
   }
   ${has('vertexWave') ? 'localPos = applyVertexWave(localPos, u_time, u_waveAmp, u_waveFreq);' : ''}
   ${config.customVertexSnippet ?? ''}
-  vec4 world = u_model * vec4(localPos, 1.0);
+  mat4 modelMat = (u_instanced == 1) ? mat4(a_instMat0, a_instMat1, a_instMat2, a_instMat3) : u_model;
+  vec4 world = modelMat * vec4(localPos, 1.0);
   v_worldPos = world.xyz;
-  v_normal = normalize(transpose(inverse(mat3(u_model))) * localNormal);
+  v_normal = normalize(transpose(inverse(mat3(modelMat))) * localNormal);
   v_uv = a_uv;
   v_shadowCoord = u_lightViewProj * vec4(world.xyz + v_normal * 0.05, 1.0);
+  v_spotShadowCoord = u_spotLightViewProj * vec4(world.xyz + v_normal * 0.04, 1.0);
   gl_Position = u_viewProj * world;
 }
 `;
@@ -369,6 +378,7 @@ in vec3 v_worldPos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec4 v_shadowCoord;
+in vec4 v_spotShadowCoord;
 
 uniform vec3 u_cameraPos;
 uniform float u_time;
@@ -386,6 +396,16 @@ uniform vec3 u_pointPos[4];
 uniform vec3 u_pointColor[4];
 uniform float u_pointRadius[4];
 
+uniform int u_spotLightCount;
+uniform vec3 u_spotPos[4];
+uniform vec3 u_spotDir[4];
+uniform vec3 u_spotColor[4];
+uniform float u_spotRange[4];
+uniform float u_spotInnerCos[4];
+uniform float u_spotOuterCos[4];
+uniform int u_spotShadowEnabled;
+uniform sampler2D u_spotShadowMap;
+
 uniform vec4 u_baseColor;
 uniform vec3 u_shadowTint;
 uniform vec3 u_rimColor;
@@ -401,25 +421,51 @@ uniform float u_ditherStrength;
 uniform float u_gridScale;
 uniform int u_hasTexture;
 uniform sampler2D u_tex;
+uniform int u_hasNormalMap;
+uniform sampler2D u_normalMap;
+uniform int u_hasMetallicRoughnessMap;
+uniform sampler2D u_metallicRoughnessMap;
+uniform int u_hasEmissiveMap;
+uniform sampler2D u_emissiveMap;
+uniform vec3 u_emissiveColor;
 
 out vec4 fragColor;
 
-float evalShadow(vec4 sc, vec3 n, vec3 l) {
-  if (u_shadowsEnabled == 0) return 1.0;
+float evalShadowMap(sampler2D smap, vec4 sc, vec3 n, vec3 l) {
   vec3 proj = sc.xyz / max(sc.w, 0.0001) * 0.5 + 0.5;
-  if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0) {
+  if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0 || proj.z < 0.0) {
     return 1.0;
   }
-  float bias = max(0.003 * (1.0 - dot(n, l)), 0.0008);
-  vec2 texelSize = 1.0 / vec2(textureSize(u_shadowMap, 0));
+  float bias = max(0.003 * (1.0 - max(dot(n, l), 0.0)), 0.0008);
+  vec2 texelSize = 1.0 / vec2(textureSize(smap, 0));
   float sum = 0.0;
   for (int x = -1; x <= 1; x++) {
     for (int y = -1; y <= 1; y++) {
-      float depth = texture(u_shadowMap, proj.xy + vec2(x, y) * texelSize).r;
+      float depth = texture(smap, proj.xy + vec2(x, y) * texelSize).r;
       sum += (proj.z - bias <= depth) ? 1.0 : 0.0;
     }
   }
   return sum / 9.0;
+}
+
+float evalShadow(vec4 sc, vec3 n, vec3 l) {
+  if (u_shadowsEnabled == 0) return 1.0;
+  return evalShadowMap(u_shadowMap, sc, n, l);
+}
+
+vec3 perturbNormal(vec3 n, vec3 wp, vec2 uv, vec3 mapN) {
+  vec3 dp1 = dFdx(wp);
+  vec3 dp2 = dFdy(wp);
+  vec2 duv1 = dFdx(uv);
+  vec2 duv2 = dFdy(uv);
+  vec3 dp2perp = cross(dp2, n);
+  vec3 dp1perp = cross(n, dp1);
+  vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;
+  vec3 b = dp2perp * duv1.y + dp1perp * duv2.y;
+  float invMax = inversesqrt(max(dot(t, t), dot(b, b)));
+  if (isnan(invMax) || isinf(invMax) || invMax > 1e4) return n;
+  mat3 tbn = mat3(t * invMax, b * invMax, n);
+  return normalize(tbn * mapN);
 }
 
 vec3 evalPointLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel) {
@@ -443,6 +489,31 @@ vec3 evalPointLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel) {
   return acc;
 }
 
+vec3 evalSpotLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel, vec4 spotSc) {
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 4; i++) {
+    if (i >= u_spotLightCount) break;
+    vec3 toL = u_spotPos[i] - wp;
+    float d = length(toL);
+    float r = max(u_spotRange[i], 0.1);
+    if (d >= r) continue;
+    vec3 ld = toL / max(d, 0.001);
+    float theta = dot(-ld, normalize(u_spotDir[i]));
+    float cone = clamp((theta - u_spotOuterCos[i]) / max(u_spotInnerCos[i] - u_spotOuterCos[i], 0.001), 0.0, 1.0);
+    if (cone <= 0.001) continue;
+    float att = pow(1.0 - d / r, 2.0) * cone;
+    float ndl = max(dot(n, ld), 0.0);
+    if (cel > 0.5) {
+      ndl = floor(ndl * 2.99) / 2.0;
+    }
+    float spotShad = (i == 0 && u_spotShadowEnabled == 1) ? evalShadowMap(u_spotShadowMap, spotSc, n, ld) : 1.0;
+    vec3 h = normalize(ld + v);
+    float sp = pow(max(dot(n, h), 0.0), 36.0) * 0.45;
+    acc += (albedo * ndl + sp) * u_spotColor[i] * att * spotShad;
+  }
+  return acc;
+}
+
 ${blockSnippets.join('\n')}
 
 void main() {
@@ -454,10 +525,19 @@ void main() {
   ${has('pixelWorld') ? 'albedo = evalPixelWorld(v_worldPos, albedo);' : ''}
 
   vec3 n = normalize(v_normal);
+  if (u_hasNormalMap == 1) {
+    vec3 mapN = texture(u_normalMap, v_uv).xyz * 2.0 - 1.0;
+    n = perturbNormal(n, v_worldPos, v_uv, mapN);
+  }
   vec3 v = normalize(u_cameraPos - v_worldPos);
   vec3 l = normalize(u_lightDir);
   float matMetallic = u_metallic;
   float matRoughness = u_roughness;
+  if (u_hasMetallicRoughnessMap == 1) {
+    vec3 mr = texture(u_metallicRoughnessMap, v_uv).rgb;
+    matRoughness *= mr.g;
+    matMetallic *= mr.b;
+  }
   ${has('microDetail') ? 'applyMicroDetail(v_worldPos, n, albedo, matRoughness);' : ''}
   float shadowFactor = evalShadow(v_shadowCoord, n, l);
 
@@ -465,6 +545,8 @@ void main() {
   ${lightingBody}
   ${has('envIBL') ? 'color += evalEnvIBL(albedo, n, v, l, u_lightColor, u_fogColor, matMetallic, matRoughness);' : ''}
   color += evalPointLights(albedo, v_worldPos, n, v, ${has('celLighting') ? '1.0' : '0.0'});
+  color += evalSpotLights(albedo, v_worldPos, n, v, ${has('celLighting') ? '1.0' : '0.0'}, v_spotShadowCoord);
+  color += u_emissiveColor + (u_hasEmissiveMap == 1 ? texture(u_emissiveMap, v_uv).rgb : vec3(0.0));
 
   ${has('rimLight') ? 'color += evalRimLight(n, v, u_rimColor, u_rimPower);' : ''}
   ${has('fresnelGlow') ? 'color += evalFresnelGlow(n, v, u_glowColor, u_fresnelPower);' : ''}

@@ -1,4 +1,4 @@
-import { mat4LookAt, mat4Multiply, mat4Ortho, type Vec3Tuple } from '../math/Mat4';
+import { mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective, type Vec3Tuple } from '../math/Mat4';
 import type { Scene } from '../Scene';
 import type { WasmBridge } from '../wasm/WasmBridge';
 import type { IRenderBackend, MaterialDesc, MeshGeometry, MeshSubmesh } from './IRenderBackend';
@@ -62,15 +62,21 @@ interface StoredMaterial {
 }
 
 const SHADOW_RES = 2048;
+const SPOT_SHADOW_RES = 1024;
 
 const SHADOW_VERT = `#version 300 es
 precision highp float;
 layout(location = 0) in vec3 a_position;
 layout(location = 4) in uvec4 a_joints;
 layout(location = 5) in vec4 a_weights;
+layout(location = 6) in vec4 a_instMat0;
+layout(location = 7) in vec4 a_instMat1;
+layout(location = 8) in vec4 a_instMat2;
+layout(location = 9) in vec4 a_instMat3;
 uniform mat4 u_model;
 uniform mat4 u_lightViewProj;
 uniform int u_skinned;
+uniform int u_instanced;
 uniform mat4 u_boneMatrices[64];
 void main() {
   vec3 localPos = a_position;
@@ -85,7 +91,8 @@ void main() {
       localPos = (skinMat * vec4(localPos, 1.0)).xyz;
     }
   }
-  gl_Position = u_lightViewProj * u_model * vec4(localPos, 1.0);
+  mat4 modelMat = (u_instanced == 1) ? mat4(a_instMat0, a_instMat1, a_instMat2, a_instMat3) : u_model;
+  gl_Position = u_lightViewProj * modelMat * vec4(localPos, 1.0);
 }
 `;
 
@@ -222,9 +229,18 @@ export class WebGL2Backend implements IRenderBackend {
   private readonly lightProjMat = new Float32Array(16);
   private readonly lightViewMat = new Float32Array(16);
   private readonly lightVpMat = new Float32Array(16);
+  private readonly spotVpMat = new Float32Array(16);
   private readonly ptPosScratch = new Float32Array(12);
   private readonly ptColScratch = new Float32Array(12);
   private readonly ptRadScratch = new Float32Array(4);
+  private readonly spotPosScratch = new Float32Array(12);
+  private readonly spotDirScratch = new Float32Array(12);
+  private readonly spotColScratch = new Float32Array(12);
+  private readonly spotRangeScratch = new Float32Array(4);
+  private readonly spotInnerCosScratch = new Float32Array(4);
+  private readonly spotOuterCosScratch = new Float32Array(4);
+  private instVbo: WebGLBuffer;
+  private instScratch = new Float32Array(16 * 512);
 
   private nextMeshId = 1;
   private nextMaterialId = 1;
@@ -232,6 +248,9 @@ export class WebGL2Backend implements IRenderBackend {
 
   private shadowFbo: WebGLFramebuffer;
   private shadowDepthTex: WebGLTexture;
+  private spotShadowFbo: WebGLFramebuffer;
+  private spotShadowDepthTex: WebGLTexture;
+  private spotShadowActive = false;
   private shadowProgram: GpuProgram;
   private skyProgram: GpuProgram;
   private skyVao: WebGLVertexArrayObject;
@@ -289,34 +308,15 @@ export class WebGL2Backend implements IRenderBackend {
     gl.bindTexture(gl.TEXTURE_2D, null);
     this.dummyWhiteTex = whiteTex;
 
-    // Shadow depth FBO
-    const sFbo = gl.createFramebuffer()!;
-    const sTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, sTex);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.DEPTH_COMPONENT24,
-      SHADOW_RES,
-      SHADOW_RES,
-      0,
-      gl.DEPTH_COMPONENT,
-      gl.UNSIGNED_INT,
-      null
-    );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, sFbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, sTex, 0);
-    gl.drawBuffers([gl.NONE]);
-    gl.readBuffer(gl.NONE);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.bindTexture(gl.TEXTURE_2D, null);
-    this.shadowFbo = sFbo;
-    this.shadowDepthTex = sTex;
+    const sDepth = this.createDepthFbo(SHADOW_RES);
+    this.shadowFbo = sDepth.fbo;
+    this.shadowDepthTex = sDepth.tex;
 
+    const spotDepth = this.createDepthFbo(SPOT_SHADOW_RES);
+    this.spotShadowFbo = spotDepth.fbo;
+    this.spotShadowDepthTex = spotDepth.tex;
+
+    this.instVbo = gl.createBuffer()!;
     this.skyVao = gl.createVertexArray()!;
 
     const vao = gl.createVertexArray()!;
@@ -345,6 +345,25 @@ export class WebGL2Backend implements IRenderBackend {
       gl.vertexAttribDivisor(loc, 1);
     }
     gl.bindVertexArray(null);
+  }
+
+  private createDepthFbo(res: number): { fbo: WebGLFramebuffer; tex: WebGLTexture } {
+    const gl = this.gl;
+    const fbo = gl.createFramebuffer()!;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, res, res, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
+    gl.drawBuffers([gl.NONE]);
+    gl.readBuffer(gl.NONE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return { fbo, tex };
   }
 
   private compileProgram(key: string, vsSrc: string, fsSrc: string): GpuProgram {
@@ -431,6 +450,13 @@ export class WebGL2Backend implements IRenderBackend {
       gl.enableVertexAttribArray(5);
       gl.vertexAttribPointer(5, 4, gl.FLOAT, false, 16, 0);
       hasSkinning = true;
+    }
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instVbo);
+    for (let loc = 6; loc <= 9; loc++) {
+      gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 64, (loc - 6) * 16);
+      gl.vertexAttribDivisor(loc, 1);
+      gl.disableVertexAttribArray(loc);
     }
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
@@ -614,6 +640,9 @@ export class WebGL2Backend implements IRenderBackend {
 
     if (scene.camera.mode === '3d' && scene.shadowsEnabled) {
       drawCalls += this.renderShadowPass(bridge, scene);
+      drawCalls += this.renderSpotShadowPass(bridge, scene);
+    } else {
+      this.spotShadowActive = false;
     }
 
     const usePp = isPostProcessActive(scene.postProcess);
@@ -810,9 +839,85 @@ export class WebGL2Backend implements IRenderBackend {
     // Ensure shadowDepthTex is not bound to any texture unit before attaching shadowFbo
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, null);
+    return this.renderDepthPass(this.shadowFbo, SHADOW_RES, this.lightVpMat, bridge);
+  }
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFbo);
-    gl.viewport(0, 0, SHADOW_RES, SHADOW_RES);
+  private renderSpotShadowPass(bridge: WasmBridge, scene: Scene): number {
+    const gl = this.gl;
+    this.spotShadowActive = false;
+    if (scene.spotLights.length === 0) return 0;
+    const spot = scene.spotLights[0];
+    if (spot.castsShadow === false) return 0;
+
+    const dl = spot.direction;
+    const dLen = Math.hypot(dl[0], dl[1], dl[2]) || 1;
+    const dir: Vec3Tuple = [dl[0] / dLen, dl[1] / dLen, dl[2] / dLen];
+    const up: Vec3Tuple = Math.abs(dir[1]) > 0.98 ? [0, 0, 1] : [0, 1, 0];
+    const outerRad = ((spot.outerConeDeg ?? 35) * 2 * Math.PI) / 180;
+    const target: Vec3Tuple = [
+      spot.position[0] + dir[0],
+      spot.position[1] + dir[1],
+      spot.position[2] + dir[2],
+    ];
+    mat4Perspective(Math.max(outerRad, 0.25), 1.0, 0.25, Math.max(spot.range, 2), this.lightProjMat);
+    mat4LookAt(spot.position, target, up, this.lightViewMat);
+    mat4Multiply(this.lightProjMat, this.lightViewMat, this.spotVpMat);
+    this.spotShadowActive = true;
+
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return this.renderDepthPass(this.spotShadowFbo, SPOT_SHADOW_RES, this.spotVpMat, bridge);
+  }
+
+  private collectInstanceRun(
+    cmds: Uint32Array,
+    startIdx: number,
+    meshId: number,
+    matId: number,
+    matrices: Float32Array
+  ): number {
+    let run = 0;
+    for (let j = startIdx; j < cmds.length; j += 4) {
+      if (cmds[j] !== meshId || cmds[j + 1] !== matId) break;
+      const mOff = cmds[j + 2] * 16;
+      if (mOff + 16 > matrices.length) break;
+      const dst = run * 16;
+      if (dst + 16 > this.instScratch.length) {
+        const grown = new Float32Array(this.instScratch.length * 2);
+        grown.set(this.instScratch);
+        this.instScratch = grown;
+      }
+      this.instScratch.set(matrices.subarray(mOff, mOff + 16), dst);
+      run++;
+    }
+    return run;
+  }
+
+  private setInstancingEnabled(enabled: boolean, runCount: number): void {
+    const gl = this.gl;
+    if (enabled) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, this.instScratch.subarray(0, runCount * 16), gl.DYNAMIC_DRAW);
+      for (let loc = 6; loc <= 9; loc++) gl.enableVertexAttribArray(loc);
+    } else {
+      for (let loc = 6; loc <= 9; loc++) gl.disableVertexAttribArray(loc);
+    }
+  }
+
+  private renderDepthPass(
+    fbo: WebGLFramebuffer,
+    res: number,
+    vpMat: Float32Array,
+    bridge: WasmBridge
+  ): number {
+    const gl = this.gl;
+    const cmds = bridge.getRender3DView();
+    const matrices = bridge.getWorldMatricesView();
+    const paletteOffsets = bridge.getPaletteOffsetsView();
+    const bonePalettes = bridge.getBonePalettesView();
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, res, res);
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
     gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -820,9 +925,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.cullFace(gl.BACK);
 
     gl.useProgram(this.shadowProgram.program);
-    gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_lightViewProj'), false, this.lightVpMat);
-    const paletteOffsets = bridge.getPaletteOffsetsView();
-    const bonePalettes = bridge.getBonePalettesView();
+    gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_lightViewProj'), false, vpMat);
 
     let drawCalls = 0;
     for (let i = 0; i < cmds.length; i += 4) {
@@ -835,10 +938,26 @@ export class WebGL2Backend implements IRenderBackend {
 
       const matOffset = slot * 16;
       if (matOffset + 16 > matrices.length) continue;
+
+      gl.bindVertexArray(mesh.vao);
+      if (!mesh.hasSkinning) {
+        const run = this.collectInstanceRun(cmds, i, meshId, matId, matrices);
+        if (run >= 2) {
+          gl.uniform1i(this.uLoc(this.shadowProgram, 'u_skinned'), 0);
+          gl.uniform1i(this.uLoc(this.shadowProgram, 'u_instanced'), 1);
+          this.setInstancingEnabled(true, run);
+          gl.drawElementsInstanced(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0, run);
+          this.setInstancingEnabled(false, 0);
+          drawCalls++;
+          i += (run - 1) * 4;
+          continue;
+        }
+      }
+
+      gl.uniform1i(this.uLoc(this.shadowProgram, 'u_instanced'), 0);
       this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
       gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_model'), false, this.modelScratch);
       this.uploadSkinningUniforms(this.shadowProgram, mesh, slot, paletteOffsets, bonePalettes);
-      gl.bindVertexArray(mesh.vao);
       gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
       drawCalls++;
     }
@@ -874,11 +993,13 @@ export class WebGL2Backend implements IRenderBackend {
     scene: Scene,
     viewProj: Float32Array,
     timeSec: number,
-    ptCount: number
+    ptCount: number,
+    spotCount: number
   ): void {
     const gl = this.gl;
     gl.uniformMatrix4fv(this.uLoc(prog, 'u_viewProj'), false, viewProj);
     gl.uniformMatrix4fv(this.uLoc(prog, 'u_lightViewProj'), false, this.lightVpMat);
+    gl.uniformMatrix4fv(this.uLoc(prog, 'u_spotLightViewProj'), false, this.spotVpMat);
     gl.uniform3fv(this.uLoc(prog, 'u_cameraPos'), scene.camera.position);
     gl.uniform1f(this.uLoc(prog, 'u_time'), timeSec);
     gl.uniform3fv(this.uLoc(prog, 'u_lightDir'), scene.light.direction);
@@ -895,6 +1016,33 @@ export class WebGL2Backend implements IRenderBackend {
       gl.uniform3fv(this.uLoc(prog, 'u_pointColor[0]'), this.ptColScratch);
       gl.uniform1fv(this.uLoc(prog, 'u_pointRadius[0]'), this.ptRadScratch);
     }
+    gl.uniform1i(this.uLoc(prog, 'u_spotLightCount'), spotCount);
+    gl.uniform1i(this.uLoc(prog, 'u_spotShadowEnabled'), this.spotShadowActive ? 1 : 0);
+    gl.uniform1i(this.uLoc(prog, 'u_spotShadowMap'), 5);
+    if (spotCount > 0) {
+      gl.uniform3fv(this.uLoc(prog, 'u_spotPos[0]'), this.spotPosScratch);
+      gl.uniform3fv(this.uLoc(prog, 'u_spotDir[0]'), this.spotDirScratch);
+      gl.uniform3fv(this.uLoc(prog, 'u_spotColor[0]'), this.spotColScratch);
+      gl.uniform1fv(this.uLoc(prog, 'u_spotRange[0]'), this.spotRangeScratch);
+      gl.uniform1fv(this.uLoc(prog, 'u_spotInnerCos[0]'), this.spotInnerCosScratch);
+      gl.uniform1fv(this.uLoc(prog, 'u_spotOuterCos[0]'), this.spotOuterCosScratch);
+    }
+  }
+
+  private bindOptionalTex(
+    prog: GpuProgram,
+    unit: number,
+    texId: number | undefined,
+    samplerName: string,
+    flagName: string,
+    fallback: WebGLTexture
+  ): void {
+    const gl = this.gl;
+    const tex = texId ? this.textures.get(texId) : undefined;
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex ?? fallback);
+    gl.uniform1i(this.uLoc(prog, samplerName), unit);
+    gl.uniform1i(this.uLoc(prog, flagName), tex ? 1 : 0);
   }
 
   private applyMaterialUniforms(prog: GpuProgram, desc: MaterialDesc): void {
@@ -906,6 +1054,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform3fv(this.uLoc(prog, 'u_rimColor'), u.rimColor);
     gl.uniform3fv(this.uLoc(prog, 'u_glowColor'), u.glowColor);
     gl.uniform3fv(this.uLoc(prog, 'u_edgeColor'), u.edgeColor);
+    gl.uniform3fv(this.uLoc(prog, 'u_emissiveColor'), desc.emissiveColor ?? [0, 0, 0]);
     gl.uniform1f(this.uLoc(prog, 'u_metallic'), u.metallic);
     gl.uniform1f(this.uLoc(prog, 'u_roughness'), u.roughness);
     gl.uniform1f(this.uLoc(prog, 'u_celSteps'), u.celSteps);
@@ -917,17 +1066,17 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(prog, 'u_ditherStrength'), u.ditherStrength);
     gl.uniform1f(this.uLoc(prog, 'u_gridScale'), u.gridScale);
 
-    const tex = desc.textureId ? this.textures.get(desc.textureId) : undefined;
-    gl.activeTexture(gl.TEXTURE0);
-    if (tex) {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
-      gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 1);
-    } else {
-      gl.bindTexture(gl.TEXTURE_2D, this.dummyWhiteTex);
-      gl.uniform1i(this.uLoc(prog, 'u_tex'), 0);
-      gl.uniform1i(this.uLoc(prog, 'u_hasTexture'), 0);
-    }
+    this.bindOptionalTex(prog, 0, desc.textureId, 'u_tex', 'u_hasTexture', this.dummyWhiteTex);
+    this.bindOptionalTex(prog, 2, desc.normalMapId, 'u_normalMap', 'u_hasNormalMap', this.dummyBlackTex);
+    this.bindOptionalTex(
+      prog,
+      3,
+      desc.metallicRoughnessMapId,
+      'u_metallicRoughnessMap',
+      'u_hasMetallicRoughnessMap',
+      this.dummyWhiteTex
+    );
+    this.bindOptionalTex(prog, 4, desc.emissiveMapId, 'u_emissiveMap', 'u_hasEmissiveMap', this.dummyBlackTex);
   }
 
   private render3DPass(
@@ -956,8 +1105,28 @@ export class WebGL2Backend implements IRenderBackend {
       this.ptRadScratch[i] = pl.radius;
     }
 
+    // Pack up to 4 spotlights
+    const spotCount = Math.min(scene.spotLights.length, 4);
+    for (let i = 0; i < spotCount; i++) {
+      const sp = scene.spotLights[i];
+      this.spotPosScratch[i * 3] = sp.position[0];
+      this.spotPosScratch[i * 3 + 1] = sp.position[1];
+      this.spotPosScratch[i * 3 + 2] = sp.position[2];
+      this.spotDirScratch[i * 3] = sp.direction[0];
+      this.spotDirScratch[i * 3 + 1] = sp.direction[1];
+      this.spotDirScratch[i * 3 + 2] = sp.direction[2];
+      this.spotColScratch[i * 3] = sp.color[0] * sp.intensity;
+      this.spotColScratch[i * 3 + 1] = sp.color[1] * sp.intensity;
+      this.spotColScratch[i * 3 + 2] = sp.color[2] * sp.intensity;
+      this.spotRangeScratch[i] = sp.range;
+      this.spotInnerCosScratch[i] = Math.cos(((sp.innerConeDeg ?? 20) * Math.PI) / 180);
+      this.spotOuterCosScratch[i] = Math.cos(((sp.outerConeDeg ?? 35) * Math.PI) / 180);
+    }
+
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.shadowDepthTex);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.spotShadowDepthTex);
 
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
@@ -974,12 +1143,57 @@ export class WebGL2Backend implements IRenderBackend {
 
       const matOffset = slot * 16;
       if (matOffset + 16 > matrices.length) continue;
-      this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
 
       gl.bindVertexArray(mesh.vao);
       const submeshes = mesh.submeshes && mesh.submeshes.length > 0
         ? mesh.submeshes
         : [{ indexOffset: 0, indexCount: mesh.indexCount, materialId: defaultMatId }];
+
+      // Fast-path 3D hardware instancing for contiguous identical opaque non-skinned single-submesh entities
+      const firstDesc = ((submeshes[0].materialId ? this.materials.get(submeshes[0].materialId) : undefined) ?? defaultMat).desc;
+      if (
+        submeshes.length === 1 &&
+        !mesh.hasSkinning &&
+        !firstDesc.transparent &&
+        !(firstDesc.outlineWidth && firstDesc.outlineWidth > 0)
+      ) {
+        const run = this.collectInstanceRun(cmds, i, meshId, defaultMatId, matrices);
+        if (run >= 2) {
+          const activeMat = (submeshes[0].materialId ? this.materials.get(submeshes[0].materialId) : undefined) ?? defaultMat;
+          gl.disable(gl.BLEND);
+          gl.depthMask(true);
+          if (activeMat.desc.doubleSided) gl.disable(gl.CULL_FACE);
+          else {
+            gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.BACK);
+          }
+          const prog = activeMat.program;
+          if (prog !== lastProg) {
+            gl.useProgram(prog.program);
+            lastProg = prog;
+            this.bindPassGlobals(prog, scene, viewProj, timeSec, ptCount, spotCount);
+          }
+          this.modelScratch.set(this.instScratch.subarray(0, 16));
+          this.applyMaterialUniforms(prog, activeMat.desc);
+          gl.uniform1i(this.uLoc(prog, 'u_skinned'), 0);
+          gl.uniform1i(this.uLoc(prog, 'u_instanced'), 1);
+          this.setInstancingEnabled(true, run);
+          gl.drawElementsInstanced(
+            gl.TRIANGLES,
+            submeshes[0].indexCount,
+            gl.UNSIGNED_INT,
+            submeshes[0].indexOffset * 4,
+            run
+          );
+          this.setInstancingEnabled(false, 0);
+          gl.uniform1i(this.uLoc(prog, 'u_instanced'), 0);
+          drawCalls++;
+          i += (run - 1) * 4;
+          continue;
+        }
+      }
+
+      this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
 
       for (const sm of submeshes) {
         const activeMat = (sm.materialId ? this.materials.get(sm.materialId) : undefined) ?? defaultMat;
@@ -1004,9 +1218,10 @@ export class WebGL2Backend implements IRenderBackend {
         if (prog !== lastProg) {
           gl.useProgram(prog.program);
           lastProg = prog;
-          this.bindPassGlobals(prog, scene, viewProj, timeSec, ptCount);
+          this.bindPassGlobals(prog, scene, viewProj, timeSec, ptCount, spotCount);
         }
 
+        gl.uniform1i(this.uLoc(prog, 'u_instanced'), 0);
         this.applyMaterialUniforms(prog, desc);
         this.uploadSkinningUniforms(prog, mesh, slot, paletteOffsets, bonePalettes);
         gl.drawElements(gl.TRIANGLES, sm.indexCount, gl.UNSIGNED_INT, sm.indexOffset * 4);
@@ -1126,6 +1341,9 @@ export class WebGL2Backend implements IRenderBackend {
     this.programCache.clear();
     gl.deleteFramebuffer(this.shadowFbo);
     gl.deleteTexture(this.shadowDepthTex);
+    gl.deleteFramebuffer(this.spotShadowFbo);
+    gl.deleteTexture(this.spotShadowDepthTex);
+    gl.deleteBuffer(this.instVbo);
     gl.deleteTexture(this.dummyBlackTex);
     gl.deleteTexture(this.dummyWhiteTex);
     this.disposePostProcessFbos();

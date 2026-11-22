@@ -65,6 +65,10 @@ export interface MaterialDesc {
   outlineWidth?: number;
   outlineColor?: [number, number, number];
   textureId?: number;
+  normalMapId?: number;
+  metallicRoughnessMapId?: number;
+  emissiveMapId?: number;
+  emissiveColor?: [number, number, number];
   customVertexSnippet?: string;
   customFragmentSnippet?: string;
 }

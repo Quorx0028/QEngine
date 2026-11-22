@@ -204,11 +204,19 @@ export class AssetManager {
       .forEach((sm, idx) => {
         const matName = `${baseName}_mat_${idx}`;
         const texId = sm.baseColorTexIndex >= 0 ? texIds[sm.baseColorTexIndex] : undefined;
+        const normalMapId = sm.normalTexIndex >= 0 ? texIds[sm.normalTexIndex] : undefined;
+        const metallicRoughnessMapId =
+          sm.metallicRoughnessTexIndex >= 0 ? texIds[sm.metallicRoughnessTexIndex] : undefined;
+        const emissiveMapId = sm.emissiveTexIndex >= 0 ? texIds[sm.emissiveTexIndex] : undefined;
         const matId = this.createPreset(
           matName,
           preset,
           {
             textureId: texId,
+            normalMapId,
+            metallicRoughnessMapId,
+            emissiveMapId,
+            emissiveColor: sm.emissiveFactor,
             uniforms: {
               baseColor: sm.baseColor,
               metallic: sm.metallic,

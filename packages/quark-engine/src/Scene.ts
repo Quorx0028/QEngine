@@ -78,6 +78,17 @@ export interface PointLight {
   radius: number;
 }
 
+export interface SpotLight {
+  position: Vec3Tuple;
+  direction: Vec3Tuple;
+  color: Vec3Tuple;
+  intensity: number;
+  range: number;
+  innerConeDeg?: number;
+  outerConeDeg?: number;
+  castsShadow?: boolean;
+}
+
 export interface CollisionEvent {
   entityA: EntityId;
   entityB: EntityId;
@@ -116,6 +127,7 @@ export class Scene {
   };
 
   readonly pointLights: PointLight[] = [];
+  readonly spotLights: SpotLight[] = [];
   postProcess: PostProcessConfig = createPostProcessPreset('none');
   shadowsEnabled = true;
   skyTopColor: Vec3Tuple = [0.08, 0.16, 0.32];

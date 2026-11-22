@@ -17,6 +17,7 @@ export type {
   MaterialDesc,
   MaterialUniforms,
   MeshGeometry,
+  MeshSubmesh,
   ShaderBlockId,
 } from './render/IRenderBackend';
 export {
@@ -54,6 +55,7 @@ export {
   type EntityId,
   type Mesh3DOptions,
   type PointLight,
+  type SpotLight,
   type RigidBodyOptions,
   type Sprite2DOptions,
   type TransformOptions,
