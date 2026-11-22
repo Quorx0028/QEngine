@@ -123,6 +123,7 @@ uniform vec3 u_skyTop;
 uniform vec3 u_skyHorizon;
 uniform vec3 u_lightDir;
 uniform vec3 u_lightColor;
+uniform int u_hdrOutput;
 out vec4 fragColor;
 void main() {
   vec3 dir = normalize(
@@ -132,13 +133,21 @@ void main() {
   );
   float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
   float skyT = smoothstep(0.45, 0.95, h);
-  vec3 col = mix(u_skyHorizon, u_skyTop, skyT);
+  vec3 topLin = pow(max(u_skyTop, vec3(0.0)), vec3(2.2));
+  vec3 horLin = pow(max(u_skyHorizon, vec3(0.0)), vec3(2.2));
+  vec3 col = mix(horLin, topLin, skyT);
   float sunAmt = max(dot(dir, normalize(u_lightDir)), 0.0);
-  float sunDisc = smoothstep(0.9992, 0.9997, sunAmt) * 2.2;
-  float mieGlow = pow(sunAmt, 64.0) * 0.65 + pow(sunAmt, 7.0) * 0.16;
-  col += u_lightColor * (sunDisc + mieGlow);
-  float dither = (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
-  fragColor = vec4(clamp(col + dither, 0.0, 1.0), 1.0);
+  vec3 lLin = pow(max(u_lightColor, vec3(0.0)), vec3(2.2));
+  float sunDisc = smoothstep(0.9992, 0.9997, sunAmt) * 4.2;
+  float mieGlow = pow(sunAmt, 48.0) * 0.85 + pow(sunAmt, 7.0) * 0.22;
+  col += lLin * (sunDisc + mieGlow);
+  if (u_hdrOutput == 0) {
+    col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);
+    col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
+    float dither = (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+    col = clamp(col + dither, 0.0, 1.0);
+  }
+  fragColor = vec4(col, 1.0);
 }
 `;
 
@@ -176,9 +185,11 @@ void main() {
 const OUTLINE_FRAG = `#version 300 es
 precision highp float;
 uniform vec3 u_outlineColor;
+uniform int u_hdrOutput;
 out vec4 fragColor;
 void main() {
-  fragColor = vec4(u_outlineColor, 1.0);
+  vec3 c = (u_hdrOutput == 1) ? pow(max(u_outlineColor, vec3(0.0)), vec3(2.2)) : u_outlineColor;
+  fragColor = vec4(c, 1.0);
 }
 `;
 
@@ -213,11 +224,15 @@ in vec2 v_uv;
 in vec4 v_color;
 uniform int u_hasTexture;
 uniform sampler2D u_tex;
+uniform int u_hdrOutput;
 out vec4 fragColor;
 void main() {
   vec4 texel = u_hasTexture == 1 ? texture(u_tex, v_uv) : vec4(1.0);
   vec4 outCol = texel * v_color;
   if (outCol.a < 0.01) discard;
+  if (u_hdrOutput == 1) {
+    outCol.rgb = pow(max(outCol.rgb, vec3(0.0)), vec3(2.2));
+  }
   fragColor = outCol;
 }
 `;
@@ -309,6 +324,7 @@ export class WebGL2Backend implements IRenderBackend {
   private ppBlurProgram: GpuProgram;
   private ppCompositeProgram: GpuProgram;
   private supportsFloatFbo = false;
+  private hdrActive = false;
   private ppWidth = 0;
   private ppHeight = 0;
   private sceneFbo: WebGLFramebuffer | null = null;
@@ -701,6 +717,7 @@ export class WebGL2Backend implements IRenderBackend {
     }
 
     const usePp = isPostProcessActive(scene.postProcess);
+    this.hdrActive = usePp && this.supportsFloatFbo;
     if (usePp) {
       this.ensurePostProcessFbos(canvas.width, canvas.height);
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFbo);
@@ -709,7 +726,16 @@ export class WebGL2Backend implements IRenderBackend {
     }
 
     gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.clearColor(scene.fogColor[0], scene.fogColor[1], scene.fogColor[2], 1.0);
+    if (this.hdrActive) {
+      gl.clearColor(
+        Math.pow(Math.max(scene.fogColor[0], 0), 2.2),
+        Math.pow(Math.max(scene.fogColor[1], 0), 2.2),
+        Math.pow(Math.max(scene.fogColor[2], 0), 2.2),
+        1.0
+      );
+    } else {
+      gl.clearColor(scene.fogColor[0], scene.fogColor[1], scene.fogColor[2], 1.0);
+    }
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const { viewProj } = scene.computeCameraMatrices(aspect);
@@ -748,6 +774,7 @@ export class WebGL2Backend implements IRenderBackend {
       gl.bindTexture(gl.TEXTURE_2D, this.sceneColorTex);
       gl.uniform1i(this.uLoc(this.ppBrightProgram, 'u_sceneTex'), 0);
       gl.uniform1f(this.uLoc(this.ppBrightProgram, 'u_bloomThreshold'), pp.bloomThreshold);
+      gl.uniform1i(this.uLoc(this.ppBrightProgram, 'u_hdrInput'), this.hdrActive ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       calls++;
 
@@ -802,6 +829,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_wave'), pp.waveStrength);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_saturation'), pp.saturation);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_noir'), pp.noir);
+    gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_hdrInput'), this.hdrActive ? 1 : 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     calls++;
@@ -862,6 +890,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform3fv(this.uLoc(this.skyProgram, 'u_skyHorizon'), scene.skyHorizonColor);
     gl.uniform3fv(this.uLoc(this.skyProgram, 'u_lightDir'), scene.light.direction);
     gl.uniform3fv(this.uLoc(this.skyProgram, 'u_lightColor'), scene.light.color);
+    gl.uniform1i(this.uLoc(this.skyProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
     gl.bindVertexArray(this.skyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
@@ -1068,6 +1097,9 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform3fv(this.uLoc(prog, 'u_ambientColor'), scene.light.ambientColor);
     gl.uniform3fv(this.uLoc(prog, 'u_fogColor'), scene.fogColor);
     gl.uniform1f(this.uLoc(prog, 'u_fogDensity'), scene.fogDensity);
+    gl.uniform3fv(this.uLoc(prog, 'u_skyTop'), scene.skyTopColor);
+    gl.uniform3fv(this.uLoc(prog, 'u_skyHorizon'), scene.skyHorizonColor);
+    gl.uniform1i(this.uLoc(prog, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
     gl.uniform1i(this.uLoc(prog, 'u_shadowsEnabled'), scene.shadowsEnabled ? 1 : 0);
     gl.uniform1i(this.uLoc(prog, 'u_shadowMap'), 1);
     gl.uniform1i(this.uLoc(prog, 'u_pointLightCount'), ptCount);
@@ -1125,6 +1157,10 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(prog, 'u_dissolve'), u.dissolve);
     gl.uniform1f(this.uLoc(prog, 'u_ditherStrength'), u.ditherStrength);
     gl.uniform1f(this.uLoc(prog, 'u_gridScale'), u.gridScale);
+    gl.uniform1f(this.uLoc(prog, 'u_clearcoat'), u.clearcoat ?? 0);
+    gl.uniform1f(this.uLoc(prog, 'u_clearcoatRoughness'), u.clearcoatRoughness ?? 0.14);
+    gl.uniform1f(this.uLoc(prog, 'u_subsurface'), u.subsurface ?? 0);
+    gl.uniform1f(this.uLoc(prog, 'u_bumpScale'), u.bumpScale ?? 0.04);
     const uvScale = u.uvScale ?? [1, 1];
     gl.uniform2f(this.uLoc(prog, 'u_uvScale'), uvScale[0], uvScale[1]);
 
@@ -1293,6 +1329,7 @@ export class WebGL2Backend implements IRenderBackend {
           gl.enable(gl.CULL_FACE);
           gl.cullFace(gl.FRONT);
           gl.useProgram(this.outlineProgram.program);
+          gl.uniform1i(this.uLoc(this.outlineProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
           gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_viewProj'), false, viewProj);
           gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_model'), false, this.modelScratch);
           gl.uniform1f(this.uLoc(this.outlineProgram, 'u_outlineWidth'), desc.outlineWidth);
@@ -1336,6 +1373,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.useProgram(this.spriteProgram.program);
+    gl.uniform1i(this.uLoc(this.spriteProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
     gl.uniformMatrix4fv(this.uLoc(this.spriteProgram, 'u_viewProj'), false, viewProj);
     gl.bindVertexArray(this.spriteVao);
 

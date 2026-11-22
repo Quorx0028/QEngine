@@ -48,6 +48,10 @@ export function defaultMaterialUniforms(overrides: Partial<MaterialUniforms> = {
     dissolve: 0.32,
     ditherStrength: 0.75,
     gridScale: 0.5,
+    clearcoat: 0.0,
+    clearcoatRoughness: 0.14,
+    subsurface: 0.0,
+    bumpScale: 0.04,
     ...overrides,
   };
 }
@@ -192,11 +196,14 @@ function getPresetBase(preset: ShaderPresetName): MaterialDesc {
       };
     case 'ultraRealism':
       return {
-        blocks: ['pbrLighting', 'envIBL', 'microDetail', 'distanceFog'],
+        blocks: ['pbrLighting', 'envIBL', 'microDetail', 'clearcoat', 'distanceFog'],
         uniforms: defaultMaterialUniforms({
           baseColor: [0.74, 0.76, 0.79, 1.0],
-          metallic: 0.18,
-          roughness: 0.26,
+          metallic: 0.14,
+          roughness: 0.34,
+          clearcoat: 0.08,
+          clearcoatRoughness: 0.16,
+          bumpScale: 0.035,
         }),
       };
   }

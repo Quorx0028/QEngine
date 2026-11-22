@@ -188,12 +188,17 @@ precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_sceneTex;
 uniform float u_bloomThreshold;
+uniform int u_hdrInput;
 out vec4 fragColor;
 void main() {
   vec3 c = texture(u_sceneTex, v_uv).rgb;
-  float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float w = smoothstep(u_bloomThreshold - 0.12, u_bloomThreshold + 0.15, luma);
-  fragColor = vec4(c * w, 1.0);
+  float peak = max(c.r, max(c.g, c.b));
+  float thresh = (u_hdrInput == 1) ? max(u_bloomThreshold * 1.15, 0.55) : u_bloomThreshold;
+  float knee = thresh * 0.45 + 0.001;
+  float soft = clamp(peak - thresh + knee, 0.0, 2.0 * knee);
+  soft = (soft * soft) / (4.0 * knee);
+  float contrib = max(soft, peak - thresh) / max(peak, 0.0001);
+  fragColor = vec4(c * max(contrib, 0.0), 1.0);
 }
 `;
 
@@ -235,6 +240,7 @@ uniform float u_grain;
 uniform float u_wave;
 uniform float u_saturation;
 uniform float u_noir;
+uniform int u_hdrInput;
 
 out vec4 fragColor;
 
@@ -292,13 +298,7 @@ void main() {
     col = texture(u_sceneTex, uv).rgb;
   }
 
-  // Soft-screen Bloom glow (avoids harsh clipping on bright highlights)
-  if (u_bloomIntensity > 0.001) {
-    vec3 bloom = texture(u_bloomTex, uv).rgb * u_bloomIntensity;
-    col = col + bloom * (1.0 - col * 0.45);
-  }
-
-  // Contact-aware SSAO (rotated 6-tap Poisson kernel + slope bias prevents flat-plane striping/rings)
+  // Contact-aware SSAO in Linear HDR (rotated 6-tap Poisson kernel + slope bias prevents flat-plane striping)
   if (u_ssao > 0.001) {
     float dC = linearDepth(uv);
     if (dC < 36.0) {
@@ -339,11 +339,21 @@ void main() {
       }
       float distFade = smoothstep(36.0, 18.0, dC);
       float ao = 1.0 - (occ / 6.0) * u_ssao * 0.85 * distFade;
-      col *= clamp(ao, 0.42, 1.0);
+      col *= clamp(ao, 0.40, 1.0);
     }
   }
 
-  // Screen-space depth/luma Sobel outline across whole world
+  // Optical Bloom glow in Linear HDR
+  if (u_bloomIntensity > 0.001) {
+    vec3 bloom = texture(u_bloomTex, uv).rgb * u_bloomIntensity;
+    if (u_hdrInput == 1) {
+      col += bloom;
+    } else {
+      col = col + bloom * (1.0 - col * 0.45);
+    }
+  }
+
+  // Screen-space depth Sobel outline
   if (u_screenOutline > 0.001) {
     vec2 px = 1.0 / u_resolution;
     float dC = linearDepth(uv);
@@ -353,7 +363,14 @@ void main() {
     float dD = linearDepth(uv - vec2(0.0, px.y));
     float edge = (abs(dL - dR) + abs(dU - dD)) / max(dC, 0.5);
     float ink = smoothstep(0.08, 0.28, edge) * u_screenOutline;
-    col = mix(col, vec3(0.05, 0.04, 0.09), clamp(ink, 0.0, 1.0));
+    vec3 inkCol = (u_hdrInput == 1) ? vec3(0.006, 0.005, 0.015) : vec3(0.05, 0.04, 0.09);
+    col = mix(col, inkCol, clamp(ink, 0.0, 1.0));
+  }
+
+  // Final Filmic ACES Tone Mapping + sRGB Gamma when fed Linear HDR buffer
+  if (u_hdrInput == 1) {
+    col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);
+    col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
   }
 
   // Saturation & Noir contrast

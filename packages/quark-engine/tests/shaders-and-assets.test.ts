@@ -227,4 +227,23 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(fragmentSource).toContain('uniform int u_hasEmissiveMap;');
     expect(fragmentSource).toContain('uniform vec3 u_emissiveColor;');
   });
+
+  it('uses Height-Correlated Smith-GGX, clearcoat, subsurfaceWrap, and Linear HDR output in shaders & PostProcess', () => {
+    const ultra = createPresetMaterial('ultraRealism', {
+      blocks: ['pbrLighting', 'envIBL', 'microDetail', 'clearcoat', 'subsurfaceWrap', 'distanceFog'],
+    });
+    const { fragmentSource } = composeShader({ blocks: ultra.blocks });
+    expect(fragmentSource).toContain('vSmithGGXCorrelated');
+    expect(fragmentSource).toContain('evalCookTorranceDirect');
+    expect(fragmentSource).toContain('uniform float u_clearcoat;');
+    expect(fragmentSource).toContain('uniform float u_subsurface;');
+    expect(fragmentSource).toContain('uniform int u_hdrOutput;');
+    expect(fragmentSource).toContain('srgbToLin');
+    expect(fragmentSource).toContain('ignNoise');
+
+    const pp = composePostProcessShader();
+    expect(pp.brightFragmentSource).toContain('u_hdrInput');
+    expect(pp.fragmentSource).toContain('u_hdrInput');
+    expect(pp.fragmentSource).toContain('ignNoise');
+  });
 });

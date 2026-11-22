@@ -20,6 +20,8 @@ export type ShaderBlockId =
   | 'pulseEmissive'
   | 'envIBL'
   | 'microDetail'
+  | 'clearcoat'
+  | 'subsurfaceWrap'
   | 'terrainSplat';
 
 export interface MeshSubmesh {
@@ -57,6 +59,10 @@ export interface MaterialUniforms {
   ditherStrength: number;
   gridScale: number;
   uvScale?: [number, number];
+  clearcoat?: number;
+  clearcoatRoughness?: number;
+  subsurface?: number;
+  bumpScale?: number;
 }
 
 export interface MaterialDesc {
