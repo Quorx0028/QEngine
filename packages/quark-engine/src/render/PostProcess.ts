@@ -238,12 +238,21 @@ uniform float u_noir;
 
 out vec4 fragColor;
 
+float ignNoise(vec2 px) {
+  return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
 float linearDepth(vec2 uv) {
   float d = texture(u_depthTex, uv).r;
   float z = d * 2.0 - 1.0;
   float near = 0.1;
   float far = 250.0;
   return (2.0 * near * far) / max(far + near - z * (far - near), 0.0001);
+}
+
+vec3 viewPosFromUv(vec2 uv, float d, float aspect) {
+  vec2 ndc = uv * 2.0 - 1.0;
+  return vec3(ndc.x * aspect * 0.62 * d, ndc.y * 0.62 * d, d);
 }
 
 void main() {
@@ -283,45 +292,54 @@ void main() {
     col = texture(u_sceneTex, uv).rgb;
   }
 
-  // Bloom glow
+  // Soft-screen Bloom glow (avoids harsh clipping on bright highlights)
   if (u_bloomIntensity > 0.001) {
-    col += texture(u_bloomTex, uv).rgb * u_bloomIntensity;
+    vec3 bloom = texture(u_bloomTex, uv).rgb * u_bloomIntensity;
+    col = col + bloom * (1.0 - col * 0.45);
   }
 
-  // Screen-space ambient occlusion using view-space normal reconstruction (fast 4-tap rotated kernel)
+  // Contact-aware SSAO (rotated 6-tap Poisson kernel + slope bias prevents flat-plane striping/rings)
   if (u_ssao > 0.001) {
     float dC = linearDepth(uv);
-    if (dC < 48.0) {
+    if (dC < 36.0) {
+      float aspect = u_resolution.x / max(u_resolution.y, 1.0);
       vec2 px = 1.0 / u_resolution;
-      float dR = linearDepth(uv + vec2(px.x, 0.0));
-      float dU = linearDepth(uv + vec2(0.0, px.y));
-      vec3 pC = vec3((uv * 2.0 - 1.0) * dC, dC);
-      vec3 pR = vec3(((uv + vec2(px.x, 0.0)) * 2.0 - 1.0) * dR, dR);
-      vec3 pU = vec3(((uv + vec2(0.0, px.y)) * 2.0 - 1.0) * dU, dU);
-      vec3 surfN = normalize(cross(pR - pC, pU - pC));
+      vec2 nStep = px * 2.0;
+      float dR = linearDepth(uv + vec2(nStep.x, 0.0));
+      float dU = linearDepth(uv + vec2(0.0, nStep.y));
+      vec3 pC = viewPosFromUv(uv, dC, aspect);
+      vec3 pR = viewPosFromUv(uv + vec2(nStep.x, 0.0), dR, aspect);
+      vec3 pU = viewPosFromUv(uv + vec2(0.0, nStep.y), dU, aspect);
+      vec3 surfN = normalize(cross(pU - pC, pR - pC));
 
-      float radPx = clamp(24.0 / max(dC, 1.0), 3.0, 14.0);
+      float radPx = clamp(22.0 / max(dC, 1.0), 4.0, 14.0);
+      float ang = ignNoise(gl_FragCoord.xy) * 6.2831853;
+      float ca = cos(ang);
+      float sa = sin(ang);
+      mat2 rot = mat2(ca, -sa, sa, ca);
+
+      vec2 taps[6];
+      taps[0] = vec2( 0.89,  0.22); taps[1] = vec2(-0.74,  0.58);
+      taps[2] = vec2(-0.31, -0.91); taps[3] = vec2( 0.56, -0.78);
+      taps[4] = vec2( 0.34,  0.42); taps[5] = vec2(-0.46, -0.18);
+
       float occ = 0.0;
-      vec2 taps[4];
-      taps[0] = vec2( 0.924,  0.383);
-      taps[1] = vec2(-0.383,  0.924);
-      taps[2] = vec2(-0.924, -0.383);
-      taps[3] = vec2( 0.383, -0.924);
-      for (int i = 0; i < 4; i++) {
-        vec2 sUv = clamp(uv + taps[i] * px * radPx, 0.001, 0.999);
+      for (int i = 0; i < 6; i++) {
+        vec2 sUv = clamp(uv + (rot * taps[i]) * px * radPx, 0.002, 0.998);
         float dS = linearDepth(sUv);
-        vec3 pS = vec3((sUv * 2.0 - 1.0) * dS, dS);
+        vec3 pS = viewPosFromUv(sUv, dS, aspect);
         vec3 vDiff = pS - pC;
         float dist = length(vDiff);
-        if (dist > 0.001 && dist < 1.8) {
+        if (dist > 0.02 && dist < 1.6) {
           float nDot = dot(surfN, vDiff / dist);
           float planeDist = dC - dS;
-          float range = smoothstep(1.6, 0.05, abs(planeDist));
-          occ += smoothstep(0.03, 0.25, planeDist) * smoothstep(0.05, 0.4, abs(nDot)) * range;
+          float range = smoothstep(1.5, 0.08, dist);
+          occ += smoothstep(0.04, 0.24, planeDist) * smoothstep(0.18, 0.55, abs(nDot)) * range;
         }
       }
-      float ao = 1.0 - (occ * 0.25) * u_ssao * 0.8;
-      col *= clamp(ao, 0.36, 1.0);
+      float distFade = smoothstep(36.0, 18.0, dC);
+      float ao = 1.0 - (occ / 6.0) * u_ssao * 0.85 * distFade;
+      col *= clamp(ao, 0.42, 1.0);
     }
   }
 
@@ -365,7 +383,9 @@ void main() {
     col *= (1.0 - vig * u_vignette);
   }
 
-  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+  // Sub-LSB IGN dither eliminates any 8-bit display quantization banding
+  col = clamp(col + (ignNoise(gl_FragCoord.xy) - 0.5) / 255.0, 0.0, 1.0);
+  fragColor = vec4(col, 1.0);
 }
 `;
 

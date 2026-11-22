@@ -89,7 +89,7 @@ function getPresetBase(preset: ShaderPresetName): MaterialDesc {
           celSteps: 3,
           rimPower: 2.6,
         }),
-        outlineWidth: 0.03,
+        outlineWidth: 0.018,
         outlineColor: [0.08, 0.06, 0.12],
       };
     case 'hologram':

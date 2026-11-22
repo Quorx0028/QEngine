@@ -126,21 +126,33 @@ vec3 evalTriplanarGrid(vec3 baseAlbedo, vec3 wp, float scale) {
 
   if (has('pbrLighting')) {
     blockSnippets.push(`
+float pbrSmithG1(float ndotx, float k) {
+  return ndotx / (ndotx * (1.0 - k) + k + 0.0001);
+}
 vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, float metallic, float roughness, float shadow) {
   vec3 h = normalize(l + v);
   float ndotl = max(dot(n, l), 0.0);
   float ndotv = max(dot(n, v), 0.001);
   float ndoth = max(dot(n, h), 0.0);
-  float r = clamp(roughness, 0.06, 1.0);
-  float a2 = r * r * r * r;
-  float denom = (ndoth * ndoth * (a2 - 1.0) + 1.0);
-  float d = a2 / (3.14159265 * denom * denom + 0.0001);
+  float hdotv = max(dot(h, v), 0.0);
+
+  float r = clamp(roughness, 0.045, 1.0);
+  float alpha = r * r;
+  float a2 = alpha * alpha;
+  float dDenom = ndoth * ndoth * (a2 - 1.0) + 1.0;
+  float d = a2 / (3.14159265 * dDenom * dDenom + 0.0001);
+
+  float k = ((r + 1.0) * (r + 1.0)) * 0.125;
+  float g = pbrSmithG1(ndotv, k) * pbrSmithG1(ndotl, k);
+
   vec3 f0 = mix(vec3(0.04), albedo, metallic);
-  vec3 f = f0 + (1.0 - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
-  vec3 spec = (d * f) / max(4.0 * ndotv * ndotl + 0.05, 0.05);
+  vec3 f = f0 + (1.0 - f0) * pow(1.0 - hdotv, 5.0);
+  vec3 spec = (d * g * f) / max(4.0 * ndotv * ndotl, 0.001);
+
   vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
   vec3 direct = (kd * albedo / 3.14159265 + spec) * lColor * lInt * ndotl * shadow;
-  vec3 hemi = mix(amb * 0.65, amb * 1.25, n.y * 0.5 + 0.5) * albedo;
+  float skyBlend = smoothstep(-0.6, 0.9, n.y);
+  vec3 hemi = mix(amb * 0.45, amb * 1.15, skyBlend) * albedo * (1.0 - metallic * 0.55);
   return direct + hemi;
 }
 `);
@@ -150,15 +162,20 @@ vec3 evalPbrLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lIn
     blockSnippets.push(`
 vec3 evalCelLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lInt, vec3 amb, vec3 shadowTint, float steps, float shadow) {
   float rawNdl = dot(n, l);
-  float shadowWeight = smoothstep(0.02, 0.18, rawNdl);
+  float shadowWeight = smoothstep(-0.04, 0.16, rawNdl);
   float effShadow = mix(1.0, shadow, shadowWeight);
-  float ndotl = (rawNdl * 0.5 + 0.5) * mix(0.45, 1.0, effShadow);
-  float q = floor(clamp(ndotl, 0.0, 0.999) * max(steps, 2.0)) / max(steps - 1.0, 1.0);
-  float lit = smoothstep(0.0, 0.08, q);
-  vec3 diffuse = mix(albedo * shadowTint, albedo * lColor * lInt, q) * mix(0.62, 1.0, lit);
+  float ndotl = clamp(rawNdl * 0.5 + 0.5, 0.0, 1.0) * mix(0.45, 1.0, effShadow);
+  float bands = max(steps, 2.0);
+  float scaled = clamp(ndotl, 0.0, 0.999) * bands;
+  float bandIdx = floor(scaled);
+  float bandFrac = smoothstep(0.0, 0.12, fract(scaled));
+  float q = mix(bandIdx, min(bandIdx + 1.0, bands - 1.0), bandFrac * 0.25) / max(bands - 1.0, 1.0);
+  vec3 coolShadow = albedo * shadowTint * 0.72 + amb * albedo * 0.18;
+  vec3 warmLit = albedo * lColor * clamp(lInt, 0.7, 1.02) * 0.92;
+  vec3 diffuse = mix(coolShadow, warmLit, smoothstep(0.08, 0.92, q));
   vec3 h = normalize(l + v);
-  float spec = step(0.92, max(dot(n, h), 0.0)) * 0.28 * effShadow;
-  return diffuse + amb * albedo * 0.55 + vec3(spec);
+  float spec = smoothstep(0.91, 0.95, max(dot(n, h), 0.0)) * 0.22 * effShadow;
+  return diffuse + lColor * spec + amb * albedo * 0.14;
 }
 `);
   }
@@ -302,13 +319,15 @@ float valueNoise3(vec3 p) {
 
   if (has('microDetail')) {
     blockSnippets.push(`
-void applyMicroDetail(vec3 wp, vec3 camPos, inout float roughness) {
+void applyMicroDetail(vec3 wp, vec3 camPos, inout vec3 n, inout float roughness) {
   float dist = length(camPos - wp);
-  float fade = smoothstep(24.0, 4.0, dist);
+  float fade = smoothstep(14.0, 2.0, dist);
   if (fade <= 0.01) return;
-  float macro = valueNoise3(wp * 0.65);
-  float wear = smoothstep(0.32, 0.72, macro);
-  roughness = clamp(mix(roughness, mix(roughness * 0.82, min(0.92, roughness + 0.14), wear), fade), 0.06, 0.96);
+  float macro = valueNoise3(wp * 1.4);
+  float gx = valueNoise3(wp * 4.5 + vec3(0.05, 0.0, 0.0)) - valueNoise3(wp * 4.5 - vec3(0.05, 0.0, 0.0));
+  float gz = valueNoise3(wp * 4.5 + vec3(0.0, 0.0, 0.05)) - valueNoise3(wp * 4.5 - vec3(0.0, 0.0, 0.05));
+  n = normalize(n + vec3(gx, 0.0, gz) * (0.045 * fade * smoothstep(0.15, 0.85, roughness)));
+  roughness = clamp(roughness + (macro - 0.5) * 0.08 * fade, 0.045, 0.96);
 }
 `);
   }
@@ -317,17 +336,20 @@ void applyMicroDetail(vec3 wp, vec3 camPos, inout float roughness) {
     blockSnippets.push(`
 vec3 evalEnvIBL(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, vec3 skyCol, float metallic, float roughness) {
   vec3 r = reflect(-v, n);
-  float skyT = smoothstep(-0.1, 0.75, r.y);
-  vec3 groundCol = vec3(0.11, 0.1, 0.09);
-  vec3 horizonCol = mix(skyCol, vec3(0.84, 0.89, 0.96), 0.55);
-  vec3 envUp = mix(horizonCol, skyCol * 0.45 + vec3(0.16, 0.36, 0.68), skyT);
-  vec3 envCol = r.y >= 0.0 ? envUp : mix(horizonCol, groundCol, clamp(-r.y * 2.5, 0.0, 1.0));
-  float sunSpec = pow(max(dot(r, l), 0.0), mix(180.0, 8.0, roughness)) * (1.5 - roughness);
+  float ndotv = max(dot(n, v), 0.001);
+  float skyT = smoothstep(-0.08, 0.72, r.y);
+  vec3 groundCol = vec3(0.08, 0.08, 0.09);
+  vec3 horizonCol = mix(skyCol, vec3(0.76, 0.84, 0.94), 0.42);
+  vec3 zenithCol = mix(horizonCol, skyCol * 0.38 + vec3(0.14, 0.34, 0.68), 0.78);
+  vec3 envUp = mix(horizonCol, zenithCol, skyT);
+  vec3 envCol = r.y >= 0.0 ? envUp : mix(horizonCol * 0.65, groundCol, clamp(-r.y * 2.2, 0.0, 1.0));
+  float specExp = mix(220.0, 6.0, roughness * roughness);
+  float sunSpec = pow(max(dot(r, l), 0.0), specExp) * (1.0 - roughness * 0.85) * 1.25;
   envCol += lColor * sunSpec;
   vec3 f0 = mix(vec3(0.04), albedo, metallic);
-  vec3 fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
-  vec3 irr = mix(groundCol * 0.85, horizonCol * 0.65, n.y * 0.5 + 0.5) * albedo * (1.0 - metallic) * 0.32;
-  return irr + envCol * fresnel * mix(0.95, 0.24, roughness);
+  vec3 fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - ndotv, 5.0);
+  vec3 irr = mix(groundCol * 0.45, horizonCol * 0.32, n.y * 0.5 + 0.5) * albedo * (1.0 - metallic) * 0.16;
+  return irr + envCol * fresnel * mix(0.85, 0.14, roughness);
 }
 `);
   }
@@ -431,20 +453,35 @@ uniform vec3 u_emissiveColor;
 
 out vec4 fragColor;
 
+float ignNoise(vec2 px) {
+  return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
 float evalShadowMap(sampler2D smap, vec4 sc, vec3 n, vec3 l) {
   vec3 proj = sc.xyz / max(sc.w, 0.0001) * 0.5 + 0.5;
   if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0 || proj.z < 0.0) {
     return 1.0;
   }
-  float bias = max(0.003 * (1.0 - max(dot(n, l), 0.0)), 0.0008);
+  float bias = max(0.0022 * (1.0 - max(dot(n, l), 0.0)), 0.00045);
   vec2 ts = 1.0 / vec2(textureSize(smap, 0));
   float z = proj.z - bias;
-  float sum = (z <= texture(smap, proj.xy).r) ? 1.0 : 0.0;
-  sum += (z <= texture(smap, proj.xy + vec2(-ts.x, -ts.y)).r) ? 1.0 : 0.0;
-  sum += (z <= texture(smap, proj.xy + vec2( ts.x, -ts.y)).r) ? 1.0 : 0.0;
-  sum += (z <= texture(smap, proj.xy + vec2(-ts.x,  ts.y)).r) ? 1.0 : 0.0;
-  sum += (z <= texture(smap, proj.xy + vec2( ts.x,  ts.y)).r) ? 1.0 : 0.0;
-  return sum * 0.2;
+  float ang = ignNoise(gl_FragCoord.xy) * 6.2831853;
+  float ca = cos(ang);
+  float sa = sin(ang);
+  mat2 rot = mat2(ca, -sa, sa, ca);
+  vec2 radius = ts * 2.1;
+
+  vec2 poisson[8];
+  poisson[0] = vec2(-0.326, -0.406); poisson[1] = vec2(-0.840, -0.074);
+  poisson[2] = vec2(-0.696,  0.457); poisson[3] = vec2( 0.962, -0.195);
+  poisson[4] = vec2( 0.473, -0.480); poisson[5] = vec2( 0.519,  0.767);
+  poisson[6] = vec2( 0.185, -0.893); poisson[7] = vec2(-0.322, -0.933);
+
+  float sum = 0.0;
+  for (int i = 0; i < 8; i++) {
+    sum += (z <= texture(smap, proj.xy + (rot * poisson[i]) * radius).r) ? 1.0 : 0.0;
+  }
+  return sum * 0.125;
 }
 
 float evalShadow(vec4 sc, vec3 n, vec3 l) {
@@ -468,7 +505,30 @@ vec3 perturbNormal(vec3 n, vec3 wp, vec2 uv, vec3 mapN) {
   return normalize(tbn * mapN);
 }
 
-vec3 evalPointLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel) {
+vec3 evalLocalLightBRDF(vec3 albedo, vec3 n, vec3 v, vec3 ld, vec3 lightColor, float att, float metallic, float roughness, float cel) {
+  float ndl = max(dot(n, ld), 0.0);
+  if (cel > 0.5) {
+    float banded = floor(ndl * 2.99) / 2.0;
+    vec3 h = normalize(ld + v);
+    float sp = smoothstep(0.91, 0.95, max(dot(n, h), 0.0)) * 0.35;
+    return (albedo * banded + vec3(sp)) * lightColor * att;
+  }
+  vec3 h = normalize(ld + v);
+  float ndv = max(dot(n, v), 0.001);
+  float ndh = max(dot(n, h), 0.0);
+  float r = clamp(roughness, 0.05, 1.0);
+  float a = r * r;
+  float a2 = a * a;
+  float dDen = ndh * ndh * (a2 - 1.0) + 1.0;
+  float d = a2 / (3.14159265 * dDen * dDen + 0.0001);
+  vec3 f0 = mix(vec3(0.04), albedo, metallic);
+  vec3 f = f0 + (1.0 - f0) * pow(1.0 - max(dot(h, v), 0.0), 5.0);
+  vec3 spec = (d * f) / max(4.0 * ndv * ndl + 0.04, 0.04);
+  vec3 kd = (vec3(1.0) - f) * (1.0 - metallic);
+  return (kd * albedo / 3.14159265 + spec) * lightColor * ndl * att;
+}
+
+vec3 evalPointLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float metallic, float roughness, float cel) {
   vec3 acc = vec3(0.0);
   for (int i = 0; i < 4; i++) {
     if (i >= u_pointLightCount) break;
@@ -477,19 +537,15 @@ vec3 evalPointLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel) {
     float r = max(u_pointRadius[i], 0.1);
     if (d >= r) continue;
     vec3 ld = toL / max(d, 0.001);
-    float att = pow(1.0 - d / r, 2.0);
-    float ndl = max(dot(n, ld), 0.0);
-    if (cel > 0.5) {
-      ndl = floor(ndl * 2.99) / 2.0;
-    }
-    vec3 h = normalize(ld + v);
-    float sp = pow(max(dot(n, h), 0.0), 24.0) * 0.35;
-    acc += (albedo * ndl + sp) * u_pointColor[i] * att;
+    float dNorm = d / r;
+    float win = clamp(1.0 - dNorm * dNorm, 0.0, 1.0);
+    float att = (win * win) / (1.0 + d * d * 0.32);
+    acc += evalLocalLightBRDF(albedo, n, v, ld, u_pointColor[i], att, metallic, roughness, cel);
   }
   return acc;
 }
 
-vec3 evalSpotLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel, vec4 spotSc) {
+vec3 evalSpotLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float metallic, float roughness, float cel, vec4 spotSc) {
   vec3 acc = vec3(0.0);
   for (int i = 0; i < 4; i++) {
     if (i >= u_spotLightCount) break;
@@ -501,15 +557,11 @@ vec3 evalSpotLights(vec3 albedo, vec3 wp, vec3 n, vec3 v, float cel, vec4 spotSc
     float theta = dot(-ld, normalize(u_spotDir[i]));
     float cone = clamp((theta - u_spotOuterCos[i]) / max(u_spotInnerCos[i] - u_spotOuterCos[i], 0.001), 0.0, 1.0);
     if (cone <= 0.001) continue;
-    float att = pow(1.0 - d / r, 2.0) * cone;
-    float ndl = max(dot(n, ld), 0.0);
-    if (cel > 0.5) {
-      ndl = floor(ndl * 2.99) / 2.0;
-    }
+    float dNorm = d / r;
+    float win = clamp(1.0 - dNorm * dNorm, 0.0, 1.0);
+    float att = ((win * win) / (1.0 + d * d * 0.18)) * cone;
     float spotShad = (i == 0 && u_spotShadowEnabled == 1) ? evalShadowMap(u_spotShadowMap, spotSc, n, ld) : 1.0;
-    vec3 h = normalize(ld + v);
-    float sp = pow(max(dot(n, h), 0.0), 36.0) * 0.45;
-    acc += (albedo * ndl + sp) * u_spotColor[i] * att * spotShad;
+    acc += evalLocalLightBRDF(albedo, n, v, ld, u_spotColor[i], att * spotShad, metallic, roughness, cel);
   }
   return acc;
 }
@@ -539,14 +591,14 @@ void main() {
     matRoughness *= mr.g;
     matMetallic *= mr.b;
   }
-  ${has('microDetail') ? 'applyMicroDetail(v_worldPos, u_cameraPos, matRoughness);' : ''}
+  ${has('microDetail') ? 'applyMicroDetail(v_worldPos, u_cameraPos, n, matRoughness);' : ''}
   float shadowFactor = evalShadow(v_shadowCoord, n, l);
 
   vec3 color;
   ${lightingBody}
   ${has('envIBL') ? 'color += evalEnvIBL(albedo, n, v, l, u_lightColor, u_fogColor, matMetallic, matRoughness);' : ''}
-  color += evalPointLights(albedo, v_worldPos, n, v, ${has('celLighting') ? '1.0' : '0.0'});
-  color += evalSpotLights(albedo, v_worldPos, n, v, ${has('celLighting') ? '1.0' : '0.0'}, v_spotShadowCoord);
+  color += evalPointLights(albedo, v_worldPos, n, v, matMetallic, matRoughness, ${has('celLighting') ? '1.0' : '0.0'});
+  color += evalSpotLights(albedo, v_worldPos, n, v, matMetallic, matRoughness, ${has('celLighting') ? '1.0' : '0.0'}, v_spotShadowCoord);
   color += u_emissiveColor + (u_hasEmissiveMap == 1 ? texture(u_emissiveMap, v_uv).rgb : vec3(0.0));
 
   ${has('rimLight') ? 'color += evalRimLight(n, v, u_rimColor, u_rimPower);' : ''}
@@ -586,6 +638,8 @@ void main() {
 
   ${has('pixelDither') ? 'color = applyPixelDither(color, gl_FragCoord.xy, u_ditherStrength);' : ''}
   ${has('distanceFog') ? 'color = applyDistanceFog(color, length(u_cameraPos - v_worldPos), u_fogColor, u_fogDensity);' : ''}
+  // Sub-LSB triangular IGN dither eliminates 8-bit color banding on smooth gradients
+  color = clamp(color + (ignNoise(gl_FragCoord.xy) - 0.5) / 255.0, 0.0, 1.0);
 
   fragColor = vec4(color, alpha);
 }

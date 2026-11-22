@@ -61,7 +61,7 @@ interface StoredMaterial {
   program: GpuProgram;
 }
 
-const SHADOW_RES = 1536;
+const SHADOW_RES = 2048;
 const SPOT_SHADOW_RES = 1024;
 
 const SHADOW_VERT = `#version 300 es
@@ -134,8 +134,11 @@ void main() {
   float skyT = smoothstep(0.45, 0.95, h);
   vec3 col = mix(u_skyHorizon, u_skyTop, skyT);
   float sunAmt = max(dot(dir, normalize(u_lightDir)), 0.0);
-  col += u_lightColor * (pow(sunAmt, 48.0) * 0.65 + pow(sunAmt, 6.0) * 0.14);
-  fragColor = vec4(col, 1.0);
+  float sunDisc = smoothstep(0.9992, 0.9997, sunAmt) * 2.2;
+  float mieGlow = pow(sunAmt, 64.0) * 0.65 + pow(sunAmt, 7.0) * 0.16;
+  col += u_lightColor * (sunDisc + mieGlow);
+  float dither = (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+  fragColor = vec4(clamp(col + dither, 0.0, 1.0), 1.0);
 }
 `;
 
@@ -305,6 +308,7 @@ export class WebGL2Backend implements IRenderBackend {
   private ppBrightProgram: GpuProgram;
   private ppBlurProgram: GpuProgram;
   private ppCompositeProgram: GpuProgram;
+  private supportsFloatFbo = false;
   private ppWidth = 0;
   private ppHeight = 0;
   private sceneFbo: WebGLFramebuffer | null = null;
@@ -327,6 +331,7 @@ export class WebGL2Backend implements IRenderBackend {
       throw new Error('WebGL2 context is unavailable on this browser/device');
     }
     this.gl = gl;
+    this.supportsFloatFbo = Boolean(gl.getExtension('EXT_color_buffer_float'));
     this.shadowProgram = this.compileProgram('__shadow__', SHADOW_VERT, SHADOW_FRAG);
     this.skyProgram = this.compileProgram('__sky__', SKY_VERT, SKY_FRAG);
     this.outlineProgram = this.compileProgram('__outline__', OUTLINE_VERT, OUTLINE_FRAG);
@@ -615,7 +620,11 @@ export class WebGL2Backend implements IRenderBackend {
     const makeColorTex = (tw: number, th: number) => {
       const tex = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      if (this.supportsFloatFbo) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, tw, th, 0, gl.RGBA, gl.HALF_FLOAT, null);
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      }
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
