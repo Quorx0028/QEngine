@@ -121,6 +121,7 @@ export class Engine {
     this.accumulator += clamped;
     let substeps = 0;
     while (this.accumulator >= this.fixedDt && substeps < 6) {
+      this.scene.behaviors.stepFixed(this.fixedDt);
       this.fixedUpdateCb?.(this.fixedDt);
       this.accumulator -= this.fixedDt;
       substeps++;
@@ -135,7 +136,17 @@ export class Engine {
     const alpha = this.bridge.step(clamped, viewProj);
     this.scene.dispatchPhysicsEvents();
     this.scene.advanceEffects(clamped);
+    this.scene.behaviors.stepUpdate(clamped);
     this.updateCb?.(clamped, alpha);
+
+    // Sync WebAudio 3D spatial listener to active camera
+    const camPos = this.scene.camera.position;
+    const camTgt = this.scene.camera.target;
+    this.audio.updateListener(
+      camPos,
+      [camTgt[0] - camPos[0], camTgt[1] - camPos[1], camTgt[2] - camPos[2]],
+      this.scene.camera.up
+    );
     if (this.renderFrameHook) {
       this.lastDrawCalls = this.renderFrameHook(aspect);
     }

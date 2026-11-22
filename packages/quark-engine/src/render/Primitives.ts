@@ -167,6 +167,63 @@ export function createRampGeometry(width = 3, height = 1.6, length = 5): MeshGeo
   return { vertices: verts, indices: inds };
 }
 
+/** Builds a smooth-normal terrain mesh matching Rust TerrainHeightmap triangulation. */
+export function createTerrainGeometry(
+  heights: Float32Array,
+  width: number,
+  height: number,
+  cellSize: number,
+  originX = 0,
+  originZ = 0
+): MeshGeometry {
+  const vertices = new Float32Array(width * height * 8);
+  const indices = new Uint32Array((width - 1) * (height - 1) * 6);
+  const hAt = (x: number, z: number) => heights[Math.max(0, Math.min(height - 1, z)) * width + Math.max(0, Math.min(width - 1, x))];
+
+  for (let z = 0; z < height; z++) {
+    for (let x = 0; x < width; x++) {
+      const hL = hAt(x - 1, z);
+      const hR = hAt(x + 1, z);
+      const hD = hAt(x, z - 1);
+      const hU = hAt(x, z + 1);
+      let nx = hL - hR;
+      let ny = 2 * cellSize;
+      let nz = hD - hU;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len;
+      ny /= len;
+      nz /= len;
+
+      const vi = (z * width + x) * 8;
+      vertices[vi] = originX + x * cellSize;
+      vertices[vi + 1] = hAt(x, z);
+      vertices[vi + 2] = originZ + z * cellSize;
+      vertices[vi + 3] = nx;
+      vertices[vi + 4] = ny;
+      vertices[vi + 5] = nz;
+      vertices[vi + 6] = x / Math.max(1, width - 1);
+      vertices[vi + 7] = z / Math.max(1, height - 1);
+    }
+  }
+
+  let ii = 0;
+  for (let z = 0; z < height - 1; z++) {
+    for (let x = 0; x < width - 1; x++) {
+      const i00 = z * width + x;
+      const i10 = i00 + 1;
+      const i01 = i00 + width;
+      const i11 = i01 + 1;
+      indices[ii++] = i00;
+      indices[ii++] = i01;
+      indices[ii++] = i10;
+      indices[ii++] = i10;
+      indices[ii++] = i01;
+      indices[ii++] = i11;
+    }
+  }
+  return { vertices, indices };
+}
+
 /** Extracts flat world/local triangle vertices [x,y,z,...] for Physics StaticTriMesh colliders. */
 export function extractColliderTriangles(
   geom: MeshGeometry,

@@ -19,7 +19,8 @@ export type ShaderBlockId =
   | 'pixelWorld'
   | 'pulseEmissive'
   | 'envIBL'
-  | 'microDetail';
+  | 'microDetail'
+  | 'terrainSplat';
 
 export interface MeshSubmesh {
   indexOffset: number;
@@ -55,6 +56,7 @@ export interface MaterialUniforms {
   dissolve: number;
   ditherStrength: number;
   gridScale: number;
+  uvScale?: [number, number];
 }
 
 export interface MaterialDesc {

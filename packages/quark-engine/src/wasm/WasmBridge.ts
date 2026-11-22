@@ -194,6 +194,55 @@ interface CoreExports {
     maxDist: number,
     outPtr: number
   ): number;
+  core_raycast_3d_ex(
+    ptr: number,
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxDist: number,
+    mask: number,
+    sphereRadius: number,
+    outPtr: number
+  ): number;
+  core_set_terrain_heightmap(
+    ptr: number,
+    entity: number,
+    originX: number,
+    originZ: number,
+    cellSize: number,
+    width: number,
+    height: number,
+    heightsPtr: number,
+    heightsLen: number
+  ): void;
+  core_sample_terrain_height(ptr: number, x: number, z: number, outNormalPtr: number): number;
+  core_nav_build_3d(
+    ptr: number,
+    originX: number,
+    originZ: number,
+    cellSize: number,
+    width: number,
+    height: number,
+    minY: number,
+    maxY: number,
+    agentRadius: number
+  ): void;
+  core_nav_build_2d(ptr: number): void;
+  core_nav_set_blocked(ptr: number, cx: number, cz: number, blocked: number): void;
+  core_nav_find_path(
+    ptr: number,
+    sx: number,
+    sz: number,
+    gx: number,
+    gz: number,
+    smooth: number
+  ): number;
+  core_nav_path_ptr(ptr: number): number;
+  core_nav_path_len(ptr: number): number;
+  core_get_bone_transform(ptr: number, entity: number, jointIdx: number, outPtr: number): number;
   core_matrices_ptr(ptr: number): number;
   core_matrices_len(ptr: number): number;
   core_render_2d_ptr(ptr: number): number;
@@ -532,7 +581,9 @@ export class WasmBridge {
     dx: number,
     dy: number,
     dz: number,
-    maxDist: number
+    maxDist: number,
+    mask = 0xffffffff,
+    sphereRadius = 0
   ): {
     entity: number;
     distance: number;
@@ -541,7 +592,19 @@ export class WasmBridge {
   } | null {
     this.refreshViews();
     const outPtr = this.scratchPtr + 64; // offset past 16 floats
-    const hitEntity = this.exports.core_raycast_3d(this.corePtr, ox, oy, oz, dx, dy, dz, maxDist, outPtr);
+    const hitEntity = this.exports.core_raycast_3d_ex(
+      this.corePtr,
+      ox,
+      oy,
+      oz,
+      dx,
+      dy,
+      dz,
+      maxDist,
+      mask >>> 0,
+      sphereRadius,
+      outPtr
+    );
     if (!hitEntity) return null;
     const base = outPtr >>> 2;
     return {
@@ -549,6 +612,122 @@ export class WasmBridge {
       distance: this.f32View[base],
       point: [this.f32View[base + 1], this.f32View[base + 2], this.f32View[base + 3]],
       normal: [this.f32View[base + 4], this.f32View[base + 5], this.f32View[base + 6]],
+    };
+  }
+
+  setTerrainHeightmap(
+    entity: number,
+    originX: number,
+    originZ: number,
+    cellSize: number,
+    width: number,
+    height: number,
+    heights: Float32Array
+  ): void {
+    const ptr = this.alloc(heights.byteLength);
+    try {
+      this.refreshViews();
+      this.f32View.set(heights, ptr >>> 2);
+      this.exports.core_set_terrain_heightmap(
+        this.corePtr,
+        entity,
+        originX,
+        originZ,
+        cellSize,
+        width,
+        height,
+        ptr,
+        heights.length
+      );
+    } finally {
+      this.dealloc(ptr, heights.byteLength);
+    }
+  }
+
+  sampleTerrainHeight(
+    x: number,
+    z: number
+  ): { height: number; normal: [number, number, number] } | null {
+    this.refreshViews();
+    const outPtr = this.scratchPtr + 64;
+    const h = this.exports.core_sample_terrain_height(this.corePtr, x, z, outPtr);
+    if (Number.isNaN(h)) return null;
+    const base = outPtr >>> 2;
+    return {
+      height: h,
+      normal: [this.f32View[base], this.f32View[base + 1], this.f32View[base + 2]],
+    };
+  }
+
+  buildNavGrid3D(
+    originX: number,
+    originZ: number,
+    cellSize: number,
+    width: number,
+    height: number,
+    minY: number,
+    maxY: number,
+    agentRadius: number
+  ): void {
+    this.exports.core_nav_build_3d(
+      this.corePtr,
+      originX,
+      originZ,
+      cellSize,
+      width,
+      height,
+      minY,
+      maxY,
+      agentRadius
+    );
+  }
+
+  buildNavGrid2D(): void {
+    this.exports.core_nav_build_2d(this.corePtr);
+  }
+
+  setNavBlocked(cx: number, cz: number, blocked: boolean): void {
+    this.exports.core_nav_set_blocked(this.corePtr, cx, cz, blocked ? 1 : 0);
+  }
+
+  findNavPath(
+    sx: number,
+    sz: number,
+    gx: number,
+    gz: number,
+    smooth = true
+  ): Array<[number, number]> {
+    const pts = this.exports.core_nav_find_path(this.corePtr, sx, sz, gx, gz, smooth ? 1 : 0);
+    if (pts === 0) return [];
+    this.refreshViews();
+    const ptr = this.exports.core_nav_path_ptr(this.corePtr);
+    const len = this.exports.core_nav_path_len(this.corePtr);
+    if (!ptr || len < 2) return [];
+    const base = ptr >>> 2;
+    const out: Array<[number, number]> = [];
+    for (let i = 0; i + 1 < len; i += 2) {
+      out.push([this.f32View[base + i], this.f32View[base + i + 1]]);
+    }
+    return out;
+  }
+
+  getBoneWorldTransform(
+    entity: number,
+    jointIndex: number
+  ): { position: [number, number, number]; rotation: [number, number, number, number] } | null {
+    this.refreshViews();
+    const outPtr = this.scratchPtr + 64;
+    const ok = this.exports.core_get_bone_transform(this.corePtr, entity, jointIndex, outPtr);
+    if (!ok) return null;
+    const base = outPtr >>> 2;
+    return {
+      position: [this.f32View[base], this.f32View[base + 1], this.f32View[base + 2]],
+      rotation: [
+        this.f32View[base + 3],
+        this.f32View[base + 4],
+        this.f32View[base + 5],
+        this.f32View[base + 6],
+      ],
     };
   }
 

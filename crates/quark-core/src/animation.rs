@@ -261,6 +261,37 @@ impl AnimationSystem {
             );
         }
     }
+
+    pub fn get_bone_world_matrix(
+        &self,
+        world: &World,
+        entity: EntityHandle,
+        joint_index: usize,
+    ) -> Option<Mat4> {
+        if !world.is_alive(entity) {
+            return None;
+        }
+        let slot = entity_index(entity);
+        let st = self.entity_states.get(slot).and_then(|s| *s)?;
+        let skel = self.skeletons.get(st.skeleton_id as usize)?;
+        if joint_index >= skel.joint_count {
+            return None;
+        }
+        let p_off = *self.entity_palette_offsets.get(slot)?;
+        if p_off < 0 {
+            return None;
+        }
+        let start = p_off as usize + joint_index * 16;
+        if start + 16 > self.bone_palettes.len() {
+            return None;
+        }
+        let skin = Mat4::from_cols_slice(&self.bone_palettes[start..start + 16]);
+        let inv_bind = skel.inverse_bind_matrices[joint_index];
+        let local_global = skin * inv_bind.inverse();
+        let w_off = slot * 16;
+        let entity_world = Mat4::from_cols_slice(&world.world_matrices[w_off..w_off + 16]);
+        Some(entity_world * local_global)
+    }
 }
 
 impl Default for AnimationSystem {
@@ -381,5 +412,42 @@ mod tests {
         let bone1 = Mat4::from_cols_slice(&palette[16..32]);
         assert!((bone1.w_axis.x - 1.0).abs() < 1e-4, "expected x=1.0, got {}", bone1.w_axis.x);
         assert!((bone1.w_axis.y - 0.0).abs() < 1e-4, "expected y=0.0, got {}", bone1.w_axis.y);
+    }
+
+    #[test]
+    fn test_bone_world_matrix_socket() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.set_transform_immediate(e, Vec3::new(10.0, 0.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.compute_interpolated_matrices(1.0);
+
+        let skeleton = SkeletonData {
+            joint_count: 1,
+            parent_indices: vec![-1],
+            rest_translations: vec![Vec3::new(0.0, 2.0, 0.0)],
+            rest_rotations: vec![Quat::IDENTITY],
+            rest_scales: vec![Vec3::ONE],
+            inverse_bind_matrices: vec![Mat4::from_translation(Vec3::new(0.0, -2.0, 0.0))],
+        };
+        let clip = AnimationClipData {
+            name: "Idle".into(),
+            duration: 1.0,
+            channels: vec![AnimChannel {
+                joint_index: 0,
+                times: vec![0.0, 1.0],
+                translations: Some(vec![Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, 3.0, 0.0)]),
+                rotations: None,
+                scales: None,
+            }],
+        };
+        let mut sys = AnimationSystem::new();
+        let skel_id = sys.register_skeleton(skeleton);
+        let clip_id = sys.register_clip(skel_id, clip);
+        sys.play_on_entity(e, skel_id, clip_id, 1.0, true, 0.0);
+        sys.step(&world, 0.1);
+
+        let m = sys.get_bone_world_matrix(&world, e, 0).expect("socket matrix should exist");
+        assert!((m.w_axis.x - 10.0).abs() < 1e-4);
+        assert!((m.w_axis.y - 3.0).abs() < 1e-4);
     }
 }

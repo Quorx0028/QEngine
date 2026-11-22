@@ -1,5 +1,6 @@
 use crate::ecs::{entity_index, Collider2D, Collider3D, EntityHandle, RigidBody, World, INVALID_ENTITY};
 use crate::joints::JointSolver;
+use crate::terrain::TerrainHeightmap;
 use glam::{Mat3, Quat, Vec2, Vec3};
 
 pub const EVENT_COLLISION_ENTER: u32 = 1;
@@ -307,6 +308,8 @@ pub struct PhysicsWorld {
     accumulator: f32,
     pub tile_grids_2d: Vec<TileGrid2D>,
     pub static_meshes: Vec<StaticTriMesh>,
+    pub terrain: Option<TerrainHeightmap>,
+    pub terrain_entity: EntityHandle,
     pub joints: JointSolver,
     pub character_controllers: Vec<Option<CharacterController>>,
     ground_support: Vec<Option<(usize, Vec3)>>,
@@ -332,6 +335,8 @@ impl PhysicsWorld {
             accumulator: 0.0,
             tile_grids_2d: Vec::new(),
             static_meshes: Vec::new(),
+            terrain: None,
+            terrain_entity: INVALID_ENTITY,
             joints: JointSolver::new(),
             character_controllers: Vec::new(),
             ground_support: Vec::new(),
@@ -369,6 +374,8 @@ impl PhysicsWorld {
     pub fn clear_static_geometry(&mut self) {
         self.tile_grids_2d.clear();
         self.static_meshes.clear();
+        self.terrain = None;
+        self.terrain_entity = INVALID_ENTITY;
         self.joints.clear();
         self.character_controllers.clear();
         self.ground_support.clear();
@@ -733,8 +740,48 @@ impl PhysicsWorld {
             }
         }
 
-        // 2. Static triangle meshes via BVH (skipped for triggers)
+        // 2. Static triangle meshes via BVH + Terrain heightmap (skipped for triggers)
         if !rb_a.is_trigger {
+            if let Some(hm) = &self.terrain {
+                let (rx, bottom_off, rz) = match col {
+                    Collider3D::Sphere { radius } => (radius * 0.6, radius, radius * 0.6),
+                    Collider3D::Capsule { radius, half_height } => (radius * 0.65, radius + half_height, radius * 0.65),
+                    Collider3D::Aabb { half_extents } => (half_extents.x * 0.75, half_extents.y, half_extents.z * 0.75),
+                };
+                let bottom_y = pos_a.y - bottom_off;
+                let samples = [
+                    (pos_a.x, pos_a.z),
+                    (pos_a.x + rx, pos_a.z),
+                    (pos_a.x - rx, pos_a.z),
+                    (pos_a.x, pos_a.z + rz),
+                    (pos_a.x, pos_a.z - rz),
+                ];
+                let mut best_depth = 0.0f32;
+                let mut best_h = 0.0f32;
+                let mut best_n = Vec3::Y;
+                let mut best_pt = Vec3::ZERO;
+                for (sx, sz) in samples {
+                    if let Some((th, tn)) = hm.sample_height_and_normal(sx, sz) {
+                        let pen = (th - bottom_y) * tn.y.max(0.35);
+                        if pen > best_depth {
+                            best_depth = pen;
+                            best_h = th;
+                            best_n = tn;
+                            best_pt = Vec3::new(sx, th, sz);
+                        }
+                    }
+                }
+                if best_depth > 0.0 && contact_count < contacts.len() {
+                    let _ = best_h;
+                    contacts[contact_count] = ContactPoint {
+                        point: best_pt,
+                        normal: best_n,
+                        depth: best_depth,
+                    };
+                    contact_count += 1;
+                }
+            }
+
             let r_bound = collider3d_bounding_radius(col) + 0.1;
             let qmin = pos_a - Vec3::splat(r_bound);
             let qmax = pos_a + Vec3::splat(r_bound);
@@ -1309,11 +1356,24 @@ impl PhysicsWorld {
         dir: Vec3,
         max_dist: f32,
     ) -> Option<RayHit> {
+        self.raycast_3d_ex(world, origin, dir, max_dist, u32::MAX, 0.0)
+    }
+
+    pub fn raycast_3d_ex(
+        &self,
+        world: &World,
+        origin: Vec3,
+        dir: Vec3,
+        max_dist: f32,
+        mask: u32,
+        sphere_radius: f32,
+    ) -> Option<RayHit> {
         let dir_len = dir.length();
         if dir_len < 1e-6 {
             return None;
         }
         let d = dir / dir_len;
+        let r_pad = sphere_radius.max(0.0);
         let mut best: Option<RayHit> = None;
         let mut best_t = max_dist;
 
@@ -1321,7 +1381,11 @@ impl PhysicsWorld {
             if !alive {
                 continue;
             }
-            if world.rigid_bodies[i].map_or(false, |r| r.is_trigger) {
+            if let Some(rb) = world.rigid_bodies[i] {
+                if rb.is_trigger || (rb.layer & mask) == 0 {
+                    continue;
+                }
+            } else if (1 & mask) == 0 {
                 continue;
             }
             let Some(col) = world.colliders_3d[i] else {
@@ -1330,13 +1394,15 @@ impl PhysicsWorld {
             let pos = world.curr_pos[i];
             let rot = world.curr_rot[i];
             let hit = match col {
-                Collider3D::Aabb { half_extents } => ray_obb(origin, d, pos, rot, half_extents),
-                Collider3D::Sphere { radius } => ray_sphere(origin, d, pos, radius),
+                Collider3D::Aabb { half_extents } => {
+                    ray_obb(origin, d, pos, rot, half_extents + Vec3::splat(r_pad))
+                }
+                Collider3D::Sphere { radius } => ray_sphere(origin, d, pos, radius + r_pad),
                 Collider3D::Capsule {
                     radius,
                     half_height,
                 } => {
-                    let ext = Vec3::new(radius, half_height + radius, radius);
+                    let ext = Vec3::new(radius + r_pad, half_height + radius + r_pad, radius + r_pad);
                     ray_aabb(origin, d, pos - ext, pos + ext)
                 }
             };
@@ -1365,6 +1431,48 @@ impl PhysicsWorld {
                         normal,
                     });
                 }
+            }
+        }
+
+        if let Some(hm) = &self.terrain {
+            let step = (hm.cell_size * 0.45).clamp(0.15, 0.5);
+            let mut prev_t = 0.0f32;
+            let mut t = 0.0f32;
+            while t <= best_t {
+                let p = origin + d * t;
+                if let Some((th, tn)) = hm.sample_height_and_normal(p.x, p.z) {
+                    if p.y - r_pad <= th {
+                        // Binary refine intersection
+                        let mut lo = prev_t;
+                        let mut hi = t;
+                        let mut final_n = tn;
+                        for _ in 0..6 {
+                            let mid = 0.5 * (lo + hi);
+                            let mp = origin + d * mid;
+                            if let Some((mh, mn)) = hm.sample_height_and_normal(mp.x, mp.z) {
+                                if mp.y - r_pad <= mh {
+                                    hi = mid;
+                                    final_n = mn;
+                                } else {
+                                    lo = mid;
+                                }
+                            } else {
+                                lo = mid;
+                            }
+                        }
+                        if hi < best_t {
+                            best = Some(RayHit {
+                                entity: self.terrain_entity,
+                                distance: hi,
+                                point: origin + d * hi,
+                                normal: final_n,
+                            });
+                        }
+                        break;
+                    }
+                }
+                prev_t = t;
+                t += step;
             }
         }
         best
@@ -2741,5 +2849,64 @@ mod tests {
             end_x - start_x > 2.2 && (end_x - plat_x).abs() < 0.4,
             "rider slipped off moving platform: rider_x={end_x}, plat_x={plat_x}"
         );
+    }
+
+    #[test]
+    fn test_terrain_heightmap_physics_collision_and_raycast() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+        let heights = vec![
+            0.0, 0.0, 2.0,
+            0.0, 0.0, 2.0,
+            0.0, 0.0, 2.0,
+        ];
+        phys.terrain = TerrainHeightmap::new(-4.0, -4.0, 4.0, 3, 3, heights);
+
+        let box_e = world.spawn();
+        world.set_transform_immediate(box_e, Vec3::new(2.0, 4.0, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(box_e)] = Some(Collider3D::Capsule {
+            radius: 0.4,
+            half_height: 0.4,
+        });
+        world.rigid_bodies[entity_index(box_e)] = Some(RigidBody {
+            lock_rotation: true,
+            friction: 1.5,
+            ..Default::default()
+        });
+
+        for _ in 0..45 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+        let bp = world.curr_pos[entity_index(box_e)];
+        // Terrain around x=1..2 is sloped ~1.0..1.5 -> capsule bottom (y - 0.8) rests above slope!
+        assert!(bp.y > 1.3 && bp.y < 3.0, "body rested wrong on terrain: {bp:?}");
+
+        let ray = phys.raycast_3d(&world, Vec3::new(0.0, 6.0, 0.0), -Vec3::Y, 20.0);
+        assert!(ray.is_some());
+    }
+
+    #[test]
+    fn test_spherecast_3d_and_layer_mask() {
+        let mut world = World::new();
+        let phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let wall_layer2 = world.spawn();
+        world.set_transform_immediate(wall_layer2, Vec3::new(0.0, 1.0, -5.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(wall_layer2)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::splat(0.5),
+        });
+        world.rigid_bodies[entity_index(wall_layer2)] = Some(RigidBody {
+            dynamic: false,
+            layer: 0b10,
+            ..Default::default()
+        });
+
+        // Thin ray offset slightly at x=0.8 misses box halfExtent 0.5
+        assert!(phys.raycast_3d(&world, Vec3::new(0.8, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 20.0).is_none());
+        // SphereCast with radius 0.45 hits offset box on layer 2, unless filtered out by mask 0b01!
+        let hit_mask2 = phys.raycast_3d_ex(&world, Vec3::new(0.8, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 20.0, 0b10, 0.45);
+        assert_eq!(hit_mask2.map(|h| h.entity), Some(wall_layer2));
+        let miss_mask1 = phys.raycast_3d_ex(&world, Vec3::new(0.8, 1.0, 0.0), Vec3::new(0.0, 0.0, -1.0), 20.0, 0b01, 0.45);
+        assert!(miss_mask1.is_none());
     }
 }

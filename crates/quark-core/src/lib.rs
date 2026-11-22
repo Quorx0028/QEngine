@@ -2,16 +2,20 @@ pub mod animation;
 pub mod ecs;
 pub mod gltf_loader;
 pub mod joints;
+pub mod nav;
 pub mod physics;
 pub mod render;
+pub mod terrain;
 
 use animation::AnimationSystem;
 use ecs::{
     entity_index, Collider2D, Collider3D, EntityHandle, MeshInstance3D, RigidBody, Sprite2D, World,
 };
 use gltf_loader::{parse_glb, ParsedGlb};
+use nav::NavGrid;
 use physics::{PhysicsConfig, PhysicsWorld, TileGrid2D};
 use render::RenderQueue;
+use terrain::TerrainHeightmap;
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 use std::alloc::{alloc, dealloc, Layout};
@@ -24,6 +28,7 @@ pub struct EngineCore {
     pub physics: PhysicsWorld,
     pub render_queue: RenderQueue,
     pub animations: AnimationSystem,
+    pub nav: NavGrid,
     pub last_glb: Option<ParsedGlb>,
     pub glb_bounds: [f32; 6],
 }
@@ -35,6 +40,7 @@ impl EngineCore {
             physics: PhysicsWorld::new(PhysicsConfig::default()),
             render_queue: RenderQueue::new(),
             animations: AnimationSystem::new(),
+            nav: NavGrid::new(),
             last_glb: None,
             glb_bounds: [0.0; 6],
         }
@@ -96,6 +102,7 @@ pub unsafe extern "C" fn core_clear(ptr: *mut EngineCore) {
     core.world.clear();
     core.physics.clear_static_geometry();
     core.animations.clear();
+    core.nav.resize(0.0, 0.0, 1.0, 0, 0);
     core.render_queue.items_2d.clear();
     core.render_queue.tex_ids_2d.clear();
     core.render_queue.items_3d.clear();
@@ -659,12 +666,31 @@ pub unsafe extern "C" fn core_raycast_3d(
     max_dist: f32,
     out_buf: *mut f32,
 ) -> EntityHandle {
+    core_raycast_3d_ex(ptr, ox, oy, oz, dx, dy, dz, max_dist, u32::MAX, 0.0, out_buf)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_raycast_3d_ex(
+    ptr: *mut EngineCore,
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    dx: f32,
+    dy: f32,
+    dz: f32,
+    max_dist: f32,
+    mask: u32,
+    sphere_radius: f32,
+    out_buf: *mut f32,
+) -> EntityHandle {
     let core = &*ptr;
-    let Some(hit) = core.physics.raycast_3d(
+    let Some(hit) = core.physics.raycast_3d_ex(
         &core.world,
         Vec3::new(ox, oy, oz),
         Vec3::new(dx, dy, dz),
         max_dist,
+        mask,
+        sphere_radius,
     ) else {
         return 0;
     };
@@ -679,6 +705,141 @@ pub unsafe extern "C" fn core_raycast_3d(
         out[6] = hit.normal.z;
     }
     hit.entity
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_terrain_heightmap(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    origin_x: f32,
+    origin_z: f32,
+    cell_size: f32,
+    width: usize,
+    height: usize,
+    heights_ptr: *const f32,
+    heights_len: usize,
+) {
+    if heights_ptr.is_null() || heights_len == 0 {
+        return;
+    }
+    let slice = std::slice::from_raw_parts(heights_ptr, heights_len);
+    let core = &mut *ptr;
+    core.physics.terrain =
+        TerrainHeightmap::new(origin_x, origin_z, cell_size, width, height, slice.to_vec());
+    core.physics.terrain_entity = entity;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_sample_terrain_height(
+    ptr: *const EngineCore,
+    x: f32,
+    z: f32,
+    out_normal_ptr: *mut f32,
+) -> f32 {
+    let Some(hm) = &(*ptr).physics.terrain else {
+        return f32::NAN;
+    };
+    let Some((h, n)) = hm.sample_height_and_normal(x, z) else {
+        return f32::NAN;
+    };
+    if !out_normal_ptr.is_null() {
+        let out = std::slice::from_raw_parts_mut(out_normal_ptr, 3);
+        out[0] = n.x;
+        out[1] = n.y;
+        out[2] = n.z;
+    }
+    h
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_nav_build_3d(
+    ptr: *mut EngineCore,
+    origin_x: f32,
+    origin_z: f32,
+    cell_size: f32,
+    width: usize,
+    height: usize,
+    min_y: f32,
+    max_y: f32,
+    agent_radius: f32,
+) {
+    let core = &mut *ptr;
+    core.nav.build_from_world_3d(
+        &core.world,
+        origin_x,
+        origin_z,
+        cell_size,
+        width,
+        height,
+        min_y,
+        max_y,
+        agent_radius,
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_nav_build_2d(ptr: *mut EngineCore) {
+    let core = &mut *ptr;
+    if let Some(grid) = core.physics.tile_grids_2d.first() {
+        core.nav.build_from_tile_grid_2d(grid);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_nav_set_blocked(
+    ptr: *mut EngineCore,
+    cx: i32,
+    cz: i32,
+    blocked: i32,
+) {
+    (*ptr).nav.set_blocked(cx as isize, cz as isize, blocked != 0);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_nav_find_path(
+    ptr: *mut EngineCore,
+    sx: f32,
+    sz: f32,
+    gx: f32,
+    gz: f32,
+    smooth: i32,
+) -> usize {
+    (*ptr).nav.find_path(sx, sz, gx, gz, smooth != 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_nav_path_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr).nav.path_points.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_nav_path_len(ptr: *const EngineCore) -> usize {
+    (*ptr).nav.path_points.len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_get_bone_transform(
+    ptr: *const EngineCore,
+    entity: EntityHandle,
+    joint_idx: usize,
+    out_pos_rot_ptr: *mut f32,
+) -> i32 {
+    let core = &*ptr;
+    let Some(m) = core.animations.get_bone_world_matrix(&core.world, entity, joint_idx) else {
+        return 0;
+    };
+    if !out_pos_rot_ptr.is_null() {
+        let (_s, rot, pos) = m.to_scale_rotation_translation();
+        let out = std::slice::from_raw_parts_mut(out_pos_rot_ptr, 7);
+        out[0] = pos.x;
+        out[1] = pos.y;
+        out[2] = pos.z;
+        out[3] = rot.x;
+        out[4] = rot.y;
+        out[5] = rot.z;
+        out[6] = rot.w;
+    }
+    1
 }
 
 #[no_mangle]

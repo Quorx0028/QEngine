@@ -1,6 +1,25 @@
+export interface ActionBinding {
+  keys?: string[];
+  mouseButtons?: number[];
+  gamepadButtons?: number[];
+}
+
+export interface AxisBinding {
+  posKeys?: string[];
+  negKeys?: string[];
+  gamepadAxis?: number;
+  deadzone?: number;
+  invert?: boolean;
+}
+
 export class Input {
   private readonly down = new Set<string>();
   private readonly pressed = new Set<string>();
+  private readonly mouseDown = new Set<number>();
+  private readonly mousePressed = new Set<number>();
+  private readonly actions = new Map<string, ActionBinding>();
+  private readonly axes = new Map<string, AxisBinding>();
+
   private deltaX = 0;
   private deltaY = 0;
   private target: HTMLElement | null = null;
@@ -21,10 +40,15 @@ export class Input {
 
   private readonly onMouseDown = (e: MouseEvent) => {
     if (e.button === 0) this.dragging = true;
+    if (!this.mouseDown.has(e.button)) {
+      this.mousePressed.add(e.button);
+    }
+    this.mouseDown.add(e.button);
   };
 
   private readonly onMouseUp = (e: MouseEvent) => {
     if (e.button === 0) this.dragging = false;
+    this.mouseDown.delete(e.button);
   };
 
   private readonly onMouseMove = (e: MouseEvent) => {
@@ -43,6 +67,8 @@ export class Input {
   private readonly onBlur = () => {
     this.down.clear();
     this.pressed.clear();
+    this.mouseDown.clear();
+    this.mousePressed.clear();
     this.dragging = false;
   };
 
@@ -78,6 +104,70 @@ export class Input {
     return this.pressed.has(code);
   }
 
+  isMouseButtonDown(button: number): boolean {
+    return this.mouseDown.has(button);
+  }
+
+  wasMouseButtonPressed(button: number): boolean {
+    return this.mousePressed.has(button);
+  }
+
+  bindAction(name: string, binding: ActionBinding): void {
+    this.actions.set(name, binding);
+  }
+
+  bindAxis(name: string, binding: AxisBinding): void {
+    this.axes.set(name, binding);
+  }
+
+  private firstGamepad(): Gamepad | null {
+    if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') {
+      return null;
+    }
+    const pads = navigator.getGamepads();
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i]?.connected) return pads[i];
+    }
+    return null;
+  }
+
+  isActionDown(name: string): boolean {
+    const b = this.actions.get(name);
+    if (!b) return false;
+    if (b.keys?.some((k) => this.down.has(k))) return true;
+    if (b.mouseButtons?.some((m) => this.mouseDown.has(m))) return true;
+    if (b.gamepadButtons && b.gamepadButtons.length > 0) {
+      const gp = this.firstGamepad();
+      if (gp && b.gamepadButtons.some((idx) => gp.buttons[idx]?.pressed)) return true;
+    }
+    return false;
+  }
+
+  wasActionPressed(name: string): boolean {
+    const b = this.actions.get(name);
+    if (!b) return false;
+    if (b.keys?.some((k) => this.pressed.has(k))) return true;
+    if (b.mouseButtons?.some((m) => this.mousePressed.has(m))) return true;
+    return false;
+  }
+
+  getAxis(name: string): number {
+    const b = this.axes.get(name);
+    if (!b) return 0;
+    let val = 0;
+    if (b.posKeys?.some((k) => this.down.has(k))) val += 1;
+    if (b.negKeys?.some((k) => this.down.has(k))) val -= 1;
+    if (b.gamepadAxis !== undefined && Math.abs(val) < 0.01) {
+      const gp = this.firstGamepad();
+      const raw = gp?.axes[b.gamepadAxis] ?? 0;
+      const dz = b.deadzone ?? 0.15;
+      if (Math.abs(raw) > dz) {
+        val = b.invert ? -raw : raw;
+      }
+    }
+    return Math.max(-1, Math.min(1, val));
+  }
+
   consumeMouseDelta(): [number, number] {
     const out: [number, number] = [this.deltaX, this.deltaY];
     this.deltaX = 0;
@@ -87,6 +177,7 @@ export class Input {
 
   endFrame(): void {
     this.pressed.clear();
+    this.mousePressed.clear();
     this.deltaX = 0;
     this.deltaY = 0;
   }

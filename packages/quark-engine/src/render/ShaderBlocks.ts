@@ -19,6 +19,7 @@ export const SHADER_BLOCK_IDS: readonly ShaderBlockId[] = [
   'pulseEmissive',
   'envIBL',
   'microDetail',
+  'terrainSplat',
 ] as const;
 
 export interface ComposeShaderConfig {
@@ -68,6 +69,7 @@ uniform mat4 u_spotLightViewProj;
 uniform float u_time;
 uniform float u_waveAmp;
 uniform float u_waveFreq;
+uniform vec2 u_uvScale;
 uniform int u_skinned;
 uniform int u_instanced;
 uniform mat4 u_boneMatrices[64];
@@ -101,7 +103,7 @@ void main() {
   vec4 world = modelMat * vec4(localPos, 1.0);
   v_worldPos = world.xyz;
   v_normal = normalize(transpose(inverse(mat3(modelMat))) * localNormal);
-  v_uv = a_uv;
+  v_uv = a_uv * u_uvScale;
   v_shadowCoord = u_lightViewProj * vec4(world.xyz + v_normal * 0.05, 1.0);
   v_spotShadowCoord = u_spotLightViewProj * vec4(world.xyz + v_normal * 0.04, 1.0);
   gl_Position = u_viewProj * world;
@@ -251,6 +253,21 @@ vec3 evalPixelWorld(vec3 wp, vec3 col) {
 vec3 evalPulseEmissive(vec3 wp, vec3 glowColor, float t) {
   float p = 0.5 + 0.5 * sin(t * 4.0 + wp.y * 3.0);
   return glowColor * (0.2 + p * 0.75);
+}
+`);
+  }
+
+  if (has('terrainSplat')) {
+    blockSnippets.push(`
+vec3 evalTerrainSplat(vec3 baseAlbedo, vec3 wp, vec3 n) {
+  float slope = clamp(1.0 - n.y, 0.0, 1.0);
+  float rockMask = smoothstep(0.16, 0.42, slope);
+  float dirtMask = smoothstep(3.5, 0.2, wp.y) * (1.0 - rockMask) * 0.45;
+  vec3 grass = vec3(0.24, 0.44, 0.19) * baseAlbedo * 1.15;
+  vec3 dirt = vec3(0.38, 0.29, 0.20) * baseAlbedo * 1.1;
+  vec3 rock = vec3(0.42, 0.43, 0.46);
+  vec3 ground = mix(grass, dirt, dirtMask);
+  return mix(ground, rock, rockMask);
 }
 `);
   }
@@ -512,6 +529,7 @@ void main() {
     vec3 mapN = texture(u_normalMap, v_uv).xyz * 2.0 - 1.0;
     n = perturbNormal(n, v_worldPos, v_uv, mapN);
   }
+  ${has('terrainSplat') ? 'albedo = evalTerrainSplat(albedo, v_worldPos, n);' : ''}
   vec3 v = normalize(u_cameraPos - v_worldPos);
   vec3 l = normalize(u_lightDir);
   float matMetallic = u_metallic;

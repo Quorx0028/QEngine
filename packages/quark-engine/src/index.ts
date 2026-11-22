@@ -1,7 +1,16 @@
 export { AssetManager, type LoadedMeshHandle } from './assets/AssetManager';
-export { AudioSystem } from './Audio';
+export { AudioSystem, type AudioBus, type SpatialPlayOptions } from './Audio';
 export { Engine, type EngineOptions, type EngineStats } from './Engine';
-export { Input } from './Input';
+export { Input, type ActionBinding, type AxisBinding } from './Input';
+export { AnimStateMachine, type AnimTransition } from './gameplay/AnimStateMachine';
+export {
+  BehaviorManager,
+  BehaviorRegistry,
+  defineBehavior,
+  type BehaviorContext,
+  type EntityBehavior,
+} from './gameplay/Behavior';
+export { GameUI } from './ui/GameUI';
 export {
   mat4Identity,
   mat4LookAt,
@@ -25,6 +34,7 @@ export {
   createPlaneGeometry,
   createRampGeometry,
   createSphereGeometry,
+  createTerrainGeometry,
   extractColliderTriangles,
 } from './render/Primitives';
 export {

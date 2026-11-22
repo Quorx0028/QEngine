@@ -292,6 +292,25 @@ export function startForestEscapeGame(
     { position: [0, 2.5, -25], color: [1.0, 0.25, 0.2], intensity: 2.2, radius: 12.0 }
   );
 
+  // Bake static 3D NavGrid around forest trees and perimeter fences in WASM
+  scene.buildNavGrid3D({
+    originX: -28,
+    originZ: -28,
+    cellSize: 1.0,
+    width: 56,
+    height: 56,
+    minY: 0.2,
+    maxY: 4.0,
+    agentRadius: 0.6,
+  });
+
+  // Action & Axis mapping (supports keyboard + connected gamepad out of the box)
+  input.bindAxis('forestMoveZ', { posKeys: ['KeyW', 'ArrowUp'], negKeys: ['KeyS', 'ArrowDown'], gamepadAxis: 1, invert: true });
+  input.bindAxis('forestMoveX', { posKeys: ['KeyD', 'ArrowRight'], negKeys: ['KeyA', 'ArrowLeft'], gamepadAxis: 0 });
+  input.bindAction('forestSprint', { keys: ['ShiftLeft', 'ShiftRight'], gamepadButtons: [10] });
+  input.bindAction('forestJump', { keys: ['Space'], gamepadButtons: [0] });
+  input.bindAction('forestFlashlight', { keys: ['KeyF'], gamepadButtons: [2] });
+
   const fireflies = new ParticleEmitter(scene, {
     maxParticles: 24,
     lifetime: 2.4,
@@ -313,7 +332,8 @@ export function startForestEscapeGame(
   let gameState: 'playing' | 'won' | 'lost' = 'playing';
   let elapsed = 0;
   let heartbeatTimer = 0;
-  let steerBias = 1;
+  let navTimer = 0.2;
+  let navPath: Array<[number, number]> = [];
 
   hud.container.style.display = 'flex';
   hud.statusBanner.style.display = 'none';
@@ -372,15 +392,11 @@ export function startForestEscapeGame(
       const rightX = Math.cos(yaw);
       const rightZ = -Math.sin(yaw);
 
-      let moveF = 0;
-      let moveR = 0;
-      if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp')) moveF += 1;
-      if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown')) moveF -= 1;
-      if (input.isKeyDown('KeyD') || input.isKeyDown('ArrowRight')) moveR += 1;
-      if (input.isKeyDown('KeyA') || input.isKeyDown('ArrowLeft')) moveR -= 1;
+      const moveF = input.getAxis('forestMoveZ');
+      const moveR = input.getAxis('forestMoveX');
 
-      const moving = moveF !== 0 || moveR !== 0;
-      const wantsSprint = input.isKeyDown('ShiftLeft') && moving && stamina > 0.05;
+      const moving = Math.abs(moveF) > 0.05 || Math.abs(moveR) > 0.05;
+      const wantsSprint = input.isActionDown('forestSprint') && moving && stamina > 0.05;
       if (wantsSprint) {
         stamina = Math.max(0, stamina - fixedDt * 0.32);
       } else {
@@ -388,43 +404,47 @@ export function startForestEscapeGame(
       }
 
       const speed = wantsSprint ? 8.4 : 5.2;
-      const len = Math.hypot(moveF, moveR) || 1;
+      const len = Math.max(1, Math.hypot(moveF, moveR));
       const vx = moving ? ((forwardX * moveF + rightX * moveR) / len) * speed : 0;
       const vz = moving ? ((forwardZ * moveF + rightZ * moveR) / len) * speed : 0;
       const [, curVy] = scene.getVelocity(player);
       let nextVy = curVy;
-      if (input.isKeyDown('Space') && scene.isGrounded(player)) {
+      if (input.isActionDown('forestJump') && scene.isGrounded(player)) {
         nextVy = 8.2;
       }
       scene.setVelocity(player, vx, nextVy, vz);
 
-      // Monster stalker AI + obstacle avoidance steering
+      // Monster stalker AI using WASM A* NavGrid + LOS smoothed waypoints
       const pPos = scene.getPosition(player);
       const mPos = scene.getPosition(monster);
       const toPx = pPos[0] - mPos[0];
       const toPz = pPos[2] - mPos[2];
       const dist = Math.hypot(toPx, toPz) || 1;
 
-      let dirX = toPx / dist;
-      let dirZ = toPz / dist;
-
-      // Steer around tree trunks ahead (start ray outside monster's own 0.55m capsule)
-      const aheadHit = scene.raycast3D(
-        [mPos[0] + dirX * 0.75, 1.1, mPos[2] + dirZ * 0.75],
-        [dirX, 0, dirZ],
-        2.0
-      );
-      if (aheadHit && aheadHit.entity !== player && aheadHit.entity !== monster) {
-        const perpX = -dirZ * steerBias;
-        const perpZ = dirX * steerBias;
-        dirX = dirX * 0.25 + perpX * 0.95;
-        dirZ = dirZ * 0.25 + perpZ * 0.95;
-        const sl = Math.hypot(dirX, dirZ) || 1;
-        dirX /= sl;
-        dirZ /= sl;
-      } else if (Math.random() < 0.01) {
-        steerBias = -steerBias;
+      navTimer += fixedDt;
+      if (navTimer >= 0.16) {
+        navTimer = 0;
+        navPath = scene.findNavPath([mPos[0], mPos[2]], [pPos[0], pPos[2]], true);
       }
+
+      let targetX = pPos[0];
+      let targetZ = pPos[2];
+      if (navPath.length >= 2) {
+        const wp = navPath[1];
+        if (Math.hypot(wp[0] - mPos[0], wp[1] - mPos[2]) < 0.75 && navPath.length >= 3) {
+          targetX = navPath[2][0];
+          targetZ = navPath[2][1];
+        } else {
+          targetX = wp[0];
+          targetZ = wp[1];
+        }
+      }
+
+      const stepDx = targetX - mPos[0];
+      const stepDz = targetZ - mPos[2];
+      const stepDist = Math.hypot(stepDx, stepDz) || 1;
+      const dirX = stepDx / stepDist;
+      const dirZ = stepDz / stepDist;
 
       // Monster moves faster as keys are collected or when flashlight shines straight at it
       const monsterSpeed = 3.85 + keysCollected * 0.45;
@@ -452,7 +472,7 @@ export function startForestEscapeGame(
     update(dt: number) {
       if (gameState === 'playing') {
         elapsed += dt;
-        if (input.wasKeyPressed('KeyF')) {
+        if (input.wasActionPressed('forestFlashlight')) {
           flashlightOn = !flashlightOn;
           hud.flashlightText.textContent = `Фонарик (F): ${flashlightOn ? 'ВКЛ' : 'ВЫКЛ'}`;
           playSfx(flashlightOn ? 740 : 420, 0.04, 'square', 0.07);
@@ -519,7 +539,7 @@ export function startForestEscapeGame(
         heartbeatTimer += dt;
         if (heartbeatTimer >= urgency) {
           heartbeatTimer = 0;
-          playSfx(58, 0.08, 'sine', 0.14 * (1 - monsterDist / 20));
+          engine.audio.playToneSpatial(58, 0.09, [mx, my + 0.9, mz], 'sine', 0.24, 2.0, 20);
           if (monsterDist < 6.5) {
             scene.triggerShake(0.035, 0.09);
           }

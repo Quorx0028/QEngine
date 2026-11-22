@@ -277,6 +277,7 @@ export class WebGL2Backend implements IRenderBackend {
   private readonly spotOuterCosScratch = new Float32Array(4);
   private instVbo: WebGLBuffer;
   private instScratch = new Float32Array(16 * 512);
+  private readonly bonePaletteScratch = new Float32Array(16 * 64);
 
   private nextMeshId = 1;
   private nextMaterialId = 1;
@@ -1021,13 +1022,18 @@ export class WebGL2Backend implements IRenderBackend {
   ): void {
     const gl = this.gl;
     const pOff = slot < paletteOffsets.length ? paletteOffsets[slot] : -1;
-    if (mesh.hasSkinning && pOff >= 0 && pOff + 1024 <= bonePalettes.length) {
+    if (mesh.hasSkinning && pOff >= 0 && pOff < bonePalettes.length) {
+      const avail = Math.min(1024, bonePalettes.length - pOff);
+      this.bonePaletteScratch.fill(0);
+      for (let b = 0; b < 64; b++) {
+        this.bonePaletteScratch[b * 16] = 1;
+        this.bonePaletteScratch[b * 16 + 5] = 1;
+        this.bonePaletteScratch[b * 16 + 10] = 1;
+        this.bonePaletteScratch[b * 16 + 15] = 1;
+      }
+      this.bonePaletteScratch.set(bonePalettes.subarray(pOff, pOff + avail), 0);
       gl.uniform1i(this.uLoc(prog, 'u_skinned'), 1);
-      gl.uniformMatrix4fv(
-        this.uLoc(prog, 'u_boneMatrices[0]'),
-        false,
-        bonePalettes.subarray(pOff, pOff + 1024)
-      );
+      gl.uniformMatrix4fv(this.uLoc(prog, 'u_boneMatrices[0]'), false, this.bonePaletteScratch);
     } else {
       gl.uniform1i(this.uLoc(prog, 'u_skinned'), 0);
     }
@@ -1110,6 +1116,8 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(prog, 'u_dissolve'), u.dissolve);
     gl.uniform1f(this.uLoc(prog, 'u_ditherStrength'), u.ditherStrength);
     gl.uniform1f(this.uLoc(prog, 'u_gridScale'), u.gridScale);
+    const uvScale = u.uvScale ?? [1, 1];
+    gl.uniform2f(this.uLoc(prog, 'u_uvScale'), uvScale[0], uvScale[1]);
 
     this.bindOptionalTex(prog, 0, desc.textureId, 'u_tex', 'u_hasTexture', this.dummyWhiteTex);
     this.bindOptionalTex(prog, 2, desc.normalMapId, 'u_normalMap', 'u_hasNormalMap', this.dummyBlackTex);

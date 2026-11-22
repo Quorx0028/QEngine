@@ -1,3 +1,4 @@
+import { BehaviorManager, type EntityBehavior } from './gameplay/Behavior';
 import { mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective, Vec3Tuple, QuatTuple } from './math/Mat4';
 import {
   createPostProcessPreset,
@@ -153,9 +154,26 @@ export class Scene {
   private readonly collisionEnterListeners = new Set<(ev: CollisionEvent) => void>();
   private readonly triggerEnterListeners = new Set<(ev: TriggerEvent) => void>();
   private readonly triggerExitListeners = new Set<(ev: TriggerEvent) => void>();
+  readonly behaviors: BehaviorManager;
 
   constructor(bridge: WasmBridge) {
     this.bridge = bridge;
+    this.behaviors = new BehaviorManager(this);
+  }
+
+  addBehavior<T extends EntityBehavior>(entity: EntityId, behavior: T): T {
+    return this.behaviors.add(entity, behavior);
+  }
+
+  getBehavior<T extends EntityBehavior>(
+    entity: EntityId,
+    typeOrCtor: string | (abstract new (...args: never[]) => T)
+  ): T | undefined {
+    return this.behaviors.get(entity, typeOrCtor);
+  }
+
+  removeBehavior(entity: EntityId, behavior: EntityBehavior): boolean {
+    return this.behaviors.remove(entity, behavior);
   }
 
   createEntity(): EntityId {
@@ -163,6 +181,7 @@ export class Scene {
   }
 
   destroyEntity(entity: EntityId): boolean {
+    this.behaviors.destroyEntity(entity);
     return this.bridge.despawn(entity);
   }
 
@@ -385,22 +404,18 @@ export class Scene {
 
   /** Internal event pump invoked by Engine.step after WASM simulation. */
   dispatchPhysicsEvents(): void {
-    if (
-      this.collisionEnterListeners.size === 0 &&
-      this.triggerEnterListeners.size === 0 &&
-      this.triggerExitListeners.size === 0
-    ) {
-      return;
-    }
     this.bridge.forEachPhysicsEvent((kind, entityA, entityB, nx, ny, nz) => {
-      if (kind === 1 && this.collisionEnterListeners.size > 0) {
+      if (kind === 1) {
         const ev: CollisionEvent = { entityA, entityB, normal: [nx, ny, nz] };
+        this.behaviors.dispatchCollision(ev);
         this.collisionEnterListeners.forEach((cb) => cb(ev));
-      } else if (kind === 2 && this.triggerEnterListeners.size > 0) {
+      } else if (kind === 2) {
         const ev: TriggerEvent = { entityA, entityB };
+        this.behaviors.dispatchTriggerEnter(ev);
         this.triggerEnterListeners.forEach((cb) => cb(ev));
-      } else if (kind === 3 && this.triggerExitListeners.size > 0) {
+      } else if (kind === 3) {
         const ev: TriggerEvent = { entityA, entityB };
+        this.behaviors.dispatchTriggerExit(ev);
         this.triggerExitListeners.forEach((cb) => cb(ev));
       }
     });
@@ -486,8 +501,98 @@ export class Scene {
     );
   }
 
-  raycast3D(origin: Vec3Tuple, dir: Vec3Tuple, maxDist = 100) {
-    return this.bridge.raycast3D(origin[0], origin[1], origin[2], dir[0], dir[1], dir[2], maxDist);
+  raycast3D(origin: Vec3Tuple, dir: Vec3Tuple, maxDist = 100, mask = 0xffffffff) {
+    return this.bridge.raycast3D(
+      origin[0],
+      origin[1],
+      origin[2],
+      dir[0],
+      dir[1],
+      dir[2],
+      maxDist,
+      mask,
+      0
+    );
+  }
+
+  sphereCast3D(
+    origin: Vec3Tuple,
+    radius: number,
+    dir: Vec3Tuple,
+    maxDist = 100,
+    mask = 0xffffffff
+  ) {
+    return this.bridge.raycast3D(
+      origin[0],
+      origin[1],
+      origin[2],
+      dir[0],
+      dir[1],
+      dir[2],
+      maxDist,
+      mask,
+      radius
+    );
+  }
+
+  setTerrainHeightmap(
+    originX: number,
+    originZ: number,
+    cellSize: number,
+    width: number,
+    height: number,
+    heights: Float32Array
+  ): EntityId {
+    const entity = this.createEntity();
+    this.setTransform(entity, { position: [0, 0, 0], immediate: true });
+    this.bridge.setTerrainHeightmap(entity, originX, originZ, cellSize, width, height, heights);
+    return entity;
+  }
+
+  sampleTerrainHeight(x: number, z: number) {
+    return this.bridge.sampleTerrainHeight(x, z);
+  }
+
+  buildNavGrid3D(opts: {
+    originX: number;
+    originZ: number;
+    cellSize?: number;
+    width: number;
+    height: number;
+    minY?: number;
+    maxY?: number;
+    agentRadius?: number;
+  }): void {
+    this.bridge.buildNavGrid3D(
+      opts.originX,
+      opts.originZ,
+      opts.cellSize ?? 1.0,
+      opts.width,
+      opts.height,
+      opts.minY ?? 0.1,
+      opts.maxY ?? 5.0,
+      opts.agentRadius ?? 0.4
+    );
+  }
+
+  buildNavGrid2D(): void {
+    this.bridge.buildNavGrid2D();
+  }
+
+  setNavBlocked(cx: number, cz: number, blocked: boolean): void {
+    this.bridge.setNavBlocked(cx, cz, blocked);
+  }
+
+  findNavPath(
+    start: [number, number],
+    goal: [number, number],
+    smooth = true
+  ): Array<[number, number]> {
+    return this.bridge.findNavPath(start[0], start[1], goal[0], goal[1], smooth);
+  }
+
+  getBoneWorldTransform(entity: EntityId, jointIndex: number) {
+    return this.bridge.getBoneWorldTransform(entity, jointIndex);
   }
 
   computeCameraMatrices(aspect: number): {
@@ -523,6 +628,7 @@ export class Scene {
   }
 
   clear(): void {
+    this.behaviors.clear();
     this.collisionEnterListeners.clear();
     this.triggerEnterListeners.clear();
     this.triggerExitListeners.clear();
