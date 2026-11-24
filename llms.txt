@@ -1,0 +1,76 @@
+# QuarkEngine (QEngine) — AI & Vibe-Coder Reference
+
+> Universal Rust/WASM + WebGL2 2D/2.5D/3D engine for browser games, interactive 3D viewers, and rich web apps.
+> Prefer the high-level builders (`createWorldBuilder`, `material()`) to avoid ECS/halfExtents boilerplate.
+
+## 1. Fastest 3D Setup (20 lines)
+
+```ts
+import { Engine, createWorldBuilder, material } from 'quark-engine';
+
+const engine = await Engine.init({ canvas: document.querySelector('canvas')! });
+const { scene, assets } = engine;
+const world = createWorldBuilder(scene, assets);
+
+// Floor + Room with interactive [E] door, window, and God-Ray light
+world.box({ pos: [0, -0.5, 0], size: [40, 1, 40], material: { color: '#475569', grid: 1 } });
+const room = world.room({
+  center: [0, 0, 0],
+  size: [8, 3.4, 8],
+  doors: ['south'],
+  windows: ['east'],
+  light: { color: '#ffcf70', godRay: true },
+});
+world.stairs({ from: [5, 0, 2], to: [5, 3.4, -4], width: 2 });
+world.pool({ center: [-9, 0, 0], size: [6, 1.8, 6], glassSides: ['south'], waterPreset: 'realistic' });
+
+engine.onUpdate((dt) => world.update(dt));
+engine.start();
+```
+
+## 2. WorldBuilder API (`createWorldBuilder(scene, assets)`)
+
+All `size` parameters are **FULL `[width, height, depth]`** (not halfExtents!).
+`material` accepts a hex string (`'#38bdf8'`), preset name (`'cyberNeon'`), `{ preset, color, glow, metallic, roughness, grid, transparent }`, `MaterialBuilder`, or numeric `materialId`.
+
+- `world.box({ pos, size?, euler?, material?, dynamic?, mass?, physics?: 'wood'|'steel'|'ice'|'rubber', collider? })`
+- `world.sphere({ pos, radius?, material?, dynamic?, mass?, physics? })`
+- `world.cylinder({ pos, radius?, height?, euler?, material?, dynamic?, mass? })`
+- `world.ramp({ pos, size?: [w, h, l], yaw?, material? })` — exact triangle BVH ramp
+- `world.breakable({ pos, size?, material?, shardCount? })` — returns `{ entity, shatter(hitPoint?) }`
+- `world.trigger({ pos, size, material?, onEnter?, onExit? })`
+- `world.room({ center: [cx, floorY, cz], size: [w, h, d], doors?, windows?, roof?, floor?, light?: { color?, intensity?, godRay? } })`
+- `world.stairs({ from, to, width?, steps?, material? })`
+- `world.pool({ center: [cx, bottomY, cz], size: [w, h, d], glassSides?, waterPreset?: 'realistic'|'anime'|'cyber' })` — auto 3D water block + Archimedes buoyancy + underwater camera fog!
+- `world.fromGrid(asciiMap, { origin?, cellSize?, wallHeight?, wallMaterial?, waterPreset? })`:
+  - `#` wall | `=` half wall | `D` interactive door | `G` glass window | `W` 3D pool water | `C` physics crate | `B` breakable crystal | `F` campfire base | `L` ceiling lamp | `P` spawn point
+- `world.update(dt)` — animates doors smoothly
+- `world.tryInteract(playerPos)` — toggles nearest interactive `[E]` door
+- `world.handleRayHit(entity, point)` — shatters hit breakables and ignores water/trigger sensors for decals
+
+## 3. Fluent Material DSL (`material(preset)`)
+
+Valid `ShaderPresetName` values:
+`pbr`, `animeToon`, `hologram`, `dissolve`, `retroDither`, `waveSurface`, `iridescent`, `cyberNeon`, `crystalGlass`, `waterCaustics`, `ps1Retro`, `magmaPulse`, `ultraRealism`, `waterRealistic`, `waterAnime`.
+
+```ts
+const mat = material('cyberNeon')
+  .color('#38bdf8')
+  .glow('#00ffff')
+  .metallic(0.4)
+  .roughness(0.25)
+  .wave(0.14, 2.0)
+  .outline(0.03, '#ffffff')
+  .transparent('alpha', false)
+  .doubleSided(true)
+  .create(assets, 'my-mat');
+```
+
+## 4. GPU VFX, Cloth, Raycasting & Viewers
+
+- **GPU Particles (up to 8192 instanced):** `scene.emitVfx(preset, origin, count?, floorY?)`
+  - Presets: `'fire' | 'smoke' | 'sparks' | 'splash' | 'magic' | 'confetti' | 'bubbles'`
+- **Verlet Cloth (WASM):** `scene.createCloth({ origin, rightStep, downStep, cols, rows, pinTop?, pinLeft? })`, `scene.setClothWind(id, wind)`, `scene.pushClothSphere(id, center, radius)`, sync mesh via `assets.updateMeshVertices(meshId, scene.getClothVerticesView(id))`.
+- **3D Showcase Camera:** `new OrbitControls({ target, radius, autoRotate })` (`orbit.attach(canvas)`, `orbit.setView(...)`, `orbit.update(dt, scene.camera)`).
+- **Underwater Check:** `scene.getUnderwaterDepth(scene.camera.position)` (> 0 triggers automatic underwater post-process tint + caustics).
+- **Important Limits:** Maximum **4** `scene.pointLights` and **1** shadow-casting `spotLights[0]` per scene. Always call `immediate: true` in `setTransform` on initial placement so interpolation does not lerp from `[0, 0, 0]`.

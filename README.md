@@ -6,7 +6,10 @@ An ultra-lightweight universal **2D / 2.5D / 3D engine** built on a **Rust + Web
 - **Zero-GC Core (Rust/WASM):** SoA Entity-Component-System, Warm-Started Symmetric PGS 3D/2D physics, BVH static mesh queries, Archimedes water buoyancy, A\* navigation grids, Blender `.glb` skeletal animation & parser, and frustum culling all run in linear WASM memory.
 - **Modular Shader Pipeline:** Linear HDR PBR (`Heitz Smith-GGX`, clearcoat, subsurface, IBL), Anime/Toon cel-shading with outlines, holographic plaques, caustics, Voronoi/wave water, dissolve, dithering, custom GLSL node graphs (`ShaderGraph`), plus SSAO, Bloom, FXAA, and ACES Tone Mapping.
 - **Hardware Instancing & Diagnostics:** Automatic GPU batching (`drawElementsInstanced`), texture/mesh tag lifecycle (`unloadTag`), and an integrated live frame profiler (`F2`).
+- **AI & Vibe-Coder Ready (`WorldBuilder` + `material()` + `llms.txt`):** Build complete rooms with hinged doors & windows (`room`), walkable stairs (`stairs`), 3D water tanks (`pool`), ASCII grid levels (`fromGrid`), and typo-safe fluent materials in a few readable lines.
 - **One Engine for Any Format:** Build FPS/3D physics sandboxes, 2D RPGs with lighting & tilemaps, `.glb` product/model viewers, or interactive canvas widgets inside regular web apps.
+
+See [`llms.txt`](./llms.txt) for the AI-agent quick reference.
 
 ## Quick Start
 

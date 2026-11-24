@@ -114,3 +114,34 @@ export {
   type VfxPresetName,
 } from './Scene';
 export { WasmBridge, type ParsedGlbResult } from './wasm/WasmBridge';
+export {
+  material,
+  MaterialBuilder,
+  parseColor,
+  type ColorInput,
+  type ColorTuple3,
+  type ColorTuple4,
+} from './builders/MaterialBuilder';
+export {
+  createWorldBuilder,
+  WorldBuilder,
+  type BoxSpawnOptions,
+  type BreakableHandle,
+  type BreakableOptions,
+  type CylinderSpawnOptions,
+  type DoorConfig,
+  type DoorHandle,
+  type GridBuildOptions,
+  type GridLevelHandle,
+  type MaterialInput,
+  type PoolHandle,
+  type PoolOptions,
+  type RampSpawnOptions,
+  type RoomHandle,
+  type RoomOptions,
+  type RoomSide,
+  type SphereSpawnOptions,
+  type StairsOptions,
+  type TriggerSpawnOptions,
+  type WindowConfig,
+} from './builders/WorldBuilder';

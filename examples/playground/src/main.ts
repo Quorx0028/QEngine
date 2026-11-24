@@ -666,6 +666,8 @@ async function bootstrap() {
       orbit.setView([-6.2, 2.3, -2.5], 5.8, -0.35, 1.32);
     } else if (key === 'shatter') {
       orbit.setView([12.0, 1.2, -7.2], 4.6, -0.18, 1.32);
+    } else if (key === 'ai') {
+      orbit.setView([0, 2.2, 22.5], 20.0, Math.PI, 1.12);
     } else if (key === 'arena') {
       orbit.setView([0, 1.5, -2.5], 24.0, 0.35, 1.02);
     } else {

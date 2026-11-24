@@ -41,6 +41,10 @@ export class AssetManager {
     this.backend = backend;
   }
 
+  get hasBackend(): boolean {
+    return this.backend !== null;
+  }
+
   private bucket(tag: string): TagBucket {
     let b = this.tags.get(tag);
     if (!b) {

@@ -7,7 +7,9 @@ import {
   createRampGeometry,
   createSphereGeometry,
   createWaterVolumeGeometry,
+  createWorldBuilder,
   extractColliderTriangles,
+  material,
   quatFromEuler,
   SHADER_PRESET_NAMES,
   type AssetManager,
@@ -126,7 +128,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const floorTex = makeStoneTileTexture(assets);
   const crateTex = makeCrateWoodTexture(assets);
 
-  const floorMesh = assets.registerMesh('floor', createPlaneGeometry(56, 56, 28), 'scene');
+  const floorMesh = assets.registerMesh('floor', createPlaneGeometry(56, 72, 32), 'scene');
   const waterMesh = assets.registerMesh('water-surface', createWaterVolumeGeometry(6.32, 1.92, 6.32, 42), 'scene');
   const beamMesh = assets.registerMesh('godray-cone', createConeGeometry(0.16, 2.35, 3.1, 28), 'scene');
   const decalMesh = assets.registerMesh('decal-quad', createPlaneGeometry(0.95, 0.95, 1), 'scene');
@@ -237,14 +239,14 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     'scene'
   );
 
-  // Arena Floor
+  // Arena Floor (extended back behind player spawn for the AI Showcase Courtyard)
   const floor = scene.createEntity();
-  scene.setTransform(floor, { position: [0, -0.5, 0], immediate: true });
-  scene.setCollider3D(floor, { kind: 'aabb', halfExtents: [28, 0.5, 28] });
+  scene.setTransform(floor, { position: [0, -0.5, 8], immediate: true });
+  scene.setCollider3D(floor, { kind: 'aabb', halfExtents: [28, 0.5, 36] });
 
   const floorVis = scene.createEntity();
-  scene.setTransform(floorVis, { position: [0, 0, 0], immediate: true });
-  scene.setMesh3D(floorVis, { meshId: floorMesh.meshId, materialId: floorMat, boundsRadius: 48 });
+  scene.setTransform(floorVis, { position: [0, 0, 8], immediate: true });
+  scene.setMesh3D(floorVis, { meshId: floorMesh.meshId, materialId: floorMat, boundsRadius: 58 });
 
   const addStaticBox = (pos: Vec3Tuple, scale: Vec3Tuple, matId = wallMat) => {
     const e = scene.createEntity();
@@ -261,11 +263,11 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     return e;
   };
 
-  // Perimeter walls (48x48 arena)
+  // Perimeter walls (48x60 arena: z = -23.5 .. +35.5)
   addStaticBox([0, 1.8, -23.5], [48, 3.6, 1.0]);
-  addStaticBox([0, 1.8, 23.5], [48, 3.6, 1.0]);
-  addStaticBox([-23.5, 1.8, 0], [1.0, 3.6, 48]);
-  addStaticBox([23.5, 1.8, 0], [1.0, 3.6, 48]);
+  addStaticBox([0, 1.8, 35.5], [48, 3.6, 1.0]);
+  addStaticBox([-23.5, 1.8, 6], [1.0, 3.6, 60]);
+  addStaticBox([23.5, 1.8, 6], [1.0, 3.6, 60]);
 
   // Center crystal pedestal + raised platforms + ramps + staircase
   addStaticBox([0, 0.45, -3], [2.4, 0.9, 2.4]);
@@ -954,6 +956,66 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     }
   });
 
+  // ======================== AI SHOWCASE COURTYARD (BEHIND PLAYER SPAWN +Z) ========================
+  const world = createWorldBuilder(scene, assets, 'scene');
+
+  // 1) Left-Rear: entire playable room/dungeon built from ONE ASCII string via world.fromGrid()
+  const aiGrid = world.fromGrid(
+    `
+    ##GDG##
+    #C...B#
+    #.LFL.#
+    #G.W.G#
+    #######
+    `,
+    {
+      origin: [-18.0, 0, 17.5],
+      cellSize: 2.3,
+      wallHeight: 3.1,
+      floor: false,
+      roof: false,
+      wallMaterial: material('ultraRealism').color('#334155').roughness(0.68),
+      doorMaterial: material('ultraRealism').color('#9a5b25').roughness(0.45),
+      waterPreset: 'anime',
+    }
+  );
+
+  // 2) Right-Rear: 2-story Observation Pavilion built cleanly with room() + stairs() + breakable() + material()
+  world.room({
+    center: [12.0, 0, 23.0],
+    size: [8.4, 3.6, 8.4],
+    doors: ['north'],
+    windows: ['west', 'east'],
+    roof: true,
+    floor: false,
+    wallMaterial: material('ultraRealism').color('#2b3446').roughness(0.55),
+    doorMaterial: material('ultraRealism').color('#0f766e').glow('#2dd4bf').roughness(0.32),
+  });
+  world.stairs({
+    from: [3.0, 0, 22.0],
+    to: [7.8, 3.6, 22.0],
+    width: 2.2,
+    steps: 10,
+    material: material('ultraRealism').color('#475569').grid(1.0),
+  });
+  // Breakable monolith inside pavilion + glowing rooftop Grapple Beacon + glass balcony railings
+  world.breakable({ pos: [12.0, 1.0, 23.0], size: [1.1, 1.8, 0.55], shardCount: 8 });
+  world.cylinder({
+    pos: [12.0, 4.75, 23.0],
+    radius: 0.24,
+    height: 1.8,
+    material: material('cyberNeon').color('#a855f7').glow('#c084fc'),
+  });
+  world.sphere({
+    pos: [12.0, 5.95, 23.0],
+    radius: 0.45,
+    material: material('iridescent').color('#e879f9').metallic(0.8).roughness(0.12),
+  });
+  const roofGlassMat = material('crystalGlass').color('#7dd3fc42').glow('#38bdf8').doubleSided(true).transparent();
+  world.box({ pos: [12.0, 4.25, 19.0], size: [8.2, 0.9, 0.12], material: roofGlassMat, transparent: true });
+  world.box({ pos: [12.0, 4.25, 27.0], size: [8.2, 0.9, 0.12], material: roofGlassMat, transparent: true });
+  world.box({ pos: [16.0, 4.25, 23.0], size: [0.12, 0.9, 8.0], material: roofGlassMat, transparent: true });
+
   // ======================== HOLOGRAPHIC TEXT PLAQUES ========================
   const signs = new HoloSignFactory(scene, assets, 'scene');
   const floatingSigns = [
@@ -1040,6 +1102,15 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
       accent: '#c084fc',
       withPost: false,
     }),
+    signs.createSign({
+      position: [-0.2, 1.65, 14.2],
+      yaw: Math.PI,
+      width: 3.4,
+      badge: 'AI-BUILT · WORLDBUILDER',
+      title: 'Двор ИИ (построено нейросетью)',
+      subtitle: 'Слева: ASCII-уровень (fromGrid) · Справа: башня, лестница и маяк (room + stairs).',
+      accent: '#a855f7',
+    }),
   ];
 
   let wasPlayerInWater = false;
@@ -1060,6 +1131,10 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
 
     onRayHit(entity, point, normal) {
       if (shatterEntity(entity, point)) return;
+      if (world.handleRayHit(entity, point)) {
+        playSfx(900, 0.14, 'triangle', 0.12);
+        return;
+      }
       if (entity === waterSurface || entity === waterSplashSensor || entity === frontGlass) {
         scene.emitVfx('splash', point, 34, 1.92);
         playSfx(320, 0.12, 'sine', 0.1);
@@ -1145,6 +1220,10 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
       if (inRoom) {
         return roomLightOn ? '[E / L] Выключить лампочку' : '[E / L] Включить лампочку';
       }
+      const nearWbDoor = world.getNearestDoor(scene.getPosition(player), 2.5);
+      if (nearWbDoor) {
+        return nearWbDoor.open ? '[E] Закрыть дверь' : '[E] Открыть дверь';
+      }
       return null;
     },
 
@@ -1182,10 +1261,15 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
         pz <= roomC[2] + 3.0;
       if (inRoom) {
         this.toggleRoomLight();
+        return;
+      }
+      if (world.tryInteract(scene.getPosition(player), 2.5)) {
+        playSfx(240, 0.11, 'sawtooth', 0.08);
       }
     },
 
     fixedUpdate(dt: number) {
+      world.update(dt);
       for (const [eid, rem] of bounceCooldowns) {
         if (rem <= dt) bounceCooldowns.delete(eid);
         else bounceCooldowns.set(eid, rem - dt);
@@ -1301,6 +1385,10 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
         scene.emitVfx('fire', [firePos[0], 0.38, firePos[2]], 5, 0.08);
         if (Math.random() < 0.45) scene.emitVfx('smoke', [firePos[0], 0.72, firePos[2]], 2, 0.08);
         if (Math.random() < 0.55) scene.emitVfx('sparks', [firePos[0], 0.42, firePos[2]], 3, 0.08);
+        for (const cf of aiGrid.campfires) {
+          scene.emitVfx('fire', cf, 4, 0.08);
+          if (Math.random() < 0.4) scene.emitVfx('sparks', cf, 2, 0.08);
+        }
       }
       vfxBubbleAcc += dt;
       if (vfxBubbleAcc >= 0.16) {
