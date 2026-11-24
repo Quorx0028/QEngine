@@ -3,10 +3,14 @@ import {
   addKeyframe,
   base64ToUint8,
   createDefaultSceneDocument,
+  createPrefabFromObject,
+  DocumentHistory,
   evaluateObjectTrack,
+  instantiatePrefab,
   parseSceneDocument,
   removeKeyframeAt,
   serializeSceneDocument,
+  syncPrefabInstances,
   uint8ToBase64,
 } from '../src/SceneDocument';
 
@@ -61,5 +65,40 @@ describe('Editor SceneDocument & Animation Timeline', () => {
     expect(parsed.name).toBe('My Test Level');
     expect(parsed.objects[1].glbName).toBe('hero.glb');
     expect(Array.from(base64ToUint8(parsed.objects[1].glbBase64!))).toEqual(Array.from(raw));
+  });
+
+  it('tracks undo/redo snapshots and syncs linked prefab instances while keeping per-instance positions', () => {
+    let doc = createDefaultSceneDocument();
+    const hist = new DocumentHistory(10);
+    const crate = doc.objects.find((o) => o.name === 'Crate Dynamic')!;
+
+    hist.record(doc);
+    const prefab = createPrefabFromObject(doc, crate);
+    const inst = instantiatePrefab(prefab, [10, 1, -4]);
+    doc.objects.push(inst);
+    expect(hist.canUndo()).toBe(true);
+    expect(doc.prefabs?.length).toBe(1);
+
+    // Modify source crate & sync across instances
+    hist.record(doc);
+    crate.physics.mass = 15;
+    crate.material.roughness = 0.2;
+    const updated = syncPrefabInstances(doc, crate);
+    expect(updated).toBe(1);
+    const syncedInst = doc.objects.find((o) => o.id === inst.id)!;
+    expect(syncedInst.physics.mass).toBe(15);
+    expect(syncedInst.material.roughness).toBeCloseTo(0.2, 5);
+    expect(syncedInst.position).toEqual([10, 1, -4]);
+
+    // Undo restores previous mass
+    const prev = hist.undo(doc)!;
+    expect(prev).not.toBeNull();
+    doc = prev;
+    expect(doc.objects.find((o) => o.id === crate.id)!.physics.mass).toBe(2);
+    expect(hist.canRedo()).toBe(true);
+
+    // Redo restores mass = 15
+    const redone = hist.redo(doc)!;
+    expect(redone.objects.find((o) => o.id === crate.id)!.physics.mass).toBe(15);
   });
 });

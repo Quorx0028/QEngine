@@ -81,6 +81,14 @@ export interface MaterialDesc {
   customFragmentSnippet?: string;
 }
 
+export interface RenderFrameMetrics {
+  instancedRuns: number;
+  instancedObjects: number;
+  skippedMaterialBinds: number;
+  shaderCount: number;
+  uboBound: boolean;
+}
+
 export interface IRenderBackend {
   createMesh(geom: MeshGeometry): number;
   disposeMesh(meshId: number): void;
@@ -90,5 +98,7 @@ export interface IRenderBackend {
   createTexture(width: number, height: number, pixels: Uint8Array, pixelated?: boolean): number;
   disposeTexture(textureId: number): void;
   renderFrame(bridge: WasmBridge, scene: Scene, aspect: number, timeSec: number): number;
+  warmupMaterials?(descs: MaterialDesc[]): number;
+  getRenderMetrics?(): RenderFrameMetrics;
   dispose(): void;
 }

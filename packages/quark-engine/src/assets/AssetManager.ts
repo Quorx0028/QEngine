@@ -1,6 +1,7 @@
 import type { IRenderBackend, MaterialDesc, MeshGeometry, MeshSubmesh } from '../render/IRenderBackend';
 import {
   createPresetMaterial,
+  SHADER_PRESET_NAMES,
   type MaterialPresetOverrides,
   type ShaderPresetName,
 } from '../render/ShaderPresets';
@@ -106,6 +107,12 @@ export class AssetManager {
 
   updateMaterial(materialId: number, patch: Partial<MaterialDesc>): void {
     this.backend?.updateMaterial(materialId, patch);
+  }
+
+  /** Pre-compiles built-in shader presets during load so runtime spawns never hitch on first draw. */
+  warmupPresets(presets: readonly ShaderPresetName[] = SHADER_PRESET_NAMES): number {
+    if (!this.backend?.warmupMaterials) return 0;
+    return this.backend.warmupMaterials(presets.map((p) => createPresetMaterial(p)));
   }
 
   createTexture(

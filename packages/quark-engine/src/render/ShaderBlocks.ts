@@ -36,6 +36,42 @@ export interface ComposedShaderSource {
   fragmentSource: string;
 }
 
+const FRAME_GLOBALS_UBO = `
+layout(std140) uniform FrameGlobals {
+  mat4 u_viewProj;
+  mat4 u_lightViewProj;
+  mat4 u_spotLightViewProj;
+  vec4 u_camPosTime;
+  vec4 u_lightDirInt;
+  vec4 u_lightColShadow;
+  vec4 u_ambientHdr;
+  vec4 u_fogColorDens;
+  vec4 u_skyTopSpotShad;
+  vec4 u_skyHorPad;
+  vec4 u_lightCounts;
+  vec4 u_pointPosRad[4];
+  vec4 u_pointColPad[4];
+  vec4 u_spotPosRange[4];
+  vec4 u_spotDirInner[4];
+  vec4 u_spotColOuter[4];
+};
+#define u_cameraPos (u_camPosTime.xyz)
+#define u_time (u_camPosTime.w)
+#define u_lightDir (u_lightDirInt.xyz)
+#define u_lightIntensity (u_lightDirInt.w)
+#define u_lightColor (u_lightColShadow.xyz)
+#define u_shadowsEnabled (int(u_lightColShadow.w + 0.5))
+#define u_ambientColor (u_ambientHdr.xyz)
+#define u_hdrOutput (int(u_ambientHdr.w + 0.5))
+#define u_fogColor (u_fogColorDens.xyz)
+#define u_fogDensity (u_fogColorDens.w)
+#define u_skyTop (u_skyTopSpotShad.xyz)
+#define u_spotShadowEnabled (int(u_skyTopSpotShad.w + 0.5))
+#define u_skyHorizon (u_skyHorPad.xyz)
+#define u_pointLightCount (int(u_lightCounts.x + 0.5))
+#define u_spotLightCount (int(u_lightCounts.y + 0.5))
+`;
+
 export function composeShader(config: ComposeShaderConfig): ComposedShaderSource {
   const unique = Array.from(new Set(config.blocks));
   const has = (id: ShaderBlockId) => unique.includes(id);
@@ -64,11 +100,8 @@ layout(location = 7) in vec4 a_instMat1;
 layout(location = 8) in vec4 a_instMat2;
 layout(location = 9) in vec4 a_instMat3;
 
+${FRAME_GLOBALS_UBO}
 uniform mat4 u_model;
-uniform mat4 u_viewProj;
-uniform mat4 u_lightViewProj;
-uniform mat4 u_spotLightViewProj;
-uniform float u_time;
 uniform float u_waveAmp;
 uniform float u_waveFreq;
 uniform vec2 u_uvScale;
@@ -394,33 +427,8 @@ in vec2 v_uv;
 in vec4 v_shadowCoord;
 in vec4 v_spotShadowCoord;
 
-uniform vec3 u_cameraPos;
-uniform float u_time;
-uniform vec3 u_lightDir;
-uniform vec3 u_lightColor;
-uniform float u_lightIntensity;
-uniform vec3 u_ambientColor;
-uniform vec3 u_fogColor;
-uniform float u_fogDensity;
-uniform vec3 u_skyTop;
-uniform vec3 u_skyHorizon;
-uniform int u_hdrOutput;
-
-uniform int u_shadowsEnabled;
+${FRAME_GLOBALS_UBO}
 uniform sampler2D u_shadowMap;
-uniform int u_pointLightCount;
-uniform vec3 u_pointPos[4];
-uniform vec3 u_pointColor[4];
-uniform float u_pointRadius[4];
-
-uniform int u_spotLightCount;
-uniform vec3 u_spotPos[4];
-uniform vec3 u_spotDir[4];
-uniform vec3 u_spotColor[4];
-uniform float u_spotRange[4];
-uniform float u_spotInnerCos[4];
-uniform float u_spotOuterCos[4];
-uniform int u_spotShadowEnabled;
 uniform sampler2D u_spotShadowMap;
 
 uniform vec4 u_baseColor;
@@ -574,17 +582,18 @@ vec3 perturbNormal(vec3 n, vec3 wp, vec2 uv, vec3 mapN) {
 
 vec3 evalPointLights(vec3 albedoLin, vec3 wp, vec3 n, vec3 v, float metallic, float roughness, float cc, float ccR, float sss, float cel) {
   vec3 acc = vec3(0.0);
+  int count = u_pointLightCount;
   for (int i = 0; i < 4; i++) {
-    if (i >= u_pointLightCount) break;
-    vec3 toL = u_pointPos[i] - wp;
+    if (i >= count) break;
+    vec3 toL = u_pointPosRad[i].xyz - wp;
     float d = length(toL);
-    float r = max(u_pointRadius[i], 0.1);
+    float r = max(u_pointPosRad[i].w, 0.1);
     if (d >= r) continue;
     vec3 ld = toL / max(d, 0.001);
     float dNorm = d / r;
     float win = clamp(1.0 - dNorm * dNorm, 0.0, 1.0);
     float att = (win * win) / (1.0 + d * d * 0.45);
-    vec3 lColLin = srgbToLin(u_pointColor[i]) * (att * 3.1);
+    vec3 lColLin = srgbToLin(u_pointColPad[i].rgb) * (att * 3.1);
     if (cel > 0.5) {
       float ndl = floor(max(dot(n, ld), 0.0) * 2.99) / 2.0;
       vec3 h = normalize(ld + v);
@@ -599,21 +608,24 @@ vec3 evalPointLights(vec3 albedoLin, vec3 wp, vec3 n, vec3 v, float metallic, fl
 
 vec3 evalSpotLights(vec3 albedoLin, vec3 wp, vec3 n, vec3 v, float metallic, float roughness, float cc, float ccR, float sss, float cel, vec4 spotSc) {
   vec3 acc = vec3(0.0);
+  int count = u_spotLightCount;
   for (int i = 0; i < 4; i++) {
-    if (i >= u_spotLightCount) break;
-    vec3 toL = u_spotPos[i] - wp;
+    if (i >= count) break;
+    vec3 toL = u_spotPosRange[i].xyz - wp;
     float d = length(toL);
-    float r = max(u_spotRange[i], 0.1);
+    float r = max(u_spotPosRange[i].w, 0.1);
     if (d >= r) continue;
     vec3 ld = toL / max(d, 0.001);
-    float theta = dot(-ld, normalize(u_spotDir[i]));
-    float cone = clamp((theta - u_spotOuterCos[i]) / max(u_spotInnerCos[i] - u_spotOuterCos[i], 0.001), 0.0, 1.0);
+    float theta = dot(-ld, normalize(u_spotDirInner[i].xyz));
+    float outerC = u_spotColOuter[i].w;
+    float innerC = u_spotDirInner[i].w;
+    float cone = clamp((theta - outerC) / max(innerC - outerC, 0.001), 0.0, 1.0);
     if (cone <= 0.001) continue;
     float dNorm = d / r;
     float win = clamp(1.0 - dNorm * dNorm, 0.0, 1.0);
     float att = ((win * win) / (1.0 + d * d * 0.18)) * cone;
     float spotShad = (i == 0 && u_spotShadowEnabled == 1) ? evalShadowMap(u_spotShadowMap, spotSc, n, ld) : 1.0;
-    vec3 lColLin = srgbToLin(u_spotColor[i]) * (att * spotShad * 2.8);
+    vec3 lColLin = srgbToLin(u_spotColOuter[i].rgb) * (att * spotShad * 2.8);
     if (cel > 0.5) {
       float ndl = floor(max(dot(n, ld), 0.0) * 2.99) / 2.0;
       acc += albedoLin * ndl * lColLin * 0.45;

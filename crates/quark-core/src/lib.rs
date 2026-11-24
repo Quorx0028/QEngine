@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod collision_math;
 pub mod ecs;
 pub mod gltf_loader;
 pub mod joints;
@@ -331,6 +332,36 @@ pub unsafe extern "C" fn core_set_trigger(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn core_set_physics_material(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    density: f32,
+    com_x: f32,
+    com_y: f32,
+    com_z: f32,
+    static_friction: f32,
+    restitution_threshold: f32,
+    friction_combine: u32,
+    restitution_combine: u32,
+    ccd: u32,
+    can_sleep: u32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        let idx = entity_index(entity);
+        let rb = core.world.rigid_bodies[idx].get_or_insert(RigidBody::default());
+        rb.density = density.max(0.0);
+        rb.center_of_mass = Vec3::new(com_x, com_y, com_z);
+        rb.static_friction = static_friction;
+        rb.restitution_threshold = restitution_threshold.max(0.0);
+        rb.friction_combine = (friction_combine & 0xFF) as u8;
+        rb.restitution_combine = (restitution_combine & 0xFF) as u8;
+        rb.ccd = ccd != 0;
+        rb.can_sleep = can_sleep != 0;
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn core_set_character_controller(
     ptr: *mut EngineCore,
     entity: EntityHandle,
@@ -342,6 +373,128 @@ pub unsafe extern "C" fn core_set_character_controller(
         core.physics
             .set_character_controller(entity, step_height, max_slope_deg);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_character_controller_ex(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    step_height: f32,
+    max_slope_deg: f32,
+    push_strength: f32,
+    max_push_mass: f32,
+    ground_snap: f32,
+    anti_tip_push: u32,
+) {
+    let core = &mut *ptr;
+    if core.world.is_alive(entity) {
+        core.physics.set_character_controller_ex(
+            entity,
+            step_height,
+            max_slope_deg,
+            push_strength,
+            max_push_mass,
+            ground_snap,
+            anti_tip_push != 0,
+        );
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_ball_socket_joint(
+    ptr: *mut EngineCore,
+    entity_a: EntityHandle,
+    entity_b: EntityHandle,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+) -> u32 {
+    (*ptr).physics.joints.add_ball_socket(
+        entity_a,
+        entity_b,
+        Vec3::new(ax, ay, az),
+        Vec3::new(bx, by, bz),
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_fixed_joint(
+    ptr: *mut EngineCore,
+    entity_a: EntityHandle,
+    entity_b: EntityHandle,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+) -> u32 {
+    let core = &mut *ptr;
+    core.physics.joints.add_fixed(
+        &core.world,
+        entity_a,
+        entity_b,
+        Vec3::new(ax, ay, az),
+        Vec3::new(bx, by, bz),
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_prismatic_joint(
+    ptr: *mut EngineCore,
+    entity_a: EntityHandle,
+    entity_b: EntityHandle,
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+    axis_x: f32,
+    axis_y: f32,
+    axis_z: f32,
+    has_limits: i32,
+    min_dist: f32,
+    max_dist: f32,
+) -> u32 {
+    let core = &mut *ptr;
+    core.physics.joints.add_prismatic(
+        &core.world,
+        entity_a,
+        entity_b,
+        Vec3::new(ax, ay, az),
+        Vec3::new(bx, by, bz),
+        Vec3::new(axis_x, axis_y, axis_z),
+        if has_limits != 0 { Some(min_dist) } else { None },
+        if has_limits != 0 { Some(max_dist) } else { None },
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_hinge_motor(
+    ptr: *mut EngineCore,
+    joint_id: u32,
+    speed: f32,
+    max_torque: f32,
+) -> i32 {
+    i32::from((*ptr).physics.joints.set_hinge_motor(joint_id, speed, max_torque))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_joint_break_force(
+    ptr: *mut EngineCore,
+    joint_id: u32,
+    break_force: f32,
+) -> i32 {
+    let val = if break_force >= 0.0 && break_force.is_finite() {
+        Some(break_force)
+    } else {
+        None
+    };
+    i32::from((*ptr).physics.joints.set_break_force(joint_id, val))
 }
 
 #[no_mangle]
@@ -500,12 +653,83 @@ pub unsafe extern "C" fn core_set_collider_3d(
             half_extents: Vec3::new(a, b, c),
         },
         1 => Collider3D::Sphere { radius: a },
+        3 => Collider3D::Cylinder {
+            radius: a,
+            half_height: b,
+        },
         _ => Collider3D::Capsule {
             radius: a,
             half_height: b,
         },
     };
     core.world.colliders_3d[entity_index(entity)] = Some(col);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_collider_convex_hull(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    verts_ptr: *const f32,
+    float_len: usize,
+) {
+    let core = &mut *ptr;
+    if !core.world.is_alive(entity) || verts_ptr.is_null() || float_len < 12 {
+        return;
+    }
+    let floats = std::slice::from_raw_parts(verts_ptr, float_len);
+    let mut pts = Vec::with_capacity(float_len / 3);
+    for ch in floats.chunks_exact(3) {
+        pts.push(Vec3::new(ch[0], ch[1], ch[2]));
+    }
+    let (hull_id, bounding_radius) = core.physics.register_convex_hull(&pts);
+    core.world.colliders_3d[entity_index(entity)] = Some(Collider3D::ConvexHull {
+        hull_id,
+        bounding_radius,
+    });
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_collider_compound(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    parts_ptr: *const f32,
+    part_count: usize,
+) {
+    let core = &mut *ptr;
+    if !core.world.is_alive(entity) || parts_ptr.is_null() || part_count == 0 {
+        return;
+    }
+    let floats = std::slice::from_raw_parts(parts_ptr, part_count * 11);
+    let mut children = Vec::with_capacity(part_count);
+    for ch in floats.chunks_exact(11) {
+        let kind = ch[0].round() as u32;
+        let local_pos = Vec3::new(ch[1], ch[2], ch[3]);
+        let local_rot = Quat::from_xyzw(ch[4], ch[5], ch[6], ch[7]).normalize();
+        let collider = match kind {
+            0 => Collider3D::Aabb {
+                half_extents: Vec3::new(ch[8], ch[9], ch[10]),
+            },
+            1 => Collider3D::Sphere { radius: ch[8] },
+            3 => Collider3D::Cylinder {
+                radius: ch[8],
+                half_height: ch[9],
+            },
+            _ => Collider3D::Capsule {
+                radius: ch[8],
+                half_height: ch[9],
+            },
+        };
+        children.push(crate::collision_math::CompoundChild {
+            local_pos,
+            local_rot,
+            collider,
+        });
+    }
+    let (compound_id, bounding_radius) = core.physics.register_compound(children);
+    core.world.colliders_3d[entity_index(entity)] = Some(Collider3D::Compound {
+        compound_id,
+        bounding_radius,
+    });
 }
 
 #[no_mangle]
@@ -524,9 +748,49 @@ pub unsafe extern "C" fn core_set_collider_2d(
         0 => Collider2D::Aabb2D {
             half_extents: Vec2::new(a, b),
         },
+        2 => Collider2D::Capsule2D {
+            radius: a,
+            half_height: b,
+        },
         _ => Collider2D::Circle2D { radius: a },
     };
     core.world.colliders_2d[entity_index(entity)] = Some(col);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_add_water_zone(
+    ptr: *mut EngineCore,
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    hx: f32,
+    hy: f32,
+    hz: f32,
+    rx: f32,
+    ry: f32,
+    rz: f32,
+    rw: f32,
+    density: f32,
+    linear_drag: f32,
+    angular_drag: f32,
+    fx: f32,
+    fy: f32,
+    fz: f32,
+) -> u32 {
+    (*ptr).physics.add_water_zone(
+        Vec3::new(cx, cy, cz),
+        Vec3::new(hx, hy, hz),
+        Quat::from_xyzw(rx, ry, rz, rw),
+        density,
+        linear_drag,
+        angular_drag,
+        Vec3::new(fx, fy, fz),
+    )
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_clear_water_zones(ptr: *mut EngineCore) {
+    (*ptr).physics.clear_water_zones();
 }
 
 #[no_mangle]
@@ -890,6 +1154,121 @@ pub unsafe extern "C" fn core_events_ptr(ptr: *const EngineCore) -> *const u32 {
 #[no_mangle]
 pub unsafe extern "C" fn core_events_len(ptr: *const EngineCore) -> usize {
     (*ptr).physics.event_words.len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_rich_events_ptr(ptr: *const EngineCore) -> *const u32 {
+    (*ptr).physics.rich_event_words.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_rich_events_len(ptr: *const EngineCore) -> usize {
+    (*ptr).physics.rich_event_words.len()
+}
+
+fn decode_query_shape(kind: u32, a: f32, b: f32, c: f32) -> Collider3D {
+    match kind {
+        0 => Collider3D::Aabb { half_extents: Vec3::new(a, b, c) },
+        1 => Collider3D::Sphere { radius: a },
+        3 => Collider3D::Cylinder { radius: a, half_height: b },
+        _ => Collider3D::Capsule { radius: a, half_height: b },
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_overlap_shape(
+    ptr: *mut EngineCore,
+    kind: u32,
+    px: f32,
+    py: f32,
+    pz: f32,
+    rx: f32,
+    ry: f32,
+    rz: f32,
+    rw: f32,
+    a: f32,
+    b: f32,
+    c: f32,
+    mask: u32,
+    include_triggers: u32,
+) -> usize {
+    let core = &mut *ptr;
+    let shape = decode_query_shape(kind, a, b, c);
+    core.physics
+        .overlap_shape(
+            &core.world,
+            shape,
+            Vec3::new(px, py, pz),
+            Quat::from_xyzw(rx, ry, rz, rw).normalize(),
+            mask,
+            include_triggers != 0,
+        )
+        .len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_overlap_results_ptr(ptr: *const EngineCore) -> *const EntityHandle {
+    (*ptr).physics.overlap_results.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_sweep_shape(
+    ptr: *const EngineCore,
+    kind: u32,
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    rx: f32,
+    ry: f32,
+    rz: f32,
+    rw: f32,
+    a: f32,
+    b: f32,
+    c: f32,
+    dx: f32,
+    dy: f32,
+    dz: f32,
+    max_dist: f32,
+    mask: u32,
+    ignore_entity: EntityHandle,
+    out_buf: *mut f32,
+) -> EntityHandle {
+    let core = &*ptr;
+    let shape = decode_query_shape(kind, a, b, c);
+    let Some(hit) = core.physics.sweep_shape(
+        &core.world,
+        shape,
+        Vec3::new(ox, oy, oz),
+        Quat::from_xyzw(rx, ry, rz, rw).normalize(),
+        Vec3::new(dx, dy, dz),
+        max_dist,
+        mask,
+        ignore_entity,
+    ) else {
+        return 0;
+    };
+    if !out_buf.is_null() {
+        let out = std::slice::from_raw_parts_mut(out_buf, 7);
+        out[0] = hit.distance;
+        out[1] = hit.point.x;
+        out[2] = hit.point.y;
+        out[3] = hit.point.z;
+        out[4] = hit.normal.x;
+        out[5] = hit.normal.y;
+        out[6] = hit.normal.z;
+    }
+    hit.entity
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_build_physics_debug_lines(ptr: *mut EngineCore) -> usize {
+    let core = &mut *ptr;
+    core.physics.build_debug_lines(&core.world).len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_physics_debug_lines_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr).physics.debug_lines.as_ptr()
 }
 
 #[no_mangle]

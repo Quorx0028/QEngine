@@ -13,10 +13,14 @@ import {
   addKeyframe,
   createDefaultObject,
   createDefaultSceneDocument,
+  createPrefabFromObject,
+  DocumentHistory,
+  instantiatePrefab,
   parseSceneDocument,
   removeKeyframeAt,
   RUNTIME_STORAGE_KEY,
   serializeSceneDocument,
+  syncPrefabInstances,
   uint8ToBase64,
   type EditorColliderKind,
   type EditorObject,
@@ -110,7 +114,9 @@ async function bootstrap() {
   const gizmo = new GizmoOverlay(gizmoCanvas);
 
   const engine = await Engine.init({ canvas: glCanvas, wasmUrl });
+  engine.assets.warmupPresets();
   const runner = new SceneRuntimeBuilder(engine);
+  const history = new DocumentHistory(60);
 
   let doc: EditorSceneDocument;
   const savedJson = localStorage.getItem(RUNTIME_STORAGE_KEY);
@@ -161,8 +167,12 @@ async function bootstrap() {
   const inspectorBody = document.getElementById('inspector-body')!;
   const envPp = document.getElementById('env-pp') as HTMLSelectElement;
   const envShadows = document.getElementById('env-shadows') as HTMLInputElement;
+  const envDebugPhysics = document.getElementById('env-debug-physics') as HTMLInputElement;
+  const envProfiler = document.getElementById('env-profiler') as HTMLInputElement;
   const envFog = document.getElementById('env-fog') as HTMLInputElement;
   const envSun = document.getElementById('env-sun') as HTMLInputElement;
+  const btnUndo = document.getElementById('btn-undo') as HTMLButtonElement;
+  const btnRedo = document.getElementById('btn-redo') as HTMLButtonElement;
   const rngAnim = document.getElementById('rng-anim-time') as HTMLInputElement;
   const lblAnimTime = document.getElementById('lbl-anim-time')!;
   const inpAnimDur = document.getElementById('inp-anim-dur') as HTMLInputElement;
@@ -176,6 +186,40 @@ async function bootstrap() {
     o.textContent = p;
     envPp.appendChild(o);
   });
+
+  function updateHistoryUi(): void {
+    btnUndo.disabled = !history.canUndo();
+    btnRedo.disabled = !history.canRedo();
+  }
+
+  async function applyDocumentSnapshot(nextDoc: EditorSceneDocument): Promise<void> {
+    doc = nextDoc;
+    if (!doc.objects.some((o) => o.id === selectedId)) {
+      selectedId = doc.objects[0]?.id ?? null;
+    }
+    saveToLocal();
+    syncEnvUi();
+    await runner.rebuild(doc, playMode);
+    renderHierarchy();
+    renderInspector();
+    renderKeyframeMarkers();
+    updateHistoryUi();
+  }
+
+  async function performUndo(): Promise<void> {
+    const prev = history.undo(doc);
+    if (prev) await applyDocumentSnapshot(prev);
+  }
+
+  async function performRedo(): Promise<void> {
+    const next = history.redo(doc);
+    if (next) await applyDocumentSnapshot(next);
+  }
+
+  function recordUndoSnapshot(beforeJson?: string): void {
+    history.record(beforeJson ?? doc);
+    updateHistoryUi();
+  }
 
   function selectedObject(): EditorObject | undefined {
     return doc.objects.find((o) => o.id === selectedId);
@@ -295,7 +339,7 @@ async function bootstrap() {
     if (obj.meshKind !== 'lightMarker') {
       const secMat = document.createElement('div');
       secMat.className = 'inspector-section';
-      secMat.innerHTML = `<h4>Material & Shader</h4>`;
+      secMat.innerHTML = `<h4>Material and shader</h4>`;
 
       const presetSel = document.createElement('select');
       SHADER_PRESET_NAMES.forEach((p) => {
@@ -311,7 +355,7 @@ async function bootstrap() {
         saveToLocal();
       };
       const presetLbl = document.createElement('label');
-      presetLbl.textContent = 'Shader Preset';
+      presetLbl.textContent = 'Shader preset';
       presetLbl.appendChild(presetSel);
       secMat.appendChild(presetLbl);
 
@@ -325,7 +369,7 @@ async function bootstrap() {
       };
       const colLbl = document.createElement('label');
       colLbl.className = 'inline';
-      colLbl.append('Base Color', colInp);
+      colLbl.append('Base color', colInp);
       secMat.appendChild(colLbl);
 
       const roughInp = document.createElement('input');
@@ -372,7 +416,7 @@ async function bootstrap() {
         saveToLocal();
       };
       const outLbl = document.createElement('label');
-      outLbl.textContent = 'Outline Width';
+      outLbl.textContent = 'Outline width';
       outLbl.appendChild(outInp);
       secMat.appendChild(outLbl);
 
@@ -382,7 +426,7 @@ async function bootstrap() {
     if (obj.lightKind !== 'none') {
       const secL = document.createElement('div');
       secL.className = 'inspector-section';
-      secL.innerHTML = `<h4>${obj.lightKind === 'spot' ? 'SpotLight' : 'PointLight'}</h4>`;
+      secL.innerHTML = `<h4>${obj.lightKind === 'spot' ? 'Spot light' : 'Point light'}</h4>`;
 
       const lCol = document.createElement('input');
       lCol.type = 'color';
@@ -395,7 +439,7 @@ async function bootstrap() {
       };
       const lColLbl = document.createElement('label');
       lColLbl.className = 'inline';
-      lColLbl.append('Light Color', lCol);
+      lColLbl.append('Light color', lCol);
       secL.appendChild(lColLbl);
 
       const lInt = document.createElement('input');
@@ -431,7 +475,7 @@ async function bootstrap() {
     if (obj.meshKind === 'glb') {
       const secGlb = document.createElement('div');
       secGlb.className = 'inspector-section';
-      secGlb.innerHTML = `<h4>Skeletal GLB Animation</h4>`;
+      secGlb.innerHTML = `<h4>Skeletal animation</h4>`;
       const { clipNames } = await runner.resolveGlb(obj);
       if (clipNames.length > 0) {
         const clipSel = document.createElement('select');
@@ -460,14 +504,14 @@ async function bootstrap() {
         clipLbl.appendChild(clipSel);
         secGlb.appendChild(clipLbl);
       } else {
-        secGlb.innerHTML += '<div style="opacity:0.65;">No skeletal clips in GLB</div>';
+        secGlb.innerHTML += '<div style="opacity:0.65;">No clips in file</div>';
       }
       inspectorBody.appendChild(secGlb);
     }
 
     const secPhys = document.createElement('div');
     secPhys.className = 'inspector-section';
-    secPhys.innerHTML = `<h4>Physics (Active in Play)</h4>`;
+    secPhys.innerHTML = `<h4>Physics</h4>`;
     const physEnable = document.createElement('input');
     physEnable.type = 'checkbox';
     physEnable.checked = obj.physics.enabled;
@@ -477,7 +521,7 @@ async function bootstrap() {
     };
     const pEnLbl = document.createElement('label');
     pEnLbl.className = 'inline';
-    pEnLbl.append(physEnable, 'Enable Collider');
+    pEnLbl.append(physEnable, 'Collider');
     secPhys.appendChild(pEnLbl);
 
     const dynChk = document.createElement('input');
@@ -489,7 +533,7 @@ async function bootstrap() {
     };
     const dynLbl = document.createElement('label');
     dynLbl.className = 'inline';
-    dynLbl.append(dynChk, 'Dynamic RigidBody');
+    dynLbl.append(dynChk, 'Dynamic body');
     secPhys.appendChild(dynLbl);
 
     const ctrlChk = document.createElement('input');
@@ -505,7 +549,7 @@ async function bootstrap() {
     };
     const ctrlLbl = document.createElement('label');
     ctrlLbl.className = 'inline';
-    ctrlLbl.append(ctrlChk, 'Playable Character (WASD)');
+    ctrlLbl.append(ctrlChk, 'Playable character');
     secPhys.appendChild(ctrlLbl);
 
     const colSel = document.createElement('select');
@@ -521,7 +565,7 @@ async function bootstrap() {
       saveToLocal();
     };
     const colKindLbl = document.createElement('label');
-    colKindLbl.textContent = 'Collider Shape';
+    colKindLbl.textContent = 'Collider shape';
     colKindLbl.appendChild(colSel);
     secPhys.appendChild(colKindLbl);
 
@@ -561,16 +605,16 @@ async function bootstrap() {
     addPhysNum('friction', 'Friction', obj.physics.friction, 0, 2, 0.05, (n) => {
       obj.physics.friction = n;
     });
-    addPhysNum('restitution', 'Restitution (Bounce)', obj.physics.restitution, 0, 1, 0.05, (n) => {
+    addPhysNum('restitution', 'Restitution', obj.physics.restitution, 0, 1, 0.05, (n) => {
       obj.physics.restitution = n;
     });
-    addPhysNum('gravityScale', 'Gravity Scale', obj.physics.gravityScale, -3, 5, 0.1, (n) => {
+    addPhysNum('gravityScale', 'Gravity scale', obj.physics.gravityScale, -3, 5, 0.1, (n) => {
       obj.physics.gravityScale = n;
     });
-    addPhysNum('linearDamping', 'Linear Damping', obj.physics.linearDamping ?? 0.12, 0, 5, 0.05, (n) => {
+    addPhysNum('linearDamping', 'Linear damping', obj.physics.linearDamping ?? 0.12, 0, 5, 0.05, (n) => {
       obj.physics.linearDamping = n;
     });
-    addPhysNum('angularDamping', 'Angular Damping', obj.physics.angularDamping ?? 0.35, 0, 5, 0.05, (n) => {
+    addPhysNum('angularDamping', 'Angular damping', obj.physics.angularDamping ?? 0.35, 0, 5, 0.05, (n) => {
       obj.physics.angularDamping = n;
     });
 
@@ -583,7 +627,7 @@ async function bootstrap() {
     };
     const lockLbl = document.createElement('label');
     lockLbl.className = 'inline';
-    lockLbl.append(lockChk, 'Lock Rotation');
+    lockLbl.append(lockChk, 'Lock rotation');
     secPhys.appendChild(lockLbl);
 
     const trigChk = document.createElement('input');
@@ -595,11 +639,11 @@ async function bootstrap() {
     };
     const trigLbl = document.createElement('label');
     trigLbl.className = 'inline';
-    trigLbl.append(trigChk, 'Is Trigger Volume');
+    trigLbl.append(trigChk, 'Trigger volume');
     secPhys.appendChild(trigLbl);
 
     const presetRow = document.createElement('div');
-    presetRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;';
+    presetRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;margin-top:4px;';
     const physPresets: Array<{ label: string; mass: number; friction: number; restitution: number; linearDamping: number }> = [
       { label: 'Wood 1kg', mass: 1, friction: 0.78, restitution: 0.12, linearDamping: 0.12 },
       { label: 'Steel 20kg', mass: 20, friction: 0.65, restitution: 0.08, linearDamping: 0.08 },
@@ -626,6 +670,44 @@ async function bootstrap() {
     secPhys.appendChild(presetRow);
 
     inspectorBody.appendChild(secPhys);
+
+    const secPrefab = document.createElement('div');
+    secPrefab.className = 'inspector-section';
+    secPrefab.innerHTML = '<h4>Prefab</h4>';
+    const prefabRow = document.createElement('div');
+    prefabRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+    if (!obj.prefabId) {
+      const btnMake = document.createElement('button');
+      btnMake.textContent = 'Save as prefab';
+      btnMake.onclick = () => {
+        recordUndoSnapshot();
+        createPrefabFromObject(doc, obj);
+        saveToLocal();
+        renderInspector();
+      };
+      prefabRow.appendChild(btnMake);
+    } else {
+      const btnSync = document.createElement('button');
+      btnSync.textContent = 'Apply to all';
+      btnSync.onclick = async () => {
+        recordUndoSnapshot();
+        syncPrefabInstances(doc, obj);
+        saveToLocal();
+        await runner.rebuild(doc, playMode);
+        renderHierarchy();
+      };
+      const btnSpawn = document.createElement('button');
+      btnSpawn.textContent = 'Spawn instance';
+      btnSpawn.onclick = () => {
+        const prefab = doc.prefabs?.find((p) => p.id === obj.prefabId);
+        if (!prefab) return;
+        const inst = instantiatePrefab(prefab, [obj.position[0] + 1.5, obj.position[1], obj.position[2]]);
+        addEditorObject(inst);
+      };
+      prefabRow.append(btnSync, btnSpawn);
+    }
+    secPrefab.appendChild(prefabRow);
+    inspectorBody.appendChild(secPrefab);
   }
 
   // Toolbar bindings
@@ -639,7 +721,11 @@ async function bootstrap() {
   document.getElementById('btn-gizmo-rotate')!.onclick = () => setGizmo('rotate');
   document.getElementById('btn-gizmo-scale')!.onclick = () => setGizmo('scale');
 
+  btnUndo.onclick = () => performUndo();
+  btnRedo.onclick = () => performRedo();
+
   async function addEditorObject(obj: EditorObject) {
+    recordUndoSnapshot();
     doc.objects.push(obj);
     selectedId = obj.id;
     saveToLocal();
@@ -698,6 +784,7 @@ async function bootstrap() {
 
   document.getElementById('btn-del-obj')!.onclick = async () => {
     if (!selectedId || doc.objects.length <= 1) return;
+    recordUndoSnapshot();
     doc.objects = doc.objects.filter((o) => o.id !== selectedId);
     selectedId = doc.objects[0]?.id ?? null;
     saveToLocal();
@@ -712,14 +799,22 @@ async function bootstrap() {
     saveToLocal();
   };
   envPp.onchange = () => {
+    recordUndoSnapshot();
     doc.environment.postProcess = envPp.value as PostProcessPresetName;
     runner.applyEnvironment(doc);
     saveToLocal();
   };
   envShadows.onchange = () => {
+    recordUndoSnapshot();
     doc.environment.shadowsEnabled = envShadows.checked;
     runner.applyEnvironment(doc);
     saveToLocal();
+  };
+  envDebugPhysics.onchange = () => {
+    engine.scene.debugPhysics = envDebugPhysics.checked;
+  };
+  envProfiler.onchange = () => {
+    engine.setProfilerVisible(envProfiler.checked);
   };
   envFog.oninput = () => {
     doc.environment.fogDensity = Number(envFog.value);
@@ -765,6 +860,7 @@ async function bootstrap() {
   document.getElementById('btn-add-kf')!.onclick = () => {
     const obj = selectedObject();
     if (!obj) return;
+    recordUndoSnapshot();
     addKeyframe(obj, animTime, obj.position, obj.rotationDeg, obj.scale);
     renderKeyframeMarkers();
     saveToLocal();
@@ -772,7 +868,9 @@ async function bootstrap() {
   document.getElementById('btn-del-kf')!.onclick = () => {
     const obj = selectedObject();
     if (!obj) return;
+    const before = serializeSceneDocument(doc);
     if (removeKeyframeAt(obj, animTime)) {
+      recordUndoSnapshot(before);
       renderKeyframeMarkers();
       saveToLocal();
     }
@@ -826,9 +924,32 @@ async function bootstrap() {
 
   // Viewport interaction (Pick + Axis Gizmo Drag + RMB Look + Wheel Zoom)
   let draggingAxis: GizmoAxis | null = null;
+  let dragBeforeJson: string | null = null;
   let draggingCamera = false;
   let lastMouseX = 0;
   let lastMouseY = 0;
+
+  window.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && !playMode) {
+      if (e.code === 'KeyZ' && !e.shiftKey) {
+        e.preventDefault();
+        performUndo();
+      } else if ((e.code === 'KeyZ' && e.shiftKey) || e.code === 'KeyY') {
+        e.preventDefault();
+        performRedo();
+      } else if (e.code === 'KeyD') {
+        e.preventDefault();
+        document.getElementById('btn-dup-obj')!.click();
+      }
+    }
+    if (e.code === 'F2') {
+      envProfiler.checked = engine.isProfilerVisible();
+    } else if (e.code === 'F3') {
+      engine.scene.debugPhysics = !engine.scene.debugPhysics;
+      envDebugPhysics.checked = engine.scene.debugPhysics;
+    }
+  });
 
   glCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
   glCanvas.addEventListener('mousedown', (e) => {
@@ -853,6 +974,7 @@ async function bootstrap() {
         const hitAxis = gizmo.pickAxis(mx, my, sel.position, engine.scene.camera.position, viewProj);
         if (hitAxis) {
           draggingAxis = hitAxis;
+          dragBeforeJson = serializeSceneDocument(doc);
           return;
         }
       }
@@ -929,6 +1051,12 @@ async function bootstrap() {
   });
 
   window.addEventListener('mouseup', () => {
+    if (draggingAxis && dragBeforeJson) {
+      if (serializeSceneDocument(doc) !== dragBeforeJson) {
+        recordUndoSnapshot(dragBeforeJson);
+      }
+      dragBeforeJson = null;
+    }
     draggingAxis = null;
     draggingCamera = false;
   });
@@ -1047,8 +1175,7 @@ async function bootstrap() {
 
       const st = engine.getStats();
       viewportHud.textContent =
-        `${playMode ? 'PLAY MODE' : 'EDIT MODE'} · FPS ${st.fps} · Entities ${st.entities} · Draws ${st.drawCalls} · ` +
-        (playMode ? 'Click canvas to control Player (WASD+Space), Stop to edit' : 'Click object · Drag X/Y/Z axis · Right-drag look + WASD');
+        `${playMode ? 'Play' : 'Edit'}: ${st.fps} FPS, ${st.entities} entities, ${st.drawCalls} draws`;
     }
   });
 

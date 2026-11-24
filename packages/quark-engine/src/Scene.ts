@@ -16,6 +16,8 @@ export interface TransformOptions {
   immediate?: boolean;
 }
 
+export type CombineRule = 'default' | 'average' | 'min' | 'max' | 'multiply';
+
 export interface RigidBodyOptions {
   dynamic?: boolean;
   gravityScale?: number;
@@ -25,16 +27,50 @@ export interface RigidBodyOptions {
   angularDamping?: number;
   mass?: number;
   lockRotation?: boolean;
+  density?: number;
+  centerOfMass?: Vec3Tuple;
+  staticFriction?: number;
+  restitutionThreshold?: number;
+  frictionCombine?: CombineRule;
+  restitutionCombine?: CombineRule;
+  ccd?: boolean;
+  canSleep?: boolean;
 }
+
+export const PHYSICS_MATERIAL_PRESETS: Record<
+  'wood' | 'stone' | 'steel' | 'ice' | 'rubber' | 'bouncy',
+  Partial<RigidBodyOptions>
+> = {
+  wood: { density: 0.65, friction: 0.6, staticFriction: 0.72, restitution: 0.12, linearDamping: 0.14 },
+  stone: { density: 2.4, friction: 0.82, staticFriction: 0.95, restitution: 0.05, linearDamping: 0.1 },
+  steel: { density: 7.8, friction: 0.45, staticFriction: 0.58, restitution: 0.25, linearDamping: 0.06 },
+  ice: { density: 0.92, friction: 0.03, staticFriction: 0.05, restitution: 0.08, linearDamping: 0.03 },
+  rubber: { density: 1.15, friction: 0.95, staticFriction: 1.15, restitution: 0.68, linearDamping: 0.1 },
+  bouncy: { density: 0.85, friction: 0.45, staticFriction: 0.55, restitution: 0.92, linearDamping: 0.04 },
+};
+
+export type CompoundPartDesc = {
+  position?: Vec3Tuple;
+  rotation?: QuatTuple;
+  shape:
+    | { kind: 'aabb'; halfExtents: Vec3Tuple }
+    | { kind: 'sphere'; radius: number }
+    | { kind: 'capsule'; radius: number; halfHeight: number }
+    | { kind: 'cylinder'; radius: number; halfHeight: number };
+};
 
 export type Collider3DOptions =
   | { kind: 'aabb'; halfExtents: Vec3Tuple }
   | { kind: 'sphere'; radius: number }
-  | { kind: 'capsule'; radius: number; halfHeight: number };
+  | { kind: 'capsule'; radius: number; halfHeight: number }
+  | { kind: 'cylinder'; radius: number; halfHeight: number }
+  | { kind: 'convexHull'; points: Vec3Tuple[] | Float32Array }
+  | { kind: 'compound'; parts: CompoundPartDesc[] };
 
 export type Collider2DOptions =
   | { kind: 'aabb2d'; halfExtents: [number, number] }
-  | { kind: 'circle2d'; radius: number };
+  | { kind: 'circle2d'; radius: number }
+  | { kind: 'capsule2d'; radius: number; halfHeight: number };
 
 export interface Sprite2DOptions {
   size?: [number, number];
@@ -103,6 +139,15 @@ export interface CollisionEvent {
   normal: Vec3Tuple;
 }
 
+export interface RichPhysicsEvent {
+  kind: number;
+  entityA: EntityId;
+  entityB: EntityId;
+  normal: Vec3Tuple;
+  contactPoint: Vec3Tuple;
+  impulse: number;
+}
+
 export interface TriggerEvent {
   entityA: EntityId;
   entityB: EntityId;
@@ -142,6 +187,7 @@ export class Scene {
   };
   postProcess: PostProcessConfig = createPostProcessPreset('none');
   shadowsEnabled = true;
+  debugPhysics = false;
   skyTopColor: Vec3Tuple = [0.08, 0.16, 0.32];
   skyHorizonColor: Vec3Tuple = [0.22, 0.32, 0.48];
   fogColor: Vec3Tuple = [0.16, 0.22, 0.34];
@@ -154,6 +200,7 @@ export class Scene {
   private readonly collisionEnterListeners = new Set<(ev: CollisionEvent) => void>();
   private readonly triggerEnterListeners = new Set<(ev: TriggerEvent) => void>();
   private readonly triggerExitListeners = new Set<(ev: TriggerEvent) => void>();
+  private readonly richEventListeners = new Set<(ev: RichPhysicsEvent) => void>();
   readonly behaviors: BehaviorManager;
 
   constructor(bridge: WasmBridge) {
@@ -245,6 +292,33 @@ export class Scene {
       opts.mass ?? 1.0,
       opts.lockRotation ?? false
     );
+    const hasExtended =
+      opts.density !== undefined ||
+      opts.centerOfMass !== undefined ||
+      opts.staticFriction !== undefined ||
+      opts.restitutionThreshold !== undefined ||
+      opts.frictionCombine !== undefined ||
+      opts.restitutionCombine !== undefined ||
+      opts.ccd !== undefined ||
+      opts.canSleep !== undefined;
+    if (hasExtended) {
+      const ruleCode = (r?: CombineRule): number =>
+        r === 'average' ? 1 : r === 'min' ? 2 : r === 'max' ? 3 : r === 'multiply' ? 4 : 0;
+      const com = opts.centerOfMass ?? [0, 0, 0];
+      this.bridge.setPhysicsMaterial(
+        entity,
+        opts.density ?? 0.0,
+        com[0],
+        com[1],
+        com[2],
+        opts.staticFriction ?? -1.0,
+        opts.restitutionThreshold ?? 1.0,
+        ruleCode(opts.frictionCombine),
+        ruleCode(opts.restitutionCombine),
+        opts.ccd ?? false,
+        opts.canSleep ?? true
+      );
+    }
   }
 
   setAngularVelocity(entity: EntityId, wx: number, wy: number, wz: number): void {
@@ -297,9 +371,128 @@ export class Scene {
 
   setCharacterController(
     entity: EntityId,
-    opts: { stepHeight?: number; maxSlopeDeg?: number } = {}
+    opts: {
+      stepHeight?: number;
+      maxSlopeDeg?: number;
+      pushStrength?: number;
+      maxPushMass?: number;
+      groundSnap?: number;
+      antiTipPush?: boolean;
+    } = {}
   ): void {
-    this.bridge.setCharacterController(entity, opts.stepHeight ?? 0.45, opts.maxSlopeDeg ?? 50);
+    if (
+      opts.pushStrength !== undefined ||
+      opts.maxPushMass !== undefined ||
+      opts.groundSnap !== undefined ||
+      opts.antiTipPush !== undefined
+    ) {
+      this.bridge.setCharacterControllerEx(
+        entity,
+        opts.stepHeight ?? 0.45,
+        opts.maxSlopeDeg ?? 50,
+        opts.pushStrength ?? 0.75,
+        opts.maxPushMass ?? 35.0,
+        opts.groundSnap ?? 0.12,
+        opts.antiTipPush ?? true
+      );
+    } else {
+      this.bridge.setCharacterController(entity, opts.stepHeight ?? 0.45, opts.maxSlopeDeg ?? 50);
+    }
+  }
+
+  addWaterZone(opts: {
+    center: Vec3Tuple;
+    halfExtents: Vec3Tuple;
+    rotation?: QuatTuple;
+    density?: number;
+    linearDrag?: number;
+    angularDrag?: number;
+    flow?: Vec3Tuple;
+  }): number {
+    const r = opts.rotation ?? [0, 0, 0, 1];
+    const f = opts.flow ?? [0, 0, 0];
+    return this.bridge.addWaterZone(
+      opts.center[0],
+      opts.center[1],
+      opts.center[2],
+      opts.halfExtents[0],
+      opts.halfExtents[1],
+      opts.halfExtents[2],
+      r[0],
+      r[1],
+      r[2],
+      r[3],
+      opts.density ?? 1.0,
+      opts.linearDrag ?? 2.2,
+      opts.angularDrag ?? 2.0,
+      f[0],
+      f[1],
+      f[2]
+    );
+  }
+
+  clearWaterZones(): void {
+    this.bridge.clearWaterZones();
+  }
+
+  addBallSocketJoint(
+    entityA: EntityId,
+    entityB: EntityId,
+    opts: { anchorA?: Vec3Tuple; anchorB?: Vec3Tuple } = {}
+  ): number {
+    const a = opts.anchorA ?? [0, 0, 0];
+    const b = opts.anchorB ?? [0, 0, 0];
+    return this.bridge.addBallSocketJoint(entityA, entityB, a[0], a[1], a[2], b[0], b[1], b[2]);
+  }
+
+  addFixedJoint(
+    entityA: EntityId,
+    entityB: EntityId,
+    opts: { anchorA?: Vec3Tuple; anchorB?: Vec3Tuple } = {}
+  ): number {
+    const a = opts.anchorA ?? [0, 0, 0];
+    const b = opts.anchorB ?? [0, 0, 0];
+    return this.bridge.addFixedJoint(entityA, entityB, a[0], a[1], a[2], b[0], b[1], b[2]);
+  }
+
+  addPrismaticJoint(
+    entityA: EntityId,
+    entityB: EntityId,
+    opts: {
+      anchorA?: Vec3Tuple;
+      anchorB?: Vec3Tuple;
+      axis: Vec3Tuple;
+      minDist?: number;
+      maxDist?: number;
+    }
+  ): number {
+    const a = opts.anchorA ?? [0, 0, 0];
+    const b = opts.anchorB ?? [0, 0, 0];
+    const hasLimits = opts.minDist !== undefined || opts.maxDist !== undefined;
+    return this.bridge.addPrismaticJoint(
+      entityA,
+      entityB,
+      a[0],
+      a[1],
+      a[2],
+      b[0],
+      b[1],
+      b[2],
+      opts.axis[0],
+      opts.axis[1],
+      opts.axis[2],
+      hasLimits,
+      opts.minDist ?? -100,
+      opts.maxDist ?? 100
+    );
+  }
+
+  setHingeMotor(jointId: number, speed: number, maxTorque: number): boolean {
+    return this.bridge.setHingeMotor(jointId, speed, maxTorque);
+  }
+
+  setJointBreakForce(jointId: number, breakForce: number): boolean {
+    return this.bridge.setJointBreakForce(jointId, breakForce);
   }
 
   addDistanceJoint(
@@ -402,6 +595,11 @@ export class Scene {
     return () => this.triggerExitListeners.delete(cb);
   }
 
+  onPhysicsEvent(cb: (ev: RichPhysicsEvent) => void): () => void {
+    this.richEventListeners.add(cb);
+    return () => this.richEventListeners.delete(cb);
+  }
+
   /** Internal event pump invoked by Engine.step after WASM simulation. */
   dispatchPhysicsEvents(): void {
     this.bridge.forEachPhysicsEvent((kind, entityA, entityB, nx, ny, nz) => {
@@ -419,6 +617,19 @@ export class Scene {
         this.triggerExitListeners.forEach((cb) => cb(ev));
       }
     });
+    if (this.richEventListeners.size > 0) {
+      this.bridge.forEachRichPhysicsEvent((kind, entityA, entityB, nx, ny, nz, px, py, pz, impulse) => {
+        const ev: RichPhysicsEvent = {
+          kind,
+          entityA,
+          entityB,
+          normal: [nx, ny, nz],
+          contactPoint: [px, py, pz],
+          impulse,
+        };
+        this.richEventListeners.forEach((cb) => cb(ev));
+      });
+    }
   }
 
   setCollider3D(entity: EntityId, opts: Collider3DOptions): void {
@@ -426,17 +637,178 @@ export class Scene {
       this.bridge.setCollider3D(entity, 0, opts.halfExtents[0], opts.halfExtents[1], opts.halfExtents[2]);
     } else if (opts.kind === 'sphere') {
       this.bridge.setCollider3D(entity, 1, opts.radius, 0, 0);
-    } else {
+    } else if (opts.kind === 'capsule') {
       this.bridge.setCollider3D(entity, 2, opts.radius, opts.halfHeight, 0);
+    } else if (opts.kind === 'cylinder') {
+      this.bridge.setCollider3D(entity, 3, opts.radius, opts.halfHeight, 0);
+    } else if (opts.kind === 'convexHull') {
+      const verts =
+        opts.points instanceof Float32Array
+          ? opts.points
+          : Float32Array.from(opts.points.flatMap((p) => p));
+      this.bridge.setConvexHullCollider(entity, verts);
+    } else {
+      const packed = new Float32Array(opts.parts.length * 11);
+      for (let i = 0; i < opts.parts.length; i++) {
+        const part = opts.parts[i];
+        const o = i * 11;
+        const p = part.position ?? [0, 0, 0];
+        const r = part.rotation ?? [0, 0, 0, 1];
+        packed[o + 1] = p[0];
+        packed[o + 2] = p[1];
+        packed[o + 3] = p[2];
+        packed[o + 4] = r[0];
+        packed[o + 5] = r[1];
+        packed[o + 6] = r[2];
+        packed[o + 7] = r[3];
+        if (part.shape.kind === 'aabb') {
+          packed[o] = 0;
+          packed[o + 8] = part.shape.halfExtents[0];
+          packed[o + 9] = part.shape.halfExtents[1];
+          packed[o + 10] = part.shape.halfExtents[2];
+        } else if (part.shape.kind === 'sphere') {
+          packed[o] = 1;
+          packed[o + 8] = part.shape.radius;
+        } else if (part.shape.kind === 'cylinder') {
+          packed[o] = 3;
+          packed[o + 8] = part.shape.radius;
+          packed[o + 9] = part.shape.halfHeight;
+        } else {
+          packed[o] = 2;
+          packed[o + 8] = part.shape.radius;
+          packed[o + 9] = part.shape.halfHeight;
+        }
+      }
+      this.bridge.setCompoundCollider(entity, packed, opts.parts.length);
     }
   }
 
   setCollider2D(entity: EntityId, opts: Collider2DOptions): void {
     if (opts.kind === 'aabb2d') {
       this.bridge.setCollider2D(entity, 0, opts.halfExtents[0], opts.halfExtents[1]);
+    } else if (opts.kind === 'capsule2d') {
+      this.bridge.setCollider2D(entity, 2, opts.radius, opts.halfHeight);
     } else {
       this.bridge.setCollider2D(entity, 1, opts.radius, 0);
     }
+  }
+
+  overlapSphere(center: Vec3Tuple, radius: number, mask = 0xffffffff, includeTriggers = false): EntityId[] {
+    return this.bridge.overlapShape(1, center[0], center[1], center[2], 0, 0, 0, 1, radius, 0, 0, mask, includeTriggers);
+  }
+
+  overlapBox(
+    center: Vec3Tuple,
+    halfExtents: Vec3Tuple,
+    rotation: QuatTuple = [0, 0, 0, 1],
+    mask = 0xffffffff,
+    includeTriggers = false
+  ): EntityId[] {
+    return this.bridge.overlapShape(
+      0,
+      center[0],
+      center[1],
+      center[2],
+      rotation[0],
+      rotation[1],
+      rotation[2],
+      rotation[3],
+      halfExtents[0],
+      halfExtents[1],
+      halfExtents[2],
+      mask,
+      includeTriggers
+    );
+  }
+
+  overlapCapsule(
+    center: Vec3Tuple,
+    radius: number,
+    halfHeight: number,
+    rotation: QuatTuple = [0, 0, 0, 1],
+    mask = 0xffffffff,
+    includeTriggers = false
+  ): EntityId[] {
+    return this.bridge.overlapShape(
+      2,
+      center[0],
+      center[1],
+      center[2],
+      rotation[0],
+      rotation[1],
+      rotation[2],
+      rotation[3],
+      radius,
+      halfHeight,
+      0,
+      mask,
+      includeTriggers
+    );
+  }
+
+  sweepBox(
+    origin: Vec3Tuple,
+    halfExtents: Vec3Tuple,
+    dir: Vec3Tuple,
+    maxDist = 50,
+    rotation: QuatTuple = [0, 0, 0, 1],
+    mask = 0xffffffff,
+    ignoreEntity = 0
+  ) {
+    return this.bridge.sweepShape(
+      0,
+      origin[0],
+      origin[1],
+      origin[2],
+      rotation[0],
+      rotation[1],
+      rotation[2],
+      rotation[3],
+      halfExtents[0],
+      halfExtents[1],
+      halfExtents[2],
+      dir[0],
+      dir[1],
+      dir[2],
+      maxDist,
+      mask,
+      ignoreEntity
+    );
+  }
+
+  sweepCapsule(
+    origin: Vec3Tuple,
+    radius: number,
+    halfHeight: number,
+    dir: Vec3Tuple,
+    maxDist = 50,
+    rotation: QuatTuple = [0, 0, 0, 1],
+    mask = 0xffffffff,
+    ignoreEntity = 0
+  ) {
+    return this.bridge.sweepShape(
+      2,
+      origin[0],
+      origin[1],
+      origin[2],
+      rotation[0],
+      rotation[1],
+      rotation[2],
+      rotation[3],
+      radius,
+      halfHeight,
+      0,
+      dir[0],
+      dir[1],
+      dir[2],
+      maxDist,
+      mask,
+      ignoreEntity
+    );
+  }
+
+  getPhysicsDebugLines(): Float32Array {
+    return this.bridge.getPhysicsDebugLinesView();
   }
 
   addTileGrid2D(

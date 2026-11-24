@@ -1,7 +1,8 @@
 import { AssetManager } from './assets/AssetManager';
 import { AudioSystem } from './Audio';
 import { Input } from './Input';
-import type { IRenderBackend } from './render/IRenderBackend';
+import { DiagnosticsOverlay } from './render/DiagnosticsOverlay';
+import type { IRenderBackend, RenderFrameMetrics } from './render/IRenderBackend';
 import { WebGL2Backend } from './render/WebGL2Backend';
 import { Scene } from './Scene';
 import { WasmBridge } from './wasm/WasmBridge';
@@ -13,6 +14,22 @@ export interface EngineOptions {
   fixedDt?: number;
   maxDpr?: number;
   backend?: IRenderBackend;
+  crashOverlay?: boolean;
+  showProfiler?: boolean;
+}
+
+export interface EngineFrameTimings {
+  fixedMs: number;
+  wasmStepMs: number;
+  updateMs: number;
+  renderMs: number;
+}
+
+export interface EngineErrorInfo {
+  phase: 'fixedUpdate' | 'wasmStep' | 'update' | 'render' | 'loop';
+  message: string;
+  stack?: string;
+  timestamp: number;
 }
 
 export interface EngineStats {
@@ -21,7 +38,17 @@ export interface EngineStats {
   entities: number;
   wasmMemoryBytes: number;
   drawCalls: number;
+  timings: EngineFrameTimings;
+  render: RenderFrameMetrics;
 }
+
+const ZERO_METRICS: RenderFrameMetrics = {
+  instancedRuns: 0,
+  instancedObjects: 0,
+  skippedMaterialBinds: 0,
+  shaderCount: 0,
+  uboBound: false,
+};
 
 export class Engine {
   readonly bridge: WasmBridge;
@@ -38,6 +65,7 @@ export class Engine {
   private elapsedTime = 0;
   private rafId = 0;
   private running = false;
+  timeScale = 1.0;
   private lastTimeMs = 0;
   private fps = 0;
   private frameMs = 0;
@@ -45,13 +73,26 @@ export class Engine {
 
   private fixedUpdateCb: ((fixedDt: number) => void) | null = null;
   private updateCb: ((dt: number, alpha: number) => void) | null = null;
+  private errorCb: ((err: EngineErrorInfo) => void) | null = null;
   private renderFrameHook: ((aspect: number) => number) | null = null;
   private resizeHandler: (() => void) | null = null;
+  private profilerKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+  private diagnostics: DiagnosticsOverlay | null = null;
+  private crashOverlayEnabled: boolean;
+  private lastError: EngineErrorInfo | null = null;
+  private profilerTickCounter = 0;
+  private lastTimings: EngineFrameTimings = {
+    fixedMs: 0,
+    wasmStepMs: 0,
+    updateMs: 0,
+    renderMs: 0,
+  };
 
   private constructor(bridge: WasmBridge, options: EngineOptions) {
     this.bridge = bridge;
     this.fixedDt = options.fixedDt ?? 1 / 60;
     this.maxDpr = Math.max(0.5, options.maxDpr ?? 1.5);
+    this.crashOverlayEnabled = options.crashOverlay ?? true;
     this.bridge.setFixedDt(this.fixedDt);
     this.scene = new Scene(bridge);
     this.input = new Input();
@@ -76,9 +117,21 @@ export class Engine {
     if (this.canvas) {
       this.input.attach(this.canvas);
       this.syncCanvasSize();
+      if (typeof document !== 'undefined') {
+        this.diagnostics = new DiagnosticsOverlay(this.canvas);
+        if (options.showProfiler) {
+          this.diagnostics.setProfilerVisible(true);
+        }
+      }
       if (typeof window !== 'undefined') {
         this.resizeHandler = () => this.syncCanvasSize();
         window.addEventListener('resize', this.resizeHandler);
+        this.profilerKeyHandler = (e: KeyboardEvent) => {
+          if (e.code === 'F2') {
+            this.setProfilerVisible(!this.isProfilerVisible());
+          }
+        };
+        window.addEventListener('keydown', this.profilerKeyHandler);
       }
     }
   }
@@ -104,6 +157,51 @@ export class Engine {
     this.updateCb = cb;
   }
 
+  onError(cb: ((err: EngineErrorInfo) => void) | null): void {
+    this.errorCb = cb;
+  }
+
+  getLastError(): EngineErrorInfo | null {
+    return this.lastError;
+  }
+
+  clearError(): void {
+    this.lastError = null;
+    this.diagnostics?.hideCrash();
+  }
+
+  isProfilerVisible(): boolean {
+    return this.diagnostics?.isProfilerVisible() ?? false;
+  }
+
+  setProfilerVisible(visible: boolean): void {
+    this.diagnostics?.setProfilerVisible(visible);
+    if (visible) {
+      this.diagnostics?.updateProfiler(this.getStats());
+    }
+  }
+
+  private handleLoopError(phase: EngineErrorInfo['phase'], err: unknown): void {
+    this.stop();
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && err.stack ? err.stack.split('\n').slice(1, 5).join('\n') : undefined;
+    const info: EngineErrorInfo = {
+      phase,
+      message,
+      stack,
+      timestamp: Date.now(),
+    };
+    this.lastError = info;
+    console.error(`[QuarkEngine CrashGuard:${phase}]`, err);
+    this.errorCb?.(info);
+    if (this.crashOverlayEnabled && this.diagnostics) {
+      this.diagnostics.showCrash(info, () => {
+        this.clearError();
+        this.start();
+      });
+    }
+  }
+
   syncCanvasSize(): void {
     if (!this.canvas || typeof window === 'undefined') return;
     const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
@@ -115,49 +213,80 @@ export class Engine {
     }
   }
 
-  step(dtSeconds: number): number {
+  private nowMs(): number {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
+  step(dtSeconds: number, guarded = false): number {
     const clamped = Math.max(0, Math.min(dtSeconds, 0.1));
     this.elapsedTime += clamped;
     this.accumulator += clamped;
+
+    const t0 = this.nowMs();
     let substeps = 0;
-    while (this.accumulator >= this.fixedDt && substeps < 6) {
-      this.scene.behaviors.stepFixed(this.fixedDt);
-      this.fixedUpdateCb?.(this.fixedDt);
-      this.accumulator -= this.fixedDt;
-      substeps++;
-    }
-    if (substeps === 6 && this.accumulator >= this.fixedDt) {
-      this.accumulator %= this.fixedDt;
-    }
+    let phase: EngineErrorInfo['phase'] = 'fixedUpdate';
+    try {
+      while (this.accumulator >= this.fixedDt && substeps < 6) {
+        this.scene.behaviors.stepFixed(this.fixedDt);
+        this.fixedUpdateCb?.(this.fixedDt);
+        this.accumulator -= this.fixedDt;
+        substeps++;
+      }
+      if (substeps === 6 && this.accumulator >= this.fixedDt) {
+        this.accumulator %= this.fixedDt;
+      }
+      const t1 = this.nowMs();
 
-    const aspect =
-      this.canvas && this.canvas.height > 0 ? this.canvas.width / this.canvas.height : 16 / 9;
-    const { viewProj } = this.scene.computeCameraMatrices(aspect);
-    const alpha = this.bridge.step(clamped, viewProj);
-    this.scene.dispatchPhysicsEvents();
-    this.scene.advanceEffects(clamped);
-    this.scene.behaviors.stepUpdate(clamped);
-    this.updateCb?.(clamped, alpha);
+      phase = 'wasmStep';
+      const aspect =
+        this.canvas && this.canvas.height > 0 ? this.canvas.width / this.canvas.height : 16 / 9;
+      const { viewProj } = this.scene.computeCameraMatrices(aspect);
+      const alpha = this.bridge.step(clamped, viewProj);
+      const t2 = this.nowMs();
 
-    // Sync WebAudio 3D spatial listener to active camera
-    const camPos = this.scene.camera.position;
-    const camTgt = this.scene.camera.target;
-    this.audio.updateListener(
-      camPos,
-      [camTgt[0] - camPos[0], camTgt[1] - camPos[1], camTgt[2] - camPos[2]],
-      this.scene.camera.up
-    );
-    if (this.renderFrameHook) {
-      this.lastDrawCalls = this.renderFrameHook(aspect);
+      phase = 'update';
+      this.scene.dispatchPhysicsEvents();
+      this.scene.advanceEffects(clamped);
+      this.scene.behaviors.stepUpdate(clamped);
+      this.updateCb?.(clamped, alpha);
+
+      // Sync WebAudio 3D spatial listener to active camera
+      const camPos = this.scene.camera.position;
+      const camTgt = this.scene.camera.target;
+      this.audio.updateListener(
+        camPos,
+        [camTgt[0] - camPos[0], camTgt[1] - camPos[1], camTgt[2] - camPos[2]],
+        this.scene.camera.up
+      );
+      const t3 = this.nowMs();
+
+      phase = 'render';
+      if (this.renderFrameHook) {
+        this.lastDrawCalls = this.renderFrameHook(aspect);
+      }
+      const t4 = this.nowMs();
+
+      this.lastTimings = {
+        fixedMs: t1 - t0,
+        wasmStepMs: t2 - t1,
+        updateMs: t3 - t2,
+        renderMs: t4 - t3,
+      };
+      this.input.endFrame();
+      return alpha;
+    } catch (err) {
+      if (guarded) {
+        this.handleLoopError(phase, err);
+        return 0;
+      }
+      throw err;
     }
-    this.input.endFrame();
-    return alpha;
   }
 
   start(): void {
     if (this.running || typeof requestAnimationFrame === 'undefined') return;
     this.running = true;
-    this.lastTimeMs = performance.now();
+    this.lastTimeMs = this.nowMs();
     const tick = (now: number) => {
       if (!this.running) return;
       const dtMs = now - this.lastTimeMs;
@@ -167,7 +296,12 @@ export class Engine {
         this.fps = this.fps * 0.9 + (1000 / dtMs) * 0.1;
       }
       this.syncCanvasSize();
-      this.step(dtMs / 1000);
+      this.step((dtMs / 1000) * Math.max(0, this.timeScale), true);
+      if (!this.running) return;
+      this.profilerTickCounter++;
+      if (this.diagnostics?.isProfilerVisible() && this.profilerTickCounter % 6 === 0) {
+        this.diagnostics.updateProfiler(this.getStats());
+      }
       this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
@@ -188,6 +322,8 @@ export class Engine {
       entities: this.scene.getEntityCount(),
       wasmMemoryBytes: this.bridge.getWasmMemoryBytes(),
       drawCalls: this.lastDrawCalls,
+      timings: { ...this.lastTimings },
+      render: this.renderer?.getRenderMetrics ? this.renderer.getRenderMetrics() : { ...ZERO_METRICS },
     };
   }
 
@@ -197,6 +333,11 @@ export class Engine {
       window.removeEventListener('resize', this.resizeHandler);
       this.resizeHandler = null;
     }
+    if (this.profilerKeyHandler && typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this.profilerKeyHandler);
+      this.profilerKeyHandler = null;
+    }
+    this.diagnostics?.dispose();
     this.input.dispose();
     this.audio.dispose();
     this.assets.dispose();

@@ -38,6 +38,20 @@ pub struct RigidBody {
     pub sleeping: bool,
     pub sleep_timer: f32,
     pub grounded: bool,
+    /// When > 0.0, effective mass scales with collider volume * density.
+    pub density: f32,
+    /// Local center-of-mass offset relative to transform origin.
+    pub center_of_mass: Vec3,
+    /// Breakaway static friction coefficient (< 0.0 uses 1.2 * friction).
+    pub static_friction: f32,
+    /// Relative closing speed (m/s) below which restitution is suppressed for resting stability.
+    pub restitution_threshold: f32,
+    /// Material combine rule: 0=Default, 1=Average, 2=Min, 3=Max, 4=Multiply.
+    pub friction_combine: u8,
+    pub restitution_combine: u8,
+    /// Enables swept Continuous Collision Detection (also auto-enabled at extreme speed).
+    pub ccd: bool,
+    pub can_sleep: bool,
 }
 
 impl Default for RigidBody {
@@ -57,6 +71,14 @@ impl Default for RigidBody {
             sleeping: false,
             sleep_timer: 0.0,
             grounded: false,
+            density: 0.0,
+            center_of_mass: Vec3::ZERO,
+            static_friction: -1.0,
+            restitution_threshold: 1.0,
+            friction_combine: 0,
+            restitution_combine: 0,
+            ccd: false,
+            can_sleep: true,
         }
     }
 }
@@ -66,12 +88,16 @@ pub enum Collider3D {
     Aabb { half_extents: Vec3 },
     Sphere { radius: f32 },
     Capsule { radius: f32, half_height: f32 },
+    Cylinder { radius: f32, half_height: f32 },
+    ConvexHull { hull_id: u32, bounding_radius: f32 },
+    Compound { compound_id: u32, bounding_radius: f32 },
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum Collider2D {
     Aabb2D { half_extents: Vec2 },
     Circle2D { radius: f32 },
+    Capsule2D { radius: f32, half_height: f32 },
 }
 
 #[derive(Clone, Copy, Debug)]

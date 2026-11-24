@@ -97,7 +97,94 @@ interface CoreExports {
   ): void;
   core_set_collision_filter(ptr: number, entity: number, layer: number, mask: number): void;
   core_set_trigger(ptr: number, entity: number, isTrigger: number): void;
+  core_set_physics_material(
+    ptr: number,
+    entity: number,
+    density: number,
+    comX: number,
+    comY: number,
+    comZ: number,
+    staticFriction: number,
+    restitutionThreshold: number,
+    frictionCombine: number,
+    restitutionCombine: number,
+    ccd: number,
+    canSleep: number
+  ): void;
   core_set_character_controller(ptr: number, entity: number, stepHeight: number, maxSlopeDeg: number): void;
+  core_set_character_controller_ex(
+    ptr: number,
+    entity: number,
+    stepHeight: number,
+    maxSlopeDeg: number,
+    pushStrength: number,
+    maxPushMass: number,
+    groundSnap: number,
+    antiTipPush: number
+  ): void;
+  core_add_ball_socket_joint(
+    ptr: number,
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number
+  ): number;
+  core_add_fixed_joint(
+    ptr: number,
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number
+  ): number;
+  core_add_prismatic_joint(
+    ptr: number,
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    axisX: number,
+    axisY: number,
+    axisZ: number,
+    hasLimits: number,
+    minDist: number,
+    maxDist: number
+  ): number;
+  core_set_hinge_motor(ptr: number, jointId: number, speed: number, maxTorque: number): number;
+  core_set_joint_break_force(ptr: number, jointId: number, breakForce: number): number;
+  core_set_collider_convex_hull(ptr: number, entity: number, vertsPtr: number, floatLen: number): void;
+  core_set_collider_compound(ptr: number, entity: number, partsPtr: number, partCount: number): void;
+  core_add_water_zone(
+    ptr: number,
+    cx: number,
+    cy: number,
+    cz: number,
+    hx: number,
+    hy: number,
+    hz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+    density: number,
+    linearDrag: number,
+    angularDrag: number,
+    fx: number,
+    fy: number,
+    fz: number
+  ): number;
+  core_clear_water_zones(ptr: number): void;
   core_add_distance_joint(
     ptr: number,
     entityA: number,
@@ -253,6 +340,48 @@ interface CoreExports {
   core_render_3d_len(ptr: number): number;
   core_events_ptr(ptr: number): number;
   core_events_len(ptr: number): number;
+  core_rich_events_ptr(ptr: number): number;
+  core_rich_events_len(ptr: number): number;
+  core_overlap_shape(
+    ptr: number,
+    kind: number,
+    px: number,
+    py: number,
+    pz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+    a: number,
+    b: number,
+    c: number,
+    mask: number,
+    includeTriggers: number
+  ): number;
+  core_overlap_results_ptr(ptr: number): number;
+  core_sweep_shape(
+    ptr: number,
+    kind: number,
+    ox: number,
+    oy: number,
+    oz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+    a: number,
+    b: number,
+    c: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxDist: number,
+    mask: number,
+    ignoreEntity: number,
+    outBuf: number
+  ): number;
+  core_build_physics_debug_lines(ptr: number): number;
+  core_physics_debug_lines_ptr(ptr: number): number;
   core_parse_glb(ptr: number, bytesPtr: number, bytesLen: number): number;
   core_glb_vertices_ptr(ptr: number): number;
   core_glb_vertices_len(ptr: number): number;
@@ -777,6 +906,334 @@ export class WasmBridge {
 
   setCharacterController(entity: number, stepHeight: number, maxSlopeDeg: number): void {
     this.exports.core_set_character_controller(this.corePtr, entity, stepHeight, maxSlopeDeg);
+  }
+
+  setCharacterControllerEx(
+    entity: number,
+    stepHeight: number,
+    maxSlopeDeg: number,
+    pushStrength: number,
+    maxPushMass: number,
+    groundSnap: number,
+    antiTipPush: boolean
+  ): void {
+    this.exports.core_set_character_controller_ex(
+      this.corePtr,
+      entity,
+      stepHeight,
+      maxSlopeDeg,
+      pushStrength,
+      maxPushMass,
+      groundSnap,
+      antiTipPush ? 1 : 0
+    );
+  }
+
+  setPhysicsMaterial(
+    entity: number,
+    density: number,
+    comX: number,
+    comY: number,
+    comZ: number,
+    staticFriction: number,
+    restitutionThreshold: number,
+    frictionCombine: number,
+    restitutionCombine: number,
+    ccd: boolean,
+    canSleep: boolean
+  ): void {
+    this.exports.core_set_physics_material(
+      this.corePtr,
+      entity,
+      density,
+      comX,
+      comY,
+      comZ,
+      staticFriction,
+      restitutionThreshold,
+      frictionCombine,
+      restitutionCombine,
+      ccd ? 1 : 0,
+      canSleep ? 1 : 0
+    );
+  }
+
+  setConvexHullCollider(entity: number, verts: Float32Array): void {
+    const ptr = this.alloc(verts.byteLength);
+    try {
+      this.refreshViews();
+      this.f32View.set(verts, ptr >>> 2);
+      this.exports.core_set_collider_convex_hull(this.corePtr, entity, ptr, verts.length);
+    } finally {
+      this.dealloc(ptr, verts.byteLength);
+    }
+  }
+
+  setCompoundCollider(entity: number, packedParts: Float32Array, partCount: number): void {
+    const ptr = this.alloc(packedParts.byteLength);
+    try {
+      this.refreshViews();
+      this.f32View.set(packedParts, ptr >>> 2);
+      this.exports.core_set_collider_compound(this.corePtr, entity, ptr, partCount);
+    } finally {
+      this.dealloc(ptr, packedParts.byteLength);
+    }
+  }
+
+  addWaterZone(
+    cx: number,
+    cy: number,
+    cz: number,
+    hx: number,
+    hy: number,
+    hz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+    density: number,
+    linearDrag: number,
+    angularDrag: number,
+    fx: number,
+    fy: number,
+    fz: number
+  ): number {
+    return this.exports.core_add_water_zone(
+      this.corePtr,
+      cx,
+      cy,
+      cz,
+      hx,
+      hy,
+      hz,
+      rx,
+      ry,
+      rz,
+      rw,
+      density,
+      linearDrag,
+      angularDrag,
+      fx,
+      fy,
+      fz
+    );
+  }
+
+  clearWaterZones(): void {
+    this.exports.core_clear_water_zones(this.corePtr);
+  }
+
+  addBallSocketJoint(
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number
+  ): number {
+    return this.exports.core_add_ball_socket_joint(this.corePtr, entityA, entityB, ax, ay, az, bx, by, bz);
+  }
+
+  addFixedJoint(
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number
+  ): number {
+    return this.exports.core_add_fixed_joint(this.corePtr, entityA, entityB, ax, ay, az, bx, by, bz);
+  }
+
+  addPrismaticJoint(
+    entityA: number,
+    entityB: number,
+    ax: number,
+    ay: number,
+    az: number,
+    bx: number,
+    by: number,
+    bz: number,
+    axisX: number,
+    axisY: number,
+    axisZ: number,
+    hasLimits: boolean,
+    minDist: number,
+    maxDist: number
+  ): number {
+    return this.exports.core_add_prismatic_joint(
+      this.corePtr,
+      entityA,
+      entityB,
+      ax,
+      ay,
+      az,
+      bx,
+      by,
+      bz,
+      axisX,
+      axisY,
+      axisZ,
+      hasLimits ? 1 : 0,
+      minDist,
+      maxDist
+    );
+  }
+
+  setHingeMotor(jointId: number, speed: number, maxTorque: number): boolean {
+    return this.exports.core_set_hinge_motor(this.corePtr, jointId, speed, maxTorque) !== 0;
+  }
+
+  setJointBreakForce(jointId: number, breakForce: number): boolean {
+    return this.exports.core_set_joint_break_force(this.corePtr, jointId, breakForce) !== 0;
+  }
+
+  overlapShape(
+    kind: number,
+    px: number,
+    py: number,
+    pz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+    a: number,
+    b: number,
+    c: number,
+    mask = 0xffffffff,
+    includeTriggers = false
+  ): number[] {
+    const count = this.exports.core_overlap_shape(
+      this.corePtr,
+      kind,
+      px,
+      py,
+      pz,
+      rx,
+      ry,
+      rz,
+      rw,
+      a,
+      b,
+      c,
+      mask >>> 0,
+      includeTriggers ? 1 : 0
+    );
+    if (count === 0) return [];
+    this.refreshViews();
+    const ptr = this.exports.core_overlap_results_ptr(this.corePtr);
+    const base = ptr >>> 2;
+    const out: number[] = [];
+    for (let i = 0; i < count; i++) {
+      out.push(this.u32View[base + i]);
+    }
+    return out;
+  }
+
+  sweepShape(
+    kind: number,
+    ox: number,
+    oy: number,
+    oz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    rw: number,
+    a: number,
+    b: number,
+    c: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxDist: number,
+    mask = 0xffffffff,
+    ignoreEntity = 0
+  ): {
+    entity: number;
+    distance: number;
+    point: [number, number, number];
+    normal: [number, number, number];
+  } | null {
+    this.refreshViews();
+    const entity = this.exports.core_sweep_shape(
+      this.corePtr,
+      kind,
+      ox,
+      oy,
+      oz,
+      rx,
+      ry,
+      rz,
+      rw,
+      a,
+      b,
+      c,
+      dx,
+      dy,
+      dz,
+      maxDist,
+      mask >>> 0,
+      ignoreEntity,
+      this.scratchPtr
+    );
+    if (!entity) return null;
+    this.refreshViews();
+    const s = this.scratchPtr >>> 2;
+    return {
+      entity,
+      distance: this.f32View[s],
+      point: [this.f32View[s + 1], this.f32View[s + 2], this.f32View[s + 3]],
+      normal: [this.f32View[s + 4], this.f32View[s + 5], this.f32View[s + 6]],
+    };
+  }
+
+  forEachRichPhysicsEvent(
+    cb: (
+      kind: number,
+      entityA: number,
+      entityB: number,
+      nx: number,
+      ny: number,
+      nz: number,
+      px: number,
+      py: number,
+      pz: number,
+      impulse: number
+    ) => void
+  ): void {
+    this.refreshViews();
+    const ptr = this.exports.core_rich_events_ptr(this.corePtr);
+    const len = this.exports.core_rich_events_len(this.corePtr);
+    if (!ptr || len < 10) return;
+    const base = ptr >>> 2;
+    for (let i = 0; i + 9 < len; i += 10) {
+      const off = base + i;
+      cb(
+        this.u32View[off],
+        this.u32View[off + 1],
+        this.u32View[off + 2],
+        this.f32View[off + 3],
+        this.f32View[off + 4],
+        this.f32View[off + 5],
+        this.f32View[off + 6],
+        this.f32View[off + 7],
+        this.f32View[off + 8],
+        this.f32View[off + 9]
+      );
+    }
+  }
+
+  getPhysicsDebugLinesView(): Float32Array {
+    const len = this.exports.core_build_physics_debug_lines(this.corePtr);
+    if (!len) return new Float32Array(0);
+    this.refreshViews();
+    const ptr = this.exports.core_physics_debug_lines_ptr(this.corePtr);
+    const base = ptr >>> 2;
+    return this.f32View.subarray(base, base + len);
   }
 
   addDistanceJoint(

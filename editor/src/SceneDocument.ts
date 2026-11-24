@@ -45,9 +45,16 @@ export interface EditorLightConfig {
   castsShadow: boolean;
 }
 
+export interface EditorPrefab {
+  id: string;
+  name: string;
+  template: Omit<EditorObject, 'id' | 'position' | 'prefabId'>;
+}
+
 export interface EditorObject {
   id: string;
   name: string;
+  prefabId?: string;
   meshKind: EditorMeshKind;
   position: Vec3Tuple;
   rotationDeg: Vec3Tuple;
@@ -84,6 +91,7 @@ export interface EditorSceneDocument {
   timelineLoop: boolean;
   environment: EditorEnvironment;
   objects: EditorObject[];
+  prefabs?: EditorPrefab[];
 }
 
 export const RUNTIME_STORAGE_KEY = 'quark_editor_runtime_scene_v1';
@@ -421,5 +429,118 @@ export function parseSceneDocument(json: string): EditorSceneDocument {
     timelineLoop: raw.timelineLoop ?? true,
     environment: raw.environment ?? createDefaultSceneDocument().environment,
     objects: raw.objects,
+    prefabs: Array.isArray(raw.prefabs) ? raw.prefabs : [],
   };
+}
+
+export function cloneSceneDocument(doc: EditorSceneDocument): EditorSceneDocument {
+  return parseSceneDocument(serializeSceneDocument(doc));
+}
+
+export class DocumentHistory {
+  private readonly past: string[] = [];
+  private readonly future: string[] = [];
+  private readonly maxEntries: number;
+
+  constructor(maxEntries = 50) {
+    this.maxEntries = Math.max(2, maxEntries);
+  }
+
+  canUndo(): boolean {
+    return this.past.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.future.length > 0;
+  }
+
+  record(snapshotBefore: EditorSceneDocument | string): void {
+    const json =
+      typeof snapshotBefore === 'string' ? snapshotBefore : serializeSceneDocument(snapshotBefore);
+    if (this.past.length > 0 && this.past[this.past.length - 1] === json) {
+      return;
+    }
+    this.past.push(json);
+    if (this.past.length > this.maxEntries) {
+      this.past.shift();
+    }
+    this.future.length = 0;
+  }
+
+  undo(current: EditorSceneDocument): EditorSceneDocument | null {
+    const prev = this.past.pop();
+    if (!prev) return null;
+    this.future.push(serializeSceneDocument(current));
+    return parseSceneDocument(prev);
+  }
+
+  redo(current: EditorSceneDocument): EditorSceneDocument | null {
+    const next = this.future.pop();
+    if (!next) return null;
+    this.past.push(serializeSceneDocument(current));
+    return parseSceneDocument(next);
+  }
+
+  clear(): void {
+    this.past.length = 0;
+    this.future.length = 0;
+  }
+}
+
+export function createPrefabFromObject(
+  doc: EditorSceneDocument,
+  obj: EditorObject
+): EditorPrefab {
+  const { id: _id, position: _pos, prefabId: _pid, ...template } = JSON.parse(
+    JSON.stringify(obj)
+  ) as EditorObject;
+  const prefab: EditorPrefab = {
+    id: `prefab_${Date.now().toString(36)}_${(idCounter++).toString(36)}`,
+    name: obj.name,
+    template,
+  };
+  if (!doc.prefabs) doc.prefabs = [];
+  doc.prefabs.push(prefab);
+  obj.prefabId = prefab.id;
+  return prefab;
+}
+
+export function instantiatePrefab(
+  prefab: EditorPrefab,
+  position: Vec3Tuple
+): EditorObject {
+  const tpl = JSON.parse(JSON.stringify(prefab.template)) as EditorPrefab['template'];
+  return {
+    ...tpl,
+    id: nextObjectId(),
+    prefabId: prefab.id,
+    position: [...position],
+  };
+}
+
+export function syncPrefabInstances(
+  doc: EditorSceneDocument,
+  sourceObj: EditorObject
+): number {
+  if (!sourceObj.prefabId) return 0;
+  const tpl = JSON.parse(JSON.stringify(sourceObj)) as EditorObject;
+  const prefab = doc.prefabs?.find((p) => p.id === sourceObj.prefabId);
+  if (prefab) {
+    prefab.name = tpl.name;
+    const { id: _id, position: _pos, prefabId: _pid, ...rest } = tpl;
+    prefab.template = rest;
+  }
+  let updated = 0;
+  for (let i = 0; i < doc.objects.length; i++) {
+    const target = doc.objects[i];
+    if (target.id === sourceObj.id || target.prefabId !== sourceObj.prefabId) continue;
+    const keepId = target.id;
+    const keepPos: Vec3Tuple = [...target.position];
+    const cloned = JSON.parse(JSON.stringify(sourceObj)) as EditorObject;
+    cloned.id = keepId;
+    cloned.position = keepPos;
+    doc.objects[i] = cloned;
+    updated++;
+  }
+  return updated;
 }

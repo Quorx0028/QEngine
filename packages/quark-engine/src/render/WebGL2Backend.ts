@@ -1,7 +1,13 @@
 import { mat4LookAt, mat4Multiply, mat4Ortho, mat4Perspective, type Vec3Tuple } from '../math/Mat4';
 import type { Scene } from '../Scene';
 import type { WasmBridge } from '../wasm/WasmBridge';
-import type { IRenderBackend, MaterialDesc, MeshGeometry, MeshSubmesh } from './IRenderBackend';
+import type {
+  IRenderBackend,
+  MaterialDesc,
+  MeshGeometry,
+  MeshSubmesh,
+  RenderFrameMetrics,
+} from './IRenderBackend';
 import { composePostProcessShader, isPostProcessActive, type PostProcessConfig } from './PostProcess';
 import { composeShader } from './ShaderBlocks';
 
@@ -54,6 +60,7 @@ export function computeSmoothNormals(vertices: Float32Array): Float32Array {
 interface GpuProgram {
   program: WebGLProgram;
   uniforms: Map<string, WebGLUniformLocation | null>;
+  globalsSamplersBound?: boolean;
 }
 
 interface StoredMaterial {
@@ -157,10 +164,15 @@ layout(location = 0) in vec3 a_position;
 layout(location = 3) in vec3 a_smoothNormal;
 layout(location = 4) in vec4 a_joints;
 layout(location = 5) in vec4 a_weights;
+layout(location = 6) in vec4 a_instMat0;
+layout(location = 7) in vec4 a_instMat1;
+layout(location = 8) in vec4 a_instMat2;
+layout(location = 9) in vec4 a_instMat3;
 uniform mat4 u_model;
 uniform mat4 u_viewProj;
 uniform float u_outlineWidth;
 uniform int u_skinned;
+uniform int u_instanced;
 uniform mat4 u_boneMatrices[64];
 void main() {
   vec3 pos = a_position;
@@ -177,7 +189,8 @@ void main() {
       nrm = normalize(mat3(skinMat) * nrm);
     }
   }
-  vec4 world = u_model * vec4(pos + nrm * u_outlineWidth, 1.0);
+  mat4 modelMat = (u_instanced == 1) ? mat4(a_instMat0, a_instMat1, a_instMat2, a_instMat3) : u_model;
+  vec4 world = modelMat * vec4(pos + nrm * u_outlineWidth, 1.0);
   gl_Position = u_viewProj * world;
 }
 `;
@@ -273,6 +286,27 @@ void main() {
 }
 `;
 
+const DEBUG_LINE_VERT = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec4 a_color;
+uniform mat4 u_viewProj;
+out vec4 v_color;
+void main() {
+  v_color = a_color;
+  gl_Position = u_viewProj * vec4(a_pos, 1.0);
+}
+`;
+
+const DEBUG_LINE_FRAG = `#version 300 es
+precision highp float;
+in vec4 v_color;
+out vec4 fragColor;
+void main() {
+  fragColor = v_color;
+}
+`;
+
 export class WebGL2Backend implements IRenderBackend {
   private readonly gl: WebGL2RenderingContext;
   private readonly meshes = new Map<number, GpuMesh>();
@@ -284,15 +318,14 @@ export class WebGL2Backend implements IRenderBackend {
   private readonly lightViewMat = new Float32Array(16);
   private readonly lightVpMat = new Float32Array(16);
   private readonly spotVpMat = new Float32Array(16);
-  private readonly ptPosScratch = new Float32Array(12);
-  private readonly ptColScratch = new Float32Array(12);
-  private readonly ptRadScratch = new Float32Array(4);
-  private readonly spotPosScratch = new Float32Array(12);
-  private readonly spotDirScratch = new Float32Array(12);
-  private readonly spotColScratch = new Float32Array(12);
-  private readonly spotRangeScratch = new Float32Array(4);
-  private readonly spotInnerCosScratch = new Float32Array(4);
-  private readonly spotOuterCosScratch = new Float32Array(4);
+  private readonly frameUboScratch = new Float32Array(160);
+  private frameGlobalsUbo: WebGLBuffer;
+  private uboBound = false;
+  private readonly parallelCompileExt: { COMPLETION_STATUS_KHR: number } | null;
+  private readonly boundTexByUnit = new Int32Array(8).fill(-1);
+  private frameInstancedRuns = 0;
+  private frameInstancedObjects = 0;
+  private frameSkippedMatBinds = 0;
   private instVbo: WebGLBuffer;
   private instScratch = new Float32Array(16 * 512);
   private readonly bonePaletteScratch = new Float32Array(16 * 64);
@@ -312,6 +345,10 @@ export class WebGL2Backend implements IRenderBackend {
   private outlineProgram: GpuProgram;
   private spriteProgram: GpuProgram;
   private light2dProgram: GpuProgram;
+  private debugLineProgram: GpuProgram;
+  private debugLineVao: WebGLVertexArrayObject;
+  private debugLineVbo: WebGLBuffer;
+  private debugLineScratch = new Float32Array(7 * 2 * 1024);
   private spriteVao: WebGLVertexArrayObject;
   private spriteQuadVbo: WebGLBuffer;
   private spriteInstVbo: WebGLBuffer;
@@ -348,11 +385,31 @@ export class WebGL2Backend implements IRenderBackend {
     }
     this.gl = gl;
     this.supportsFloatFbo = Boolean(gl.getExtension('EXT_color_buffer_float'));
+    this.parallelCompileExt = gl.getExtension('KHR_parallel_shader_compile') as {
+      COMPLETION_STATUS_KHR: number;
+    } | null;
+    this.frameGlobalsUbo = gl.createBuffer()!;
+    gl.bindBuffer(gl.UNIFORM_BUFFER, this.frameGlobalsUbo);
+    gl.bufferData(gl.UNIFORM_BUFFER, this.frameUboScratch.byteLength, gl.DYNAMIC_DRAW);
+    gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, this.frameGlobalsUbo);
+    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+    this.uboBound = true;
     this.shadowProgram = this.compileProgram('__shadow__', SHADOW_VERT, SHADOW_FRAG);
     this.skyProgram = this.compileProgram('__sky__', SKY_VERT, SKY_FRAG);
     this.outlineProgram = this.compileProgram('__outline__', OUTLINE_VERT, OUTLINE_FRAG);
     this.spriteProgram = this.compileProgram('__sprite2d__', SPRITE_VERT, SPRITE_FRAG);
     this.light2dProgram = this.compileProgram('__light2d__', LIGHT2D_VERT, LIGHT2D_FRAG);
+    this.debugLineProgram = this.compileProgram('__debug_lines__', DEBUG_LINE_VERT, DEBUG_LINE_FRAG);
+    this.debugLineVao = gl.createVertexArray()!;
+    this.debugLineVbo = gl.createBuffer()!;
+    gl.bindVertexArray(this.debugLineVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.debugLineVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, this.debugLineScratch, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 28, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 28, 12);
+    gl.bindVertexArray(null);
 
     const ppSrc = composePostProcessShader();
     this.ppBrightProgram = this.compileProgram('__pp_bright__', ppSrc.vertexSource, ppSrc.brightFragmentSource);
@@ -450,9 +507,91 @@ export class WebGL2Backend implements IRenderBackend {
       gl.deleteProgram(prog);
       throw new Error(`Shader link failed (${key}): ${log}`);
     }
+    const blockIdx = gl.getUniformBlockIndex(prog, 'FrameGlobals');
+    if (blockIdx !== gl.INVALID_INDEX) {
+      gl.uniformBlockBinding(prog, blockIdx, 0);
+    }
     const gpuProg: GpuProgram = { program: prog, uniforms: new Map() };
     this.programCache.set(key, gpuProg);
     return gpuProg;
+  }
+
+  /** Pre-compiles shader variants in a parallel link wave so runtime spawns avoid compile hitches. */
+  warmupMaterials(descs: MaterialDesc[]): number {
+    const gl = this.gl;
+    // Queue all compiles + links before querying link status so KHR_parallel_shader_compile runs in parallel.
+    const _hasParallel = Boolean(this.parallelCompileExt);
+    void _hasParallel;
+    const pending: Array<{
+      key: string;
+      prog: WebGLProgram;
+      vs: WebGLShader;
+      fs: WebGLShader;
+    }> = [];
+    const seen = new Set<string>();
+
+    for (const desc of descs) {
+      const composed = composeShader({
+        blocks: desc.blocks,
+        customVertexSnippet: desc.customVertexSnippet,
+        customFragmentSnippet: desc.customFragmentSnippet,
+      });
+      if (this.programCache.has(composed.cacheKey) || seen.has(composed.cacheKey)) {
+        continue;
+      }
+      seen.add(composed.cacheKey);
+      const vs = gl.createShader(gl.VERTEX_SHADER)!;
+      gl.shaderSource(vs, composed.vertexSource);
+      gl.compileShader(vs);
+      const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+      gl.shaderSource(fs, composed.fragmentSource);
+      gl.compileShader(fs);
+      const prog = gl.createProgram()!;
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      pending.push({ key: composed.cacheKey, prog, vs, fs });
+    }
+
+    for (const item of pending) {
+      if (!gl.getShaderParameter(item.vs, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(item.vs);
+        gl.deleteShader(item.vs);
+        gl.deleteShader(item.fs);
+        gl.deleteProgram(item.prog);
+        throw new Error(`GLSL vertex warmup error (${item.key}): ${log}`);
+      }
+      if (!gl.getShaderParameter(item.fs, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(item.fs);
+        gl.deleteShader(item.vs);
+        gl.deleteShader(item.fs);
+        gl.deleteProgram(item.prog);
+        throw new Error(`GLSL fragment warmup error (${item.key}): ${log}`);
+      }
+      gl.deleteShader(item.vs);
+      gl.deleteShader(item.fs);
+      if (!gl.getProgramParameter(item.prog, gl.LINK_STATUS)) {
+        const log = gl.getProgramInfoLog(item.prog);
+        gl.deleteProgram(item.prog);
+        throw new Error(`Shader warmup link failed (${item.key}): ${log}`);
+      }
+      const blockIdx = gl.getUniformBlockIndex(item.prog, 'FrameGlobals');
+      if (blockIdx !== gl.INVALID_INDEX) {
+        gl.uniformBlockBinding(item.prog, blockIdx, 0);
+      }
+      this.programCache.set(item.key, { program: item.prog, uniforms: new Map() });
+    }
+    return pending.length;
+  }
+
+  getRenderMetrics(): RenderFrameMetrics {
+    return {
+      instancedRuns: this.frameInstancedRuns,
+      instancedObjects: this.frameInstancedObjects,
+      skippedMaterialBinds: this.frameSkippedMatBinds,
+      shaderCount: this.programCache.size,
+      uboBound: this.uboBound,
+    };
   }
 
   private compileShader(type: number, source: string): WebGLShader {
@@ -707,6 +846,9 @@ export class WebGL2Backend implements IRenderBackend {
   renderFrame(bridge: WasmBridge, scene: Scene, aspect: number, timeSec: number): number {
     const gl = this.gl;
     const canvas = gl.canvas as HTMLCanvasElement;
+    this.frameInstancedRuns = 0;
+    this.frameInstancedObjects = 0;
+    this.frameSkippedMatBinds = 0;
     let drawCalls = 0;
 
     if (scene.camera.mode === '3d' && scene.shadowsEnabled) {
@@ -745,11 +887,60 @@ export class WebGL2Backend implements IRenderBackend {
       drawCalls += this.render3DPass(bridge, scene, viewProj, timeSec);
     }
     drawCalls += this.render2DPass(bridge, scene, viewProj, aspect);
+    if (scene.debugPhysics && scene.camera.mode === '3d') {
+      drawCalls += this.renderDebugLinesPass(scene, viewProj);
+    }
 
     if (usePp) {
       drawCalls += this.renderPostProcess(canvas.width, canvas.height, scene.postProcess, timeSec);
     }
     return drawCalls;
+  }
+
+  private renderDebugLinesPass(scene: Scene, viewProj: Float32Array): number {
+    const raw = scene.getPhysicsDebugLines();
+    if (raw.length < 10) return 0;
+    const segCount = Math.floor(raw.length / 10);
+    const neededFloats = segCount * 14;
+    if (this.debugLineScratch.length < neededFloats) {
+      this.debugLineScratch = new Float32Array(Math.max(neededFloats, this.debugLineScratch.length * 2));
+    }
+    const buf = this.debugLineScratch;
+    let w = 0;
+    for (let i = 0; i < segCount * 10; i += 10) {
+      const r = raw[i + 6];
+      const g = raw[i + 7];
+      const b = raw[i + 8];
+      const a = raw[i + 9];
+      buf[w++] = raw[i];
+      buf[w++] = raw[i + 1];
+      buf[w++] = raw[i + 2];
+      buf[w++] = r;
+      buf[w++] = g;
+      buf[w++] = b;
+      buf[w++] = a;
+      buf[w++] = raw[i + 3];
+      buf[w++] = raw[i + 4];
+      buf[w++] = raw[i + 5];
+      buf[w++] = r;
+      buf[w++] = g;
+      buf[w++] = b;
+      buf[w++] = a;
+    }
+    const gl = this.gl;
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(this.debugLineProgram.program);
+    gl.uniformMatrix4fv(this.uLoc(this.debugLineProgram, 'u_viewProj'), false, viewProj);
+    gl.bindVertexArray(this.debugLineVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.debugLineVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, buf.subarray(0, w), gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.LINES, 0, segCount * 2);
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
+    return 1;
   }
 
   private renderPostProcess(w: number, h: number, pp: PostProcessConfig, timeSec: number): number {
@@ -1077,8 +1268,7 @@ export class WebGL2Backend implements IRenderBackend {
     }
   }
 
-  private bindPassGlobals(
-    prog: GpuProgram,
+  private uploadFrameGlobalsUbo(
     scene: Scene,
     viewProj: Float32Array,
     timeSec: number,
@@ -1086,39 +1276,102 @@ export class WebGL2Backend implements IRenderBackend {
     spotCount: number
   ): void {
     const gl = this.gl;
-    gl.uniformMatrix4fv(this.uLoc(prog, 'u_viewProj'), false, viewProj);
-    gl.uniformMatrix4fv(this.uLoc(prog, 'u_lightViewProj'), false, this.lightVpMat);
-    gl.uniformMatrix4fv(this.uLoc(prog, 'u_spotLightViewProj'), false, this.spotVpMat);
-    gl.uniform3fv(this.uLoc(prog, 'u_cameraPos'), scene.camera.position);
-    gl.uniform1f(this.uLoc(prog, 'u_time'), timeSec);
-    gl.uniform3fv(this.uLoc(prog, 'u_lightDir'), scene.light.direction);
-    gl.uniform3fv(this.uLoc(prog, 'u_lightColor'), scene.light.color);
-    gl.uniform1f(this.uLoc(prog, 'u_lightIntensity'), scene.light.intensity);
-    gl.uniform3fv(this.uLoc(prog, 'u_ambientColor'), scene.light.ambientColor);
-    gl.uniform3fv(this.uLoc(prog, 'u_fogColor'), scene.fogColor);
-    gl.uniform1f(this.uLoc(prog, 'u_fogDensity'), scene.fogDensity);
-    gl.uniform3fv(this.uLoc(prog, 'u_skyTop'), scene.skyTopColor);
-    gl.uniform3fv(this.uLoc(prog, 'u_skyHorizon'), scene.skyHorizonColor);
-    gl.uniform1i(this.uLoc(prog, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
-    gl.uniform1i(this.uLoc(prog, 'u_shadowsEnabled'), scene.shadowsEnabled ? 1 : 0);
+    const u = this.frameUboScratch;
+    u.set(viewProj, 0);
+    u.set(this.lightVpMat, 16);
+    u.set(this.spotVpMat, 32);
+
+    const cam = scene.camera.position;
+    u[48] = cam[0];
+    u[49] = cam[1];
+    u[50] = cam[2];
+    u[51] = timeSec;
+
+    const ld = scene.light.direction;
+    u[52] = ld[0];
+    u[53] = ld[1];
+    u[54] = ld[2];
+    u[55] = scene.light.intensity;
+
+    const lc = scene.light.color;
+    u[56] = lc[0];
+    u[57] = lc[1];
+    u[58] = lc[2];
+    u[59] = scene.shadowsEnabled ? 1 : 0;
+
+    const ac = scene.light.ambientColor;
+    u[60] = ac[0];
+    u[61] = ac[1];
+    u[62] = ac[2];
+    u[63] = this.hdrActive ? 1 : 0;
+
+    const fc = scene.fogColor;
+    u[64] = fc[0];
+    u[65] = fc[1];
+    u[66] = fc[2];
+    u[67] = scene.fogDensity;
+
+    const st = scene.skyTopColor;
+    u[68] = st[0];
+    u[69] = st[1];
+    u[70] = st[2];
+    u[71] = this.spotShadowActive ? 1 : 0;
+
+    const sh = scene.skyHorizonColor;
+    u[72] = sh[0];
+    u[73] = sh[1];
+    u[74] = sh[2];
+    u[75] = 0;
+
+    u[76] = ptCount;
+    u[77] = spotCount;
+    u[78] = 0;
+    u[79] = 0;
+
+    for (let i = 0; i < ptCount; i++) {
+      const pl = scene.pointLights[i];
+      const pBase = 80 + i * 4;
+      u[pBase] = pl.position[0];
+      u[pBase + 1] = pl.position[1];
+      u[pBase + 2] = pl.position[2];
+      u[pBase + 3] = pl.radius;
+      const cBase = 96 + i * 4;
+      u[cBase] = pl.color[0] * pl.intensity;
+      u[cBase + 1] = pl.color[1] * pl.intensity;
+      u[cBase + 2] = pl.color[2] * pl.intensity;
+      u[cBase + 3] = 0;
+    }
+
+    for (let i = 0; i < spotCount; i++) {
+      const sp = scene.spotLights[i];
+      const pBase = 112 + i * 4;
+      u[pBase] = sp.position[0];
+      u[pBase + 1] = sp.position[1];
+      u[pBase + 2] = sp.position[2];
+      u[pBase + 3] = sp.range;
+      const dBase = 128 + i * 4;
+      u[dBase] = sp.direction[0];
+      u[dBase + 1] = sp.direction[1];
+      u[dBase + 2] = sp.direction[2];
+      u[dBase + 3] = Math.cos(((sp.innerConeDeg ?? 20) * Math.PI) / 180);
+      const cBase = 144 + i * 4;
+      u[cBase] = sp.color[0] * sp.intensity;
+      u[cBase + 1] = sp.color[1] * sp.intensity;
+      u[cBase + 2] = sp.color[2] * sp.intensity;
+      u[cBase + 3] = Math.cos(((sp.outerConeDeg ?? 35) * Math.PI) / 180);
+    }
+
+    gl.bindBuffer(gl.UNIFORM_BUFFER, this.frameGlobalsUbo);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, u);
+    gl.bindBuffer(gl.UNIFORM_BUFFER, null);
+  }
+
+  private bindPassGlobalsSamplers(prog: GpuProgram): void {
+    if (prog.globalsSamplersBound) return;
+    const gl = this.gl;
     gl.uniform1i(this.uLoc(prog, 'u_shadowMap'), 1);
-    gl.uniform1i(this.uLoc(prog, 'u_pointLightCount'), ptCount);
-    if (ptCount > 0) {
-      gl.uniform3fv(this.uLoc(prog, 'u_pointPos[0]'), this.ptPosScratch);
-      gl.uniform3fv(this.uLoc(prog, 'u_pointColor[0]'), this.ptColScratch);
-      gl.uniform1fv(this.uLoc(prog, 'u_pointRadius[0]'), this.ptRadScratch);
-    }
-    gl.uniform1i(this.uLoc(prog, 'u_spotLightCount'), spotCount);
-    gl.uniform1i(this.uLoc(prog, 'u_spotShadowEnabled'), this.spotShadowActive ? 1 : 0);
     gl.uniform1i(this.uLoc(prog, 'u_spotShadowMap'), 5);
-    if (spotCount > 0) {
-      gl.uniform3fv(this.uLoc(prog, 'u_spotPos[0]'), this.spotPosScratch);
-      gl.uniform3fv(this.uLoc(prog, 'u_spotDir[0]'), this.spotDirScratch);
-      gl.uniform3fv(this.uLoc(prog, 'u_spotColor[0]'), this.spotColScratch);
-      gl.uniform1fv(this.uLoc(prog, 'u_spotRange[0]'), this.spotRangeScratch);
-      gl.uniform1fv(this.uLoc(prog, 'u_spotInnerCos[0]'), this.spotInnerCosScratch);
-      gl.uniform1fv(this.uLoc(prog, 'u_spotOuterCos[0]'), this.spotOuterCosScratch);
-    }
+    prog.globalsSamplersBound = true;
   }
 
   private bindOptionalTex(
@@ -1127,20 +1380,29 @@ export class WebGL2Backend implements IRenderBackend {
     texId: number | undefined,
     samplerName: string,
     flagName: string,
-    fallback: WebGLTexture
+    fallback: WebGLTexture,
+    fallbackKey: number
   ): void {
     const gl = this.gl;
     const tex = texId ? this.textures.get(texId) : undefined;
-    gl.activeTexture(gl.TEXTURE0 + unit);
-    gl.bindTexture(gl.TEXTURE_2D, tex ?? fallback);
+    const key = tex ? (texId as number) : fallbackKey;
+    if (this.boundTexByUnit[unit] !== key) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex ?? fallback);
+      this.boundTexByUnit[unit] = key;
+    }
     gl.uniform1i(this.uLoc(prog, samplerName), unit);
     gl.uniform1i(this.uLoc(prog, flagName), tex ? 1 : 0);
   }
 
-  private applyMaterialUniforms(prog: GpuProgram, desc: MaterialDesc): void {
+  private applyMaterialUniforms(prog: GpuProgram, desc: MaterialDesc, skipMaterialState = false): void {
     const gl = this.gl;
-    const u = desc.uniforms;
     gl.uniformMatrix4fv(this.uLoc(prog, 'u_model'), false, this.modelScratch);
+    if (skipMaterialState) {
+      this.frameSkippedMatBinds++;
+      return;
+    }
+    const u = desc.uniforms;
     gl.uniform4fv(this.uLoc(prog, 'u_baseColor'), u.baseColor);
     gl.uniform3fv(this.uLoc(prog, 'u_shadowTint'), u.shadowTint);
     gl.uniform3fv(this.uLoc(prog, 'u_rimColor'), u.rimColor);
@@ -1164,17 +1426,18 @@ export class WebGL2Backend implements IRenderBackend {
     const uvScale = u.uvScale ?? [1, 1];
     gl.uniform2f(this.uLoc(prog, 'u_uvScale'), uvScale[0], uvScale[1]);
 
-    this.bindOptionalTex(prog, 0, desc.textureId, 'u_tex', 'u_hasTexture', this.dummyWhiteTex);
-    this.bindOptionalTex(prog, 2, desc.normalMapId, 'u_normalMap', 'u_hasNormalMap', this.dummyBlackTex);
+    this.bindOptionalTex(prog, 0, desc.textureId, 'u_tex', 'u_hasTexture', this.dummyWhiteTex, -2);
+    this.bindOptionalTex(prog, 2, desc.normalMapId, 'u_normalMap', 'u_hasNormalMap', this.dummyBlackTex, -3);
     this.bindOptionalTex(
       prog,
       3,
       desc.metallicRoughnessMapId,
       'u_metallicRoughnessMap',
       'u_hasMetallicRoughnessMap',
-      this.dummyWhiteTex
+      this.dummyWhiteTex,
+      -2
     );
-    this.bindOptionalTex(prog, 4, desc.emissiveMapId, 'u_emissiveMap', 'u_hasEmissiveMap', this.dummyBlackTex);
+    this.bindOptionalTex(prog, 4, desc.emissiveMapId, 'u_emissiveMap', 'u_hasEmissiveMap', this.dummyBlackTex, -3);
   }
 
   private render3DPass(
@@ -1190,36 +1453,10 @@ export class WebGL2Backend implements IRenderBackend {
     const paletteOffsets = bridge.getPaletteOffsetsView();
     const bonePalettes = bridge.getBonePalettesView();
 
-    // Pack up to 4 point lights
     const ptCount = Math.min(scene.pointLights.length, 4);
-    for (let i = 0; i < ptCount; i++) {
-      const pl = scene.pointLights[i];
-      this.ptPosScratch[i * 3] = pl.position[0];
-      this.ptPosScratch[i * 3 + 1] = pl.position[1];
-      this.ptPosScratch[i * 3 + 2] = pl.position[2];
-      this.ptColScratch[i * 3] = pl.color[0] * pl.intensity;
-      this.ptColScratch[i * 3 + 1] = pl.color[1] * pl.intensity;
-      this.ptColScratch[i * 3 + 2] = pl.color[2] * pl.intensity;
-      this.ptRadScratch[i] = pl.radius;
-    }
-
-    // Pack up to 4 spotlights
     const spotCount = Math.min(scene.spotLights.length, 4);
-    for (let i = 0; i < spotCount; i++) {
-      const sp = scene.spotLights[i];
-      this.spotPosScratch[i * 3] = sp.position[0];
-      this.spotPosScratch[i * 3 + 1] = sp.position[1];
-      this.spotPosScratch[i * 3 + 2] = sp.position[2];
-      this.spotDirScratch[i * 3] = sp.direction[0];
-      this.spotDirScratch[i * 3 + 1] = sp.direction[1];
-      this.spotDirScratch[i * 3 + 2] = sp.direction[2];
-      this.spotColScratch[i * 3] = sp.color[0] * sp.intensity;
-      this.spotColScratch[i * 3 + 1] = sp.color[1] * sp.intensity;
-      this.spotColScratch[i * 3 + 2] = sp.color[2] * sp.intensity;
-      this.spotRangeScratch[i] = sp.range;
-      this.spotInnerCosScratch[i] = Math.cos(((sp.innerConeDeg ?? 20) * Math.PI) / 180);
-      this.spotOuterCosScratch[i] = Math.cos(((sp.outerConeDeg ?? 35) * Math.PI) / 180);
-    }
+    this.uploadFrameGlobalsUbo(scene, viewProj, timeSec, ptCount, spotCount);
+    this.boundTexByUnit.fill(-1);
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.shadowDepthTex);
@@ -1230,6 +1467,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.depthMask(true);
     let drawCalls = 0;
     let lastProg: GpuProgram | null = null;
+    let lastMatId = -1;
 
     for (let i = 0; i < cmds.length; i += 4) {
       const meshId = cmds[i];
@@ -1247,14 +1485,10 @@ export class WebGL2Backend implements IRenderBackend {
         ? mesh.submeshes
         : [{ indexOffset: 0, indexCount: mesh.indexCount, materialId: defaultMatId }];
 
-      // Fast-path 3D hardware instancing for contiguous identical opaque non-skinned single-submesh entities
+      // Fast-path 3D hardware instancing (supports outlined meshes too!)
+      const firstMatId = submeshes[0].materialId ?? defaultMatId;
       const firstDesc = ((submeshes[0].materialId ? this.materials.get(submeshes[0].materialId) : undefined) ?? defaultMat).desc;
-      if (
-        submeshes.length === 1 &&
-        !mesh.hasSkinning &&
-        !firstDesc.transparent &&
-        !(firstDesc.outlineWidth && firstDesc.outlineWidth > 0)
-      ) {
+      if (submeshes.length === 1 && !mesh.hasSkinning && !firstDesc.transparent) {
         const run = this.collectInstanceRun(cmds, i, meshId, defaultMatId, matrices);
         if (run >= 2) {
           const activeMat = (submeshes[0].materialId ? this.materials.get(submeshes[0].materialId) : undefined) ?? defaultMat;
@@ -1269,10 +1503,12 @@ export class WebGL2Backend implements IRenderBackend {
           if (prog !== lastProg) {
             gl.useProgram(prog.program);
             lastProg = prog;
-            this.bindPassGlobals(prog, scene, viewProj, timeSec, ptCount, spotCount);
+            lastMatId = -1;
+            this.bindPassGlobalsSamplers(prog);
           }
           this.modelScratch.set(this.instScratch.subarray(0, 16));
-          this.applyMaterialUniforms(prog, activeMat.desc);
+          this.applyMaterialUniforms(prog, activeMat.desc, firstMatId === lastMatId);
+          lastMatId = firstMatId;
           gl.uniform1i(this.uLoc(prog, 'u_skinned'), 0);
           gl.uniform1i(this.uLoc(prog, 'u_instanced'), 1);
           this.setInstancingEnabled(true, run);
@@ -1283,9 +1519,38 @@ export class WebGL2Backend implements IRenderBackend {
             submeshes[0].indexOffset * 4,
             run
           );
-          this.setInstancingEnabled(false, 0);
-          gl.uniform1i(this.uLoc(prog, 'u_instanced'), 0);
           drawCalls++;
+          this.frameInstancedRuns++;
+          this.frameInstancedObjects += run;
+
+          if (activeMat.desc.outlineWidth && activeMat.desc.outlineWidth > 0) {
+            gl.enable(gl.CULL_FACE);
+            gl.cullFace(gl.FRONT);
+            gl.useProgram(this.outlineProgram.program);
+            gl.uniform1i(this.uLoc(this.outlineProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
+            gl.uniformMatrix4fv(this.uLoc(this.outlineProgram, 'u_viewProj'), false, viewProj);
+            gl.uniform1f(this.uLoc(this.outlineProgram, 'u_outlineWidth'), activeMat.desc.outlineWidth);
+            gl.uniform3fv(
+              this.uLoc(this.outlineProgram, 'u_outlineColor'),
+              activeMat.desc.outlineColor ?? [0.06, 0.05, 0.1]
+            );
+            gl.uniform1i(this.uLoc(this.outlineProgram, 'u_skinned'), 0);
+            gl.uniform1i(this.uLoc(this.outlineProgram, 'u_instanced'), 1);
+            gl.drawElementsInstanced(
+              gl.TRIANGLES,
+              submeshes[0].indexCount,
+              gl.UNSIGNED_INT,
+              submeshes[0].indexOffset * 4,
+              run
+            );
+            gl.uniform1i(this.uLoc(this.outlineProgram, 'u_instanced'), 0);
+            drawCalls++;
+            lastProg = null;
+          } else {
+            gl.uniform1i(this.uLoc(prog, 'u_instanced'), 0);
+          }
+
+          this.setInstancingEnabled(false, 0);
           i += (run - 1) * 4;
           continue;
         }
@@ -1294,6 +1559,7 @@ export class WebGL2Backend implements IRenderBackend {
       this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
 
       for (const sm of submeshes) {
+        const activeMatId = sm.materialId ?? defaultMatId;
         const activeMat = (sm.materialId ? this.materials.get(sm.materialId) : undefined) ?? defaultMat;
         const desc = activeMat.desc;
         if (desc.transparent) {
@@ -1316,11 +1582,13 @@ export class WebGL2Backend implements IRenderBackend {
         if (prog !== lastProg) {
           gl.useProgram(prog.program);
           lastProg = prog;
-          this.bindPassGlobals(prog, scene, viewProj, timeSec, ptCount, spotCount);
+          lastMatId = -1;
+          this.bindPassGlobalsSamplers(prog);
         }
 
         gl.uniform1i(this.uLoc(prog, 'u_instanced'), 0);
-        this.applyMaterialUniforms(prog, desc);
+        this.applyMaterialUniforms(prog, desc, activeMatId === lastMatId);
+        lastMatId = activeMatId;
         this.uploadSkinningUniforms(prog, mesh, slot, paletteOffsets, bonePalettes);
         gl.drawElements(gl.TRIANGLES, sm.indexCount, gl.UNSIGNED_INT, sm.indexOffset * 4);
         drawCalls++;
@@ -1337,6 +1605,7 @@ export class WebGL2Backend implements IRenderBackend {
             this.uLoc(this.outlineProgram, 'u_outlineColor'),
             desc.outlineColor ?? [0.06, 0.05, 0.1]
           );
+          gl.uniform1i(this.uLoc(this.outlineProgram, 'u_instanced'), 0);
           this.uploadSkinningUniforms(this.outlineProgram, mesh, slot, paletteOffsets, bonePalettes);
           gl.drawElements(gl.TRIANGLES, sm.indexCount, gl.UNSIGNED_INT, sm.indexOffset * 4);
           drawCalls++;
@@ -1487,6 +1756,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.deleteFramebuffer(this.spotShadowFbo);
     gl.deleteTexture(this.spotShadowDepthTex);
     gl.deleteBuffer(this.instVbo);
+    gl.deleteBuffer(this.frameGlobalsUbo);
     gl.deleteTexture(this.dummyBlackTex);
     gl.deleteTexture(this.dummyWhiteTex);
     this.disposePostProcessFbos();
@@ -1494,5 +1764,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.deleteVertexArray(this.spriteVao);
     gl.deleteBuffer(this.spriteQuadVbo);
     gl.deleteBuffer(this.spriteInstVbo);
+    gl.deleteVertexArray(this.debugLineVao);
+    gl.deleteBuffer(this.debugLineVbo);
   }
 }

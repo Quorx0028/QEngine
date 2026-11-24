@@ -224,6 +224,61 @@ export function createTerrainGeometry(
   return { vertices, indices };
 }
 
+export function createCylinderGeometry(radius = 0.5, halfHeight = 0.5, radialSegs = 24): MeshGeometry {
+  const segs = Math.max(8, radialSegs);
+  const verts: number[] = [];
+  const inds: number[] = [];
+  const pushV = (x: number, y: number, z: number, nx: number, ny: number, nz: number, u: number, v: number) => {
+    verts.push(x, y, z, nx, ny, nz, u, v);
+  };
+
+  // Side mantle
+  const sideBase = 0;
+  for (let i = 0; i <= segs; i++) {
+    const u = i / segs;
+    const a = u * Math.PI * 2;
+    const cx = Math.cos(a);
+    const cz = Math.sin(a);
+    pushV(cx * radius, -halfHeight, cz * radius, cx, 0, cz, u, 0);
+    pushV(cx * radius, halfHeight, cz * radius, cx, 0, cz, u, 1);
+  }
+  for (let i = 0; i < segs; i++) {
+    const i0 = sideBase + i * 2;
+    const i1 = i0 + 1;
+    const i2 = i0 + 2;
+    const i3 = i0 + 3;
+    inds.push(i0, i1, i2, i2, i1, i3);
+  }
+
+  // Top cap
+  const topCenter = verts.length / 8;
+  pushV(0, halfHeight, 0, 0, 1, 0, 0.5, 0.5);
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const cx = Math.cos(a);
+    const cz = Math.sin(a);
+    pushV(cx * radius, halfHeight, cz * radius, 0, 1, 0, cx * 0.5 + 0.5, cz * 0.5 + 0.5);
+  }
+  for (let i = 0; i < segs; i++) {
+    inds.push(topCenter, topCenter + 1 + i + 1, topCenter + 1 + i);
+  }
+
+  // Bottom cap
+  const botCenter = verts.length / 8;
+  pushV(0, -halfHeight, 0, 0, -1, 0, 0.5, 0.5);
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const cx = Math.cos(a);
+    const cz = Math.sin(a);
+    pushV(cx * radius, -halfHeight, cz * radius, 0, -1, 0, cx * 0.5 + 0.5, cz * 0.5 + 0.5);
+  }
+  for (let i = 0; i < segs; i++) {
+    inds.push(botCenter, botCenter + 1 + i, botCenter + 1 + i + 1);
+  }
+
+  return { vertices: new Float32Array(verts), indices: new Uint32Array(inds) };
+}
+
 /** Extracts flat world/local triangle vertices [x,y,z,...] for Physics StaticTriMesh colliders. */
 export function extractColliderTriangles(
   geom: MeshGeometry,

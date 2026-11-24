@@ -381,7 +381,28 @@ fn collider_world_extents(col: Collider3D, rot: Quat) -> (f32, f32, f32) {
             (hx, hy, hz)
         }
         Collider3D::Sphere { radius } => (radius, radius, radius),
-        Collider3D::Capsule { radius, half_height } => (radius, half_height + radius, radius),
+        Collider3D::Capsule { radius, half_height } => {
+            let axis = (rot * glam::Vec3::Y).abs();
+            (
+                radius + axis.x * half_height,
+                radius + axis.y * half_height,
+                radius + axis.z * half_height,
+            )
+        }
+        Collider3D::Cylinder { radius, half_height } => {
+            let axis = (rot * glam::Vec3::Y).abs();
+            let sq = (glam::Vec3::ONE - axis * axis).max(glam::Vec3::ZERO);
+            let rad_proj = glam::Vec3::new(sq.x.sqrt(), sq.y.sqrt(), sq.z.sqrt()) * radius;
+            (
+                rad_proj.x + axis.x * half_height,
+                rad_proj.y + axis.y * half_height,
+                rad_proj.z + axis.z * half_height,
+            )
+        }
+        Collider3D::ConvexHull { bounding_radius, .. }
+        | Collider3D::Compound { bounding_radius, .. } => {
+            (bounding_radius, bounding_radius, bounding_radius)
+        }
     }
 }
 

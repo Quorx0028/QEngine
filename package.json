@@ -13,8 +13,9 @@
     "test:rust": "cargo test --manifest-path crates/quark-core/Cargo.toml",
     "test:ts": "npm --workspace packages/quark-engine test && npm --workspace editor test",
     "test": "npm run test:rust && npm run build:wasm && npm run test:ts",
-    "build": "npm run build:wasm && npm --workspace packages/quark-engine run build && npm --workspace examples/playground run build && npm --workspace editor run build",
+    "build": "npm run build:wasm && npm --workspace packages/quark-engine run build && npm --workspace examples/playground run build && npm --workspace examples/physics-lab run build && npm --workspace editor run build",
     "dev": "npm --workspace examples/playground run dev",
+    "physics-lab": "npm --workspace examples/physics-lab run dev",
     "editor": "npm --workspace editor run dev"
   }
 }

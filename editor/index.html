@@ -10,37 +10,38 @@
     <div id="app" class="studio-shell">
       <header class="topbar" id="topbar">
         <div class="brand">
-          <span class="dot"></span>
           <b>QuarkStudio</b>
-          <input id="inp-scene-name" class="scene-name" value="Untitled Scene" />
+          <input id="inp-scene-name" class="scene-name" value="Untitled Scene" aria-label="Scene name" />
         </div>
 
         <div class="tool-group">
-          <button id="btn-gizmo-move" class="active" title="Move (W)">Move (W)</button>
-          <button id="btn-gizmo-rotate" title="Rotate (E)">Rotate (E)</button>
-          <button id="btn-gizmo-scale" title="Scale (R)">Scale (R)</button>
+          <button id="btn-undo" title="Undo (Cmd/Ctrl+Z)" disabled>Undo</button>
+          <button id="btn-redo" title="Redo (Cmd/Ctrl+Shift+Z)" disabled>Redo</button>
+          <button id="btn-gizmo-move" class="active" title="Move (W)">Move</button>
+          <button id="btn-gizmo-rotate" title="Rotate (E)">Rotate</button>
+          <button id="btn-gizmo-scale" title="Scale (R)">Scale</button>
         </div>
 
         <div class="tool-group">
           <button id="btn-add-box">+ Box</button>
           <button id="btn-add-sphere">+ Sphere</button>
           <button id="btn-add-ramp">+ Ramp</button>
-          <button id="btn-add-point">+ PointLight</button>
-          <button id="btn-add-spot">+ SpotLight</button>
-          <button id="btn-import-glb">+ .GLB</button>
+          <button id="btn-add-point">+ Point</button>
+          <button id="btn-add-spot">+ Spot</button>
+          <button id="btn-import-glb">+ GLB</button>
           <input id="file-glb" type="file" accept=".glb,.gltf" hidden />
         </div>
 
         <div class="tool-group">
-          <button id="btn-play-test" class="btn-play">▶ Play</button>
-          <button id="btn-stop-test">⏹ Stop</button>
+          <button id="btn-play-test" class="btn-play">Play</button>
+          <button id="btn-stop-test">Stop</button>
         </div>
 
         <div class="tool-group right-actions">
-          <button id="btn-save-json">💾 Save JSON</button>
-          <button id="btn-load-json">📂 Load JSON</button>
+          <button id="btn-save-json">Save JSON</button>
+          <button id="btn-load-json">Load JSON</button>
           <input id="file-json" type="file" accept=".json" hidden />
-          <button id="btn-launch-browser" class="btn-launch">🚀 Launch in Browser</button>
+          <button id="btn-launch-browser" class="btn-launch">Launch in browser</button>
         </div>
       </header>
 
@@ -56,24 +57,23 @@
 
         <div class="panel-header">Environment</div>
         <div class="inspector-section" id="env-section">
-          <label>PostProcess
+          <label>Post-processing
             <select id="env-pp"></select>
           </label>
           <label class="inline"><input type="checkbox" id="env-shadows" checked /> Shadows</label>
-          <label>Fog Density <input type="range" id="env-fog" min="0" max="0.06" step="0.002" /></label>
-          <label>Sun Intensity <input type="range" id="env-sun" min="0" max="3" step="0.05" /></label>
+          <label class="inline"><input type="checkbox" id="env-debug-physics" /> Colliders (F3)</label>
+          <label class="inline"><input type="checkbox" id="env-profiler" /> Profiler (F2)</label>
+          <label>Fog density <input type="range" id="env-fog" min="0" max="0.06" step="0.002" /></label>
+          <label>Sun intensity <input type="range" id="env-sun" min="0" max="3" step="0.05" /></label>
         </div>
       </aside>
 
       <main class="viewport-wrap" id="viewport-wrap">
         <canvas id="gl-canvas"></canvas>
         <canvas id="gizmo-canvas"></canvas>
-        <div id="viewport-hud" class="viewport-hud">
-          Edit: Left-click select · Drag X/Y/Z axis · Right-drag look + WASD fly · Scroll zoom · Drop .glb
-        </div>
+        <div id="viewport-hud" class="viewport-hud"></div>
         <div id="player-hud" class="player-hud" style="display: none;">
-          <b>QuarkEngine Player</b> · WASD Move · Space Jump · Shift Sprint · Click to lock mouse
-          <button id="btn-back-editor" style="margin-left:10px;">Back to Editor UI</button>
+          <button id="btn-back-editor">Back to editor</button>
         </div>
       </main>
 
@@ -84,9 +84,9 @@
 
       <footer class="timeline-dock" id="timeline-dock">
         <div class="timeline-controls">
-          <button id="btn-anim-play">▶ Anim</button>
+          <button id="btn-anim-play">Anim</button>
           <button id="btn-add-kf">+ Keyframe (K)</button>
-          <button id="btn-del-kf">Del Keyframe</button>
+          <button id="btn-del-kf">Delete keyframe</button>
           <span id="lbl-anim-time" class="mono">0.00s</span>
           <label class="inline">Duration <input id="inp-anim-dur" type="number" min="0.5" max="60" step="0.5" value="4" style="width:54px;" /></label>
           <label class="inline"><input id="chk-anim-loop" type="checkbox" checked /> Loop</label>

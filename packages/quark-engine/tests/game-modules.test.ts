@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DialogueRunner,
   Engine,
+  PHYSICS_MATERIAL_PRESETS,
   ParticleEmitter,
   SpriteAnimator,
   Tilemap,
@@ -30,10 +31,11 @@ describe('Batch 3 Game Modules (Controllers, Joints, 2D RPG, Particles)', () => 
     scene.setRigidBody(hero, { dynamic: true, lockRotation: true, friction: 0 });
     scene.setCharacterController(hero, { stepHeight: 0.5, maxSlopeDeg: 50 });
 
-    for (let i = 0; i < 65; i++) {
+    for (let i = 0; i < 45; i++) {
       scene.setVelocity(hero, 0, scene.getVelocity(hero)[1], 4);
       engine.step(1 / 60);
     }
+    expect(scene.getPosition(hero)[2]).toBeGreaterThan(1.5);
     expect(scene.getPosition(hero)[1]).toBeGreaterThan(1.15);
 
     const anchor = scene.createEntity();
@@ -188,6 +190,54 @@ describe('Batch 3 Game Modules (Controllers, Joints, 2D RPG, Particles)', () => 
     expect(emitter.activeCount).toBe(0);
     emitter.dispose();
     expect(scene.getEntityCount()).toBe(0);
+    engine.dispose();
+  });
+
+  it('supports density presets, cylinder/compound colliders, water buoyancy, queries, and debug lines via Scene TS API', async () => {
+    const engine = await Engine.init({ wasmBytes });
+    const scene = engine.scene;
+
+    const floor = scene.createEntity();
+    scene.setTransform(floor, { position: [0, -0.5, 0], immediate: true });
+    scene.setCollider3D(floor, { kind: 'aabb', halfExtents: [20, 0.5, 20] });
+
+    scene.addWaterZone({
+      center: [0, 2, 0],
+      halfExtents: [10, 2, 10],
+      density: 1.0,
+      linearDrag: 2.0,
+    });
+
+    const floater = scene.createEntity();
+    scene.setTransform(floater, { position: [-2, 4.2, 0], immediate: true });
+    scene.setCollider3D(floater, { kind: 'cylinder', radius: 0.45, halfHeight: 0.5 });
+    scene.setRigidBody(floater, { ...PHYSICS_MATERIAL_PRESETS.wood, density: 0.45 });
+
+    const sinker = scene.createEntity();
+    scene.setTransform(sinker, { position: [2, 4.2, 0], immediate: true });
+    scene.setCollider3D(sinker, {
+      kind: 'compound',
+      parts: [
+        { position: [-0.25, 0, 0], shape: { kind: 'sphere', radius: 0.35 } },
+        { position: [0.25, 0, 0], shape: { kind: 'sphere', radius: 0.35 } },
+      ],
+    });
+    scene.setRigidBody(sinker, { ...PHYSICS_MATERIAL_PRESETS.steel });
+
+    for (let i = 0; i < 180; i++) {
+      engine.step(1 / 60);
+    }
+    expect(scene.getPosition(floater)[1]).toBeGreaterThan(3.1);
+    expect(scene.getPosition(sinker)[1]).toBeLessThan(1.0);
+
+    const hits = scene.overlapSphere([2, 0.4, 0], 1.5);
+    expect(hits).toContain(sinker);
+
+    const sw = scene.sweepBox([-5, 0.4, 0], [0.4, 0.4, 0.4], [1, 0, 0], 10);
+    expect(sw?.entity).toBe(sinker);
+
+    const dbg = scene.getPhysicsDebugLines();
+    expect(dbg.length).toBeGreaterThan(30);
     engine.dispose();
   });
 });

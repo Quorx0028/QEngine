@@ -1,6 +1,12 @@
 export { AssetManager, type LoadedMeshHandle } from './assets/AssetManager';
 export { AudioSystem, type AudioBus, type SpatialPlayOptions } from './Audio';
-export { Engine, type EngineOptions, type EngineStats } from './Engine';
+export {
+  Engine,
+  type EngineErrorInfo,
+  type EngineFrameTimings,
+  type EngineOptions,
+  type EngineStats,
+} from './Engine';
 export { Input, type ActionBinding, type AxisBinding } from './Input';
 export { AnimStateMachine, type AnimTransition } from './gameplay/AnimStateMachine';
 export {
@@ -27,10 +33,12 @@ export type {
   MaterialUniforms,
   MeshGeometry,
   MeshSubmesh,
+  RenderFrameMetrics,
   ShaderBlockId,
 } from './render/IRenderBackend';
 export {
   createBoxGeometry,
+  createCylinderGeometry,
   createPlaneGeometry,
   createRampGeometry,
   createSphereGeometry,
@@ -76,16 +84,20 @@ export {
 } from './rpg/Tilemap';
 export { ParticleEmitter, type ParticleEmitterOptions } from './render/ParticleEmitter';
 export {
+  PHYSICS_MATERIAL_PRESETS,
   Scene,
   type CameraState,
   type Collider2DOptions,
   type Collider3DOptions,
   type CollisionEvent,
+  type CombineRule,
+  type CompoundPartDesc,
   type DirectionalLight,
   type EntityId,
   type Light2D,
   type Mesh3DOptions,
   type PointLight,
+  type RichPhysicsEvent,
   type SpotLight,
   type RigidBodyOptions,
   type Sprite2DOptions,

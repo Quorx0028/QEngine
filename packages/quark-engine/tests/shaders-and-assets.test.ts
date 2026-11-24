@@ -49,6 +49,9 @@ class StubRenderBackend implements IRenderBackend {
   disposeTexture(id: number): void {
     this.activeTextures.delete(id);
   }
+  warmupMaterials(descs: MaterialDesc[]): number {
+    return descs.length;
+  }
   renderFrame(): number {
     return 0;
   }
@@ -211,14 +214,16 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(vertexSource).toContain('uniform mat4 u_boneMatrices[64];');
   });
 
-  it('includes SpotLight shadow cone, PBR normal/MR/emissive maps, and hardware instancing in composed shaders', () => {
+  it('includes SpotLight shadow cone, PBR normal/MR/emissive maps, FrameGlobals UBO, and hardware instancing in composed shaders', async () => {
     const { vertexSource, fragmentSource } = composeShader({ blocks: ['pbrLighting'] });
     expect(vertexSource).toContain('layout(location = 6) in vec4 a_instMat0;');
     expect(vertexSource).toContain('uniform int u_instanced;');
-    expect(vertexSource).toContain('uniform mat4 u_spotLightViewProj;');
+    expect(vertexSource).toContain('layout(std140) uniform FrameGlobals');
+    expect(vertexSource).toContain('mat4 u_spotLightViewProj;');
     expect(vertexSource).toContain('out vec4 v_spotShadowCoord;');
 
-    expect(fragmentSource).toContain('uniform int u_spotLightCount;');
+    expect(fragmentSource).toContain('layout(std140) uniform FrameGlobals');
+    expect(fragmentSource).toContain('#define u_spotLightCount');
     expect(fragmentSource).toContain('uniform sampler2D u_spotShadowMap;');
     expect(fragmentSource).toContain('evalSpotLights');
     expect(fragmentSource).toContain('uniform int u_hasNormalMap;');
@@ -226,6 +231,12 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(fragmentSource).toContain('uniform int u_hasMetallicRoughnessMap;');
     expect(fragmentSource).toContain('uniform int u_hasEmissiveMap;');
     expect(fragmentSource).toContain('uniform vec3 u_emissiveColor;');
+
+    const engine = await Engine.init({ wasmBytes });
+    const assets = new AssetManager(engine.bridge, new StubRenderBackend());
+    expect(assets.warmupPresets()).toBe(SHADER_PRESET_NAMES.length);
+    assets.dispose();
+    engine.dispose();
   });
 
   it('uses Height-Correlated Smith-GGX, clearcoat, subsurfaceWrap, and Linear HDR output in shaders & PostProcess', () => {
@@ -237,7 +248,7 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
     expect(fragmentSource).toContain('evalCookTorranceDirect');
     expect(fragmentSource).toContain('uniform float u_clearcoat;');
     expect(fragmentSource).toContain('uniform float u_subsurface;');
-    expect(fragmentSource).toContain('uniform int u_hdrOutput;');
+    expect(fragmentSource).toContain('#define u_hdrOutput');
     expect(fragmentSource).toContain('srgbToLin');
     expect(fragmentSource).toContain('ignNoise');
 
