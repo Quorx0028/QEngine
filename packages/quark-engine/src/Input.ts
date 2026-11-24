@@ -88,7 +88,14 @@ export class Input {
 
   requestPointerLock(): void {
     if (this.target && typeof this.target.requestPointerLock === 'function') {
-      this.target.requestPointerLock();
+      try {
+        const res = this.target.requestPointerLock() as unknown as Promise<void> | undefined;
+        if (res && typeof res.catch === 'function') {
+          res.catch(() => {});
+        }
+      } catch {
+        // Pointer lock may be blocked when window is unfocused or embedded
+      }
     }
   }
 

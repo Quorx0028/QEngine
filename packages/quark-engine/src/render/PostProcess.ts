@@ -261,6 +261,47 @@ vec3 viewPosFromUv(vec2 uv, float d, float aspect) {
   return vec3(ndc.x * aspect * 0.62 * d, ndc.y * 0.62 * d, d);
 }
 
+float fxaaLuma(vec3 c) {
+  vec3 mapped = c / (vec3(1.0) + c);
+  return dot(mapped, vec3(0.299, 0.587, 0.114));
+}
+
+vec3 sampleSceneFxaa(vec2 uv, vec2 px) {
+  vec3 cM = texture(u_sceneTex, uv).rgb;
+  vec3 cNW = texture(u_sceneTex, uv + vec2(-px.x,  px.y)).rgb;
+  vec3 cNE = texture(u_sceneTex, uv + vec2( px.x,  px.y)).rgb;
+  vec3 cSW = texture(u_sceneTex, uv + vec2(-px.x, -px.y)).rgb;
+  vec3 cSE = texture(u_sceneTex, uv + vec2( px.x, -px.y)).rgb;
+  float lM = fxaaLuma(cM);
+  float lNW = fxaaLuma(cNW);
+  float lNE = fxaaLuma(cNE);
+  float lSW = fxaaLuma(cSW);
+  float lSE = fxaaLuma(cSE);
+  float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+  float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+  float contrast = lMax - lMin;
+  if (contrast < max(0.0312, lMax * 0.125)) return cM;
+
+  vec2 dir = vec2(
+    -((lNW + lNE) - (lSW + lSE)),
+    ((lNW + lSW) - (lNE + lSE))
+  );
+  float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
+  float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+  dir = clamp(dir * rcpMin, vec2(-4.0), vec2(4.0)) * px;
+
+  vec3 rgbA = 0.5 * (
+    texture(u_sceneTex, clamp(uv + dir * (1.0 / 3.0 - 0.5), 0.001, 0.999)).rgb +
+    texture(u_sceneTex, clamp(uv + dir * (2.0 / 3.0 - 0.5), 0.001, 0.999)).rgb
+  );
+  vec3 rgbB = rgbA * 0.5 + 0.25 * (
+    texture(u_sceneTex, clamp(uv + dir * -0.5, 0.001, 0.999)).rgb +
+    texture(u_sceneTex, clamp(uv + dir *  0.5, 0.001, 0.999)).rgb
+  );
+  float lB = fxaaLuma(rgbB);
+  return (lB < lMin || lB > lMax) ? rgbA : rgbB;
+}
+
 void main() {
   vec2 uv = v_uv;
 
@@ -287,13 +328,16 @@ void main() {
     uv = floor(uv * grid) / grid;
   }
 
-  // Chromatic aberration
+  // Chromatic aberration or FXAA-smoothed scene fetch
   vec3 col;
+  vec2 px = 1.0 / max(u_resolution, vec2(1.0));
   if (u_chromatic > 0.0001) {
     vec2 dir = (uv - 0.5) * u_chromatic * 2.0;
     col.r = texture(u_sceneTex, clamp(uv + dir, 0.0, 1.0)).r;
     col.g = texture(u_sceneTex, uv).g;
     col.b = texture(u_sceneTex, clamp(uv - dir, 0.0, 1.0)).b;
+  } else if (u_pixelSize <= 1.01 && u_crt == 0) {
+    col = sampleSceneFxaa(uv, px);
   } else {
     col = texture(u_sceneTex, uv).rgb;
   }

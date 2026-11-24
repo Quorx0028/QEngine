@@ -182,8 +182,8 @@ vec3 evalCelLighting(vec3 albedo, vec3 n, vec3 v, vec3 l, vec3 lColor, float lIn
   float bandIdx = floor(scaled);
   float bandFrac = smoothstep(0.0, 0.12, fract(scaled));
   float q = mix(bandIdx, min(bandIdx + 1.0, bands - 1.0), bandFrac * 0.25) / max(bands - 1.0, 1.0);
-  vec3 coolShadow = albedo * shadowTint * 0.72 + amb * albedo * 0.18;
-  vec3 warmLit = albedo * lColor * clamp(lInt, 0.7, 1.02) * 0.92;
+  vec3 coolShadow = albedo * mix(vec3(0.48), shadowTint, 0.72) * 0.88 + amb * albedo * 0.26;
+  vec3 warmLit = albedo * lColor * clamp(lInt, 0.7, 1.02) * 0.94;
   vec3 diffuse = mix(coolShadow, warmLit, smoothstep(0.08, 0.92, q));
   vec3 h = normalize(l + v);
   float spec = smoothstep(0.91, 0.95, max(dot(n, h), 0.0)) * 0.22 * effShadow;
@@ -352,12 +352,13 @@ void applyMicroDetail(vec3 wp, vec3 camPos, float bumpScale, inout vec3 n, inout
 vec3 evalEnvIBL(vec3 albedoLin, vec3 n, vec3 v, vec3 l, vec3 lColorLin, vec3 skyTopLin, vec3 skyHorizLin, float metallic, float roughness, float cc, float ccR) {
   vec3 r = reflect(-v, n);
   float ndotv = max(dot(n, v), 0.001);
-  float skyT = smoothstep(-0.04, 0.72, r.y);
+  float skyT = smoothstep(0.0, 0.72, r.y);
   vec3 groundCol = mix(skyHorizLin * 0.22, vec3(0.04, 0.042, 0.048), 0.75);
   vec3 horizonCol = mix(skyHorizLin, vec3(0.62, 0.68, 0.76), 0.15);
   vec3 zenithCol = skyTopLin;
   vec3 envUp = mix(horizonCol, zenithCol, skyT);
-  vec3 envCol = r.y >= 0.0 ? envUp : mix(horizonCol * 0.45, groundCol, clamp(-r.y * 2.6, 0.0, 1.0));
+  float groundT = smoothstep(0.06, -0.38, r.y);
+  vec3 envCol = mix(envUp, groundCol, groundT);
   float specExp = mix(240.0, 6.0, roughness * roughness);
   float sunSpec = pow(max(dot(r, l), 0.0), specExp) * (1.0 - roughness * 0.82) * 1.15;
   envCol += lColorLin * sunSpec;
@@ -371,7 +372,7 @@ vec3 evalEnvIBL(vec3 albedoLin, vec3 n, vec3 v, vec3 l, vec3 lColorLin, vec3 sky
   if (cc > 0.001) {
     float fCc = 0.04 + 0.96 * pow(1.0 - ndotv, 5.0);
     float ccSun = pow(max(dot(r, l), 0.0), mix(360.0, 14.0, ccR * ccR)) * (1.0 - ccR * 0.7);
-    vec3 ccEnv = (r.y >= 0.0 ? envUp : groundCol) + lColorLin * ccSun;
+    vec3 ccEnv = mix(envUp, groundCol, groundT) + lColorLin * ccSun;
     outIbl += ccEnv * fCc * cc * mix(0.9, 0.15, ccR);
   }
   return outIbl;
@@ -706,8 +707,8 @@ void main() {
     has('hologramScanline')
       ? `
   float scan = evalHologramScanline(v_worldPos, u_time);
-  color *= scan;
-  alpha *= (0.45 + 0.45 * scan);
+  color = color * 0.25 + albedoLin * (1.28 * scan) + srgbToLin(u_glowColor) * (0.14 * scan);
+  alpha *= (0.58 + 0.42 * scan);
   `
       : ''
   }

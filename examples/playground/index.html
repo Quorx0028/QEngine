@@ -182,6 +182,25 @@
         font-weight: 700;
         margin-bottom: 4px;
       }
+      .interact-prompt {
+        position: fixed;
+        left: 50%;
+        bottom: 64px;
+        transform: translateX(-50%);
+        background: rgba(12, 18, 30, 0.9);
+        border: 1px solid rgba(251, 191, 36, 0.65);
+        color: #fef08a;
+        border-radius: 999px;
+        padding: 7px 16px;
+        font-weight: 600;
+        font-size: 13px;
+        letter-spacing: 0.02em;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+        pointer-events: none;
+        display: none;
+        z-index: 25;
+      }
+      .interact-prompt.visible { display: block; }
     </style>
   </head>
   <body>
@@ -209,6 +228,8 @@
       <div id="dialogue-text"></div>
     </div>
 
+    <div class="interact-prompt" id="interact-prompt"></div>
+
     <aside class="hud-panel" id="hud-panel">
       <div class="row">
         <button id="btn-3d" class="active">3D Arena</button>
@@ -218,7 +239,7 @@
       </div>
 
       <div class="row">
-        <button id="btn-spawn-box">+ Cube (E)</button>
+        <button id="btn-spawn-box">+ Cube (C)</button>
         <button id="btn-spawn-sphere">+ Sphere (Q)</button>
         <button id="btn-drop-ramp">Cube on Ramp (R)</button>
         <select id="sel-phys-mat" title="Spawn Physics Material" style="flex:1">
@@ -241,7 +262,7 @@
       </div>
 
       <div class="hint">
-        <b>3D:</b> WASD бег · Shift спринт · Space прыжок · E/Q/R спавн · <b>F / ЛКМ</b> толкнуть лучом · Drag&Drop <code>.glb</code>.<br>
+        <b>3D:</b> WASD бег · Shift спринт · Space прыжок · <b>E</b> дверь/лампа · <b>L</b> свет · C/Q/R спавн · <b>F / ЛКМ</b> импульс · <b>F2</b> профайлер · Drag&Drop <code>.glb</code>.<br>
         <b>Forest Escape:</b> броди с фонариком (F), убегай от монстра, найди 3 кристалла и добеги до выхода!
       </div>
 

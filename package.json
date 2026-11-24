@@ -5,17 +5,14 @@
   "license": "MIT",
   "workspaces": [
     "packages/*",
-    "examples/*",
-    "editor"
+    "examples/playground"
   ],
   "scripts": {
     "build:wasm": "cargo build --manifest-path crates/quark-core/Cargo.toml --target wasm32-unknown-unknown --release && node scripts/copy-wasm.mjs",
     "test:rust": "cargo test --manifest-path crates/quark-core/Cargo.toml",
-    "test:ts": "npm --workspace packages/quark-engine test && npm --workspace editor test",
+    "test:ts": "npm --workspace packages/quark-engine test",
     "test": "npm run test:rust && npm run build:wasm && npm run test:ts",
-    "build": "npm run build:wasm && npm --workspace packages/quark-engine run build && npm --workspace examples/playground run build && npm --workspace examples/physics-lab run build && npm --workspace editor run build",
-    "dev": "npm --workspace examples/playground run dev",
-    "physics-lab": "npm --workspace examples/physics-lab run dev",
-    "editor": "npm --workspace editor run dev"
+    "build": "npm run build:wasm && npm --workspace packages/quark-engine run build && npm --workspace examples/playground run build",
+    "dev": "npm --workspace examples/playground run dev"
   }
 }

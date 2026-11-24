@@ -127,10 +127,11 @@ export function quatFromEuler(pitch: number, yaw: number, roll = 0): QuatTuple {
   const sp = Math.sin(pitch * 0.5);
   const cr = Math.cos(roll * 0.5);
   const sr = Math.sin(roll * 0.5);
+  // Intrinsic Y(yaw) -> X(pitch) -> Z(roll) order for Y-up 3D transforms
   return [
-    sr * cp * cy - cr * sp * sy,
     cr * sp * cy + sr * cp * sy,
-    cr * cp * sy - sr * sp * cr,
-    cr * cp * cy + sr * sp * sr,
+    cr * cp * sy - sr * sp * cy,
+    sr * cp * cy - cr * sp * sy,
+    cr * cp * cy + sr * sp * sy,
   ];
 }

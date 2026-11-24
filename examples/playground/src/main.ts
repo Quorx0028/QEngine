@@ -1,18 +1,11 @@
 import {
-  createBoxGeometry,
-  createPlaneGeometry,
   createPostProcessPreset,
   createPresetMaterial,
-  createRampGeometry,
-  createSphereGeometry,
   DialogueRunner,
   Engine,
-  extractColliderTriangles,
   POST_PROCESS_PRESET_NAMES,
-  quatFromEuler,
   SHADER_BLOCK_IDS,
   SHADER_PRESET_NAMES,
-  type EntityId,
   type MaterialDesc,
   type PostProcessPresetName,
   type ShaderBlockId,
@@ -20,8 +13,12 @@ import {
   type Vec3Tuple,
 } from 'quark-engine';
 import wasmUrl from 'quark-engine/wasm?url';
+import {
+  buildShowcaseArena,
+  type ArenaController,
+  type SceneMaterialMeta,
+} from './arenaBuilder';
 import { startForestEscapeGame, type ForestGameController } from './forestGame';
-import { buildSampleCrystalGlb } from './sampleGlb';
 
 type MoodName = 'daylight' | 'sunset' | 'cyber' | 'pastel';
 
@@ -78,12 +75,14 @@ async function bootstrap() {
   const dialogueNameEl = document.getElementById('dialogue-name')!;
   const dialogueTextEl = document.getElementById('dialogue-text')!;
   const hudPanel = document.getElementById('hud-panel')!;
+  const interactPromptEl = document.getElementById('interact-prompt')!;
 
   const engine = await Engine.init({ canvas, wasmUrl });
   const { scene, assets, input, audio } = engine;
 
   let mode: '3d' | '2d' | 'forest' = '3d';
   let forestGame: ForestGameController | null = null;
+  let arena: ArenaController | null = null;
   let sfxEnabled = true;
   let player = 0;
   let crystalEntity = 0;
@@ -122,7 +121,13 @@ async function bootstrap() {
   let dialogueActive = false;
   let npcs2d: Array<{ x: number; y: number; startNode: string }> = [];
 
-  const crystalDesc: MaterialDesc = createPresetMaterial('animeToon');
+  const crystalDesc: MaterialDesc = createPresetMaterial('crystalGlass', {
+    uniforms: {
+      baseColor: [0.52, 0.9, 1.0, 0.86],
+      glowColor: [0.32, 0.92, 1.0],
+      rimColor: [0.95, 0.92, 1.0],
+    },
+  });
   const propsDesc: MaterialDesc = createPresetMaterial('ultraRealism', {
     uniforms: { baseColor: [0.92, 0.78, 0.62, 1.0], roughness: 0.42 },
   });
@@ -149,53 +154,12 @@ async function bootstrap() {
     forestGame = null;
     forestHudEl.style.display = 'none';
     forestBannerEl.style.display = 'none';
+    interactPromptEl.classList.remove('visible');
     assets.unloadTag('scene-fx');
+    assets.unloadTag('scene-holo');
   }
 
-  const sceneMaterialMeta = new Map<
-    number,
-    { baseColor: [number, number, number, number]; textureId?: number; keepGrid?: boolean }
-  >();
-
-  function makeStoneTileTexture(): number {
-    const size = 128;
-    const px = new Uint8Array(size * size * 4);
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const i = (y * size + x) * 4;
-        const grout = x < 3 || y < 3 || (x >= 63 && x < 66) || (y >= 63 && y < 66);
-        const hash = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
-        const n = (hash - Math.floor(hash)) * 22 - 11;
-        const base = grout ? 68 : 168 + n;
-        px[i] = Math.max(20, Math.min(255, base));
-        px[i + 1] = Math.max(20, Math.min(255, base + 4));
-        px[i + 2] = Math.max(20, Math.min(255, base + 10));
-        px[i + 3] = 255;
-      }
-    }
-    return assets.createTexture('stone-tile', size, size, px, false, 'scene');
-  }
-
-  function makeCrateWoodTexture(): number {
-    const size = 128;
-    const px = new Uint8Array(size * size * 4);
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const i = (y * size + x) * 4;
-        const frame = x < 10 || x >= size - 10 || y < 10 || y >= size - 10;
-        const diag = Math.abs(x - y) < 7;
-        const plank = y % 24 < 2;
-        const hash = Math.sin(x * 4.1 + y * 29.7) * 43758.5453;
-        const grain = ((hash - Math.floor(hash)) - 0.5) * 18;
-        const lum = frame || diag ? 148 + grain : plank ? 115 : 196 + grain;
-        px[i] = Math.max(20, Math.min(255, lum));
-        px[i + 1] = Math.max(20, Math.min(255, lum * 0.84));
-        px[i + 2] = Math.max(20, Math.min(255, lum * 0.62));
-        px[i + 3] = 255;
-      }
-    }
-    return assets.createTexture('crate-wood', size, size, px, false, 'scene');
-  }
+  const sceneMaterialMeta = new Map<number, SceneMaterialMeta>();
 
   function build3DArena() {
     hideForestUi();
@@ -206,253 +170,28 @@ async function bootstrap() {
     dialogueBox.classList.remove('visible');
     crosshairEl.style.display = 'block';
     mode = '3d';
-    scene.camera.mode = '3d';
-    scene.camera.pixelSnap = false;
-    scene.fogDensity = 0.008;
-    scene.light.intensity = 1.35;
-    scene.setGravity(0, -22, 0);
     applyMood((document.getElementById('sel-mood') as HTMLSelectElement).value as MoodName);
 
-    scene.pointLights.length = 0;
-    scene.pointLights.push(
-      { position: [0, 2.6, -3], color: [0.35, 0.85, 1.0], intensity: 2.2, radius: 11 },
-      { position: [-7.5, 2.2, 2.5], color: [1.0, 0.58, 0.25], intensity: 1.9, radius: 10 }
-    );
-
-    const floorTex = makeStoneTileTexture();
-    const crateTex = makeCrateWoodTexture();
-
-    const floorMesh = assets.registerMesh('floor', createPlaneGeometry(56, 56, 28), 'scene');
-    const boxMesh = assets.registerMesh('box', createBoxGeometry(0.5, 0.5, 0.5), 'scene');
-    const sphereMesh = assets.registerMesh('sphere', createSphereGeometry(0.55, 18, 24), 'scene');
-    const rampGentleGeom = createRampGeometry(4.0, 2.0, 7.0);
-    const rampGentleMesh = assets.registerMesh('ramp-gentle', rampGentleGeom, 'scene');
-    const rampSteepGeom = createRampGeometry(4.2, 3.0, 5.2);
-    const rampSteepMesh = assets.registerMesh('ramp-steep', rampSteepGeom, 'scene');
-
-    const floorMat = assets.createMaterial(
-      'floor-grid',
-      {
-        blocks: ['pbrLighting', 'envIBL', 'microDetail', 'triplanarGrid', 'distanceFog'],
-        uniforms: {
-          ...createPresetMaterial('ultraRealism').uniforms,
-          baseColor: [0.42, 0.46, 0.54, 1],
-          roughness: 0.42,
-          metallic: 0.08,
-          gridScale: 1.0,
-        },
-        textureId: floorTex,
-      },
-      'scene'
-    );
-    sceneMaterialMeta.set(floorMat, {
-      baseColor: [0.42, 0.46, 0.54, 1],
-      textureId: floorTex,
-      keepGrid: true,
+    arena = buildShowcaseArena({
+      scene,
+      assets,
+      bridge: engine.bridge,
+      crystalDesc,
+      propsDesc,
+      sceneMaterialMeta,
+      playSfx,
     });
-
-    const wallMat = assets.createPreset(
-      'wall-pbr',
-      'ultraRealism',
-      {
-        uniforms: { baseColor: [0.46, 0.52, 0.62, 1], roughness: 0.52 },
-        textureId: floorTex,
-      },
-      'scene'
-    );
-    sceneMaterialMeta.set(wallMat, { baseColor: [0.46, 0.52, 0.62, 1], textureId: floorTex });
-
-    const rampMat = assets.createPreset(
-      'ramp-toon',
-      'ultraRealism',
-      {
-        uniforms: { baseColor: [0.76, 0.56, 0.38, 1], roughness: 0.45 },
-        textureId: crateTex,
-      },
-      'scene'
-    );
-    sceneMaterialMeta.set(rampMat, { baseColor: [0.76, 0.56, 0.38, 1], textureId: crateTex });
-
-    crystalMatId = assets.createMaterial('showcase-crystal', crystalDesc, 'scene');
-    sceneMaterialMeta.set(crystalMatId, { baseColor: [...crystalDesc.uniforms.baseColor] });
-
-    propsDesc.textureId = crateTex;
-    propsMatId = assets.createMaterial('showcase-props', propsDesc, 'scene');
-    sceneMaterialMeta.set(propsMatId, { baseColor: [0.92, 0.78, 0.62, 1], textureId: crateTex });
-
-    // Ground collider + floor mesh
-    const floor = scene.createEntity();
-    scene.setTransform(floor, { position: [0, -0.5, 0], immediate: true });
-    scene.setCollider3D(floor, { kind: 'aabb', halfExtents: [28, 0.5, 28] });
-
-    const floorVis = scene.createEntity();
-    scene.setTransform(floorVis, { position: [0, 0, 0], immediate: true });
-    scene.setMesh3D(floorVis, { meshId: floorMesh.meshId, materialId: floorMat, boundsRadius: 48 });
-
-    // Arena walls & raised platform
-    const staticBoxes: Array<{ pos: Vec3Tuple; scale: Vec3Tuple }> = [
-      { pos: [0, 1.5, -20], scale: [40, 3, 1] },
-      { pos: [0, 1.5, 20], scale: [40, 3, 1] },
-      { pos: [-20, 1.5, 0], scale: [1, 3, 40] },
-      { pos: [20, 1.5, 0], scale: [1, 3, 40] },
-      { pos: [8, 1.0, -3.5], scale: [4.2, 2.0, 4.0] }, // upper platform after gentle ramp
-      { pos: [-7.5, 1.5, -2.5], scale: [4.4, 3.0, 4.0] }, // upper platform after steep ramp
-      { pos: [0, 0.5, -3], scale: [2.2, 1.0, 2.2] }, // crystal pedestal
-    ];
-    for (const w of staticBoxes) {
-      const e = scene.createEntity();
-      scene.setTransform(e, { position: w.pos, scale: w.scale, immediate: true });
-      scene.setCollider3D(e, {
-        kind: 'aabb',
-        halfExtents: [w.scale[0] * 0.5, w.scale[1] * 0.5, w.scale[2] * 0.5],
-      });
-      scene.setMesh3D(e, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 24 });
-    }
-
-    // Gentle walkable ramp (right)
-    const ramp1 = scene.createEntity();
-    scene.setTransform(ramp1, { position: [8, 0, 2], immediate: true });
-    scene.setMesh3D(ramp1, { meshId: rampGentleMesh.meshId, materialId: rampMat, boundsRadius: 6 });
-    scene.addStaticMeshTriangles(ramp1, extractColliderTriangles(rampGentleGeom, [8, 0, 2]));
-
-    // Steep physics ramp (left) — drop cubes here to watch tilting + friction!
-    const ramp2 = scene.createEntity();
-    scene.setTransform(ramp2, { position: [-7.5, 0, 2.1], immediate: true });
-    scene.setMesh3D(ramp2, { meshId: rampSteepMesh.meshId, materialId: rampMat, boundsRadius: 6 });
-    scene.addStaticMeshTriangles(ramp2, extractColliderTriangles(rampSteepGeom, [-7.5, 0, 2.1]));
-
-    // Stackable physics cube pyramid + 4-cube vertical tower (rests cleanly without jitter!)
-    const crateRows = [3, 2, 1];
-    crateRows.forEach((count, row) => {
-      for (let col = 0; col < count; col++) {
-        const x = 2.6 + (col - (count - 1) * 0.5) * 1.04;
-        const y = 0.501 + row * 1.005;
-        const z = -7.5;
-        const c = scene.createEntity();
-        scene.setTransform(c, { position: [x, y, z], immediate: true });
-        scene.setCollider3D(c, { kind: 'aabb', halfExtents: [0.5, 0.5, 0.5] });
-        scene.setRigidBody(c, {
-          dynamic: true,
-          mass: 1.5,
-          friction: 0.78,
-          restitution: 0.12,
-          linearDamping: 0.12,
-          angularDamping: 0.35,
-          lockRotation: false,
-        });
-        scene.setMesh3D(c, { meshId: boxMesh.meshId, materialId: propsMatId, boundsRadius: 1.2 });
-      }
-    });
-    for (let row = 0; row < 4; row++) {
-      const c = scene.createEntity();
-      scene.setTransform(c, { position: [6.0, 0.501 + row * 1.005, -7.5], immediate: true });
-      scene.setCollider3D(c, { kind: 'aabb', halfExtents: [0.5, 0.5, 0.5] });
-      scene.setRigidBody(c, {
-        dynamic: true,
-        mass: row === 0 ? 4.0 : 1.0,
-        friction: 0.8,
-        restitution: 0.08,
-        linearDamping: 0.12,
-        angularDamping: 0.35,
-        lockRotation: false,
-      });
-      scene.setMesh3D(c, { meshId: boxMesh.meshId, materialId: propsMatId, boundsRadius: 1.2 });
-    }
-
-    // Showcase row of all 6 built-in presets
-    SHADER_PRESET_NAMES.forEach((presetName, idx) => {
-      const mId = assets.createPreset(`gallery-${presetName}`, presetName, {}, 'scene');
-      const e = scene.createEntity();
-      const x = -10 + idx * 4;
-      scene.setTransform(e, { position: [x, 1.4, -15], scale: [1.3, 1.3, 1.3], immediate: true });
-      scene.setMesh3D(e, {
-        meshId: idx % 2 === 0 ? sphereMesh.meshId : boxMesh.meshId,
-        materialId: mId,
-        transparent: presetName === 'hologram',
-        boundsRadius: 2,
-      });
-    });
-
-    // Central crystal loaded via Rust GLB parser
-    const crystalBytes = buildSampleCrystalGlb();
-    const crystalHandle = assets.registerMesh(
-      'sample-crystal',
-      engine.bridge.parseGlb(crystalBytes),
-      'scene'
-    );
-    crystalEntity = scene.createEntity();
-    scene.setTransform(crystalEntity, { position: [0, 2.8, -3], immediate: true });
-    scene.setMesh3D(crystalEntity, {
-      meshId: crystalHandle.meshId,
-      materialId: crystalMatId,
-      transparent: crystalDesc.transparent,
-      boundsRadius: 3,
-    });
-
-    // Player capsule + CharacterController (stair auto-step + moving platforms!)
-    player = scene.createEntity();
-    scene.setTransform(player, { position: [0, 1.3, 8], immediate: true });
-    scene.setCollider3D(player, { kind: 'capsule', radius: 0.42, halfHeight: 0.55 });
-    scene.setRigidBody(player, {
-      dynamic: true,
-      gravityScale: 1,
-      friction: 0,
-      linearDamping: 0,
-      lockRotation: true,
-    });
-    scene.setCharacterController(player, { stepHeight: 0.5, maxSlopeDeg: 50 });
+    player = arena.player;
+    crystalEntity = arena.crystalEntity;
+    crystalMatId = arena.crystalMatId;
+    propsMatId = arena.propsMatId;
     yaw = 0;
-    pitch = -0.15;
-
-    // 5-step staircase to test CharacterController automatic stair step-up
-    for (let s = 0; s < 5; s++) {
-      const h = (s + 1) * 0.3;
-      const stepE = scene.createEntity();
-      scene.setTransform(stepE, { position: [-6.5, h * 0.5, -1 - s * 0.9], scale: [3.2, h, 0.9], immediate: true });
-      scene.setCollider3D(stepE, { kind: 'aabb', halfExtents: [1.6, h * 0.5, 0.45] });
-      scene.setMesh3D(stepE, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.5 });
-    }
-
-    // Swinging HingeJoint physics door tucked cleanly on the right side
-    const doorPost = scene.createEntity();
-    scene.setTransform(doorPost, { position: [10.0, 1.4, -2.0], scale: [0.35, 2.8, 0.35], immediate: true });
-    scene.setCollider3D(doorPost, { kind: 'aabb', halfExtents: [0.175, 1.4, 0.175] });
-    scene.setMesh3D(doorPost, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
-
-    const swingDoor = scene.createEntity();
-    scene.setTransform(swingDoor, { position: [11.2, 1.4, -2.0], scale: [1.8, 2.4, 0.16], immediate: true });
-    scene.setCollider3D(swingDoor, { kind: 'aabb', halfExtents: [0.9, 1.2, 0.08] });
-    scene.setRigidBody(swingDoor, { dynamic: true, gravityScale: 0, mass: 2.5, angularDamping: 0.85, linearDamping: 0.5 });
-    scene.setMesh3D(swingDoor, { meshId: boxMesh.meshId, materialId: wallMat, boundsRadius: 2.0 });
-    scene.addHingeJoint(doorPost, swingDoor, {
-      anchorA: [0.24, 0, 0],
-      anchorB: [-0.96, 0, 0],
-      axis: [0, 1, 0],
-      minAngle: -1.48,
-      maxAngle: 1.48,
-    });
-
-    // Glowing Hologram Jump-Pad Trigger Zone (uses Milestone 1 WASM TriggerEnter event!)
-    const padMat = assets.createPreset('jump-pad', 'hologram', {
-      uniforms: { glowColor: [0.2, 1.0, 0.75], baseColor: [0.1, 0.9, 0.65, 0.65] },
-    }, 'scene-fx');
-    const jumpPad = scene.createEntity();
-    scene.setTransform(jumpPad, { position: [4, 0.12, 5], scale: [2.2, 0.2, 2.2], immediate: true });
-    scene.setCollider3D(jumpPad, { kind: 'aabb', halfExtents: [1.1, 0.55, 1.1] });
-    scene.setTrigger(jumpPad, true);
-    scene.setMesh3D(jumpPad, { meshId: boxMesh.meshId, materialId: padMat, transparent: true, boundsRadius: 2 });
-
-    scene.onTriggerEnter((ev) => {
-      if (ev.entityA === jumpPad || ev.entityB === jumpPad) {
-        const other = ev.entityA === jumpPad ? ev.entityB : ev.entityA;
-        scene.applyImpulse(other, [0, 14.5, 0]);
-        scene.triggerShake(0.06, 0.12);
-        playSfx(660, 0.14, 'sine', 0.14);
-      }
-    });
+    pitch = -0.14;
+    wasGrounded = true;
   }
 
   function build2DOMORIStyleScene() {
+    arena = null;
     hideForestUi();
     scene.clear();
     assets.unloadTag('scene');
@@ -832,11 +571,14 @@ async function bootstrap() {
   const btnForest = document.getElementById('btn-forest')!;
 
   function startForestMode() {
+    arena = null;
     btnForest.classList.add('active');
     btn3d.classList.remove('active');
     btn2d.classList.remove('active');
     dialogueActive = false;
     dialogueBox.classList.remove('visible');
+    interactPromptEl.classList.remove('visible');
+    scene.spotLights.length = 0;
     crosshairEl.style.display = 'block';
     mode = 'forest';
     forestGame = startForestEscapeGame(
@@ -949,6 +691,7 @@ async function bootstrap() {
       }
       wasGrounded = grounded;
       scene.setVelocity(player, vx, nextVy, vz);
+      arena?.fixedUpdate(fixedDt);
     } else {
       let mx = 0;
       let my = 0;
@@ -969,9 +712,11 @@ async function bootstrap() {
     if (mode === 'forest' && forestGame) {
       forestGame.update(dt);
     } else if (mode === '3d') {
-      if (input.wasKeyPressed('KeyE')) spawnDynamicBody('box');
+      if (input.wasKeyPressed('KeyC')) spawnDynamicBody('box');
       if (input.wasKeyPressed('KeyQ')) spawnDynamicBody('sphere');
       if (input.wasKeyPressed('KeyR')) spawnDynamicBody('box', true);
+      if (input.wasKeyPressed('KeyE')) arena?.tryInteract();
+      if (input.wasKeyPressed('KeyL')) arena?.toggleRoomLight();
       if (input.wasKeyPressed('KeyF')) fireRaycastImpulse();
 
       const [dx, dy] = input.consumeMouseDelta();
@@ -987,11 +732,13 @@ async function bootstrap() {
         pz - Math.cos(yaw) * Math.cos(pitch),
       ];
 
-      if (crystalEntity) {
-        scene.setTransform(crystalEntity, {
-          position: [0, 2.8 + Math.sin(spinTime * 2) * 0.25, -3],
-          rotation: quatFromEuler(0, spinTime * 0.9, 0),
-        });
+      arena?.update(dt, spinTime);
+      const prompt = arena?.getInteractPrompt() ?? null;
+      if (prompt) {
+        interactPromptEl.textContent = prompt;
+        interactPromptEl.classList.add('visible');
+      } else {
+        interactPromptEl.classList.remove('visible');
       }
     } else {
       const [hx, hy] = scene.getPosition(hero2d);
@@ -1043,7 +790,8 @@ async function bootstrap() {
       `<b>QuarkEngine</b> (${forestGame ? forestGame.getModeLabel() : mode.toUpperCase()})<br>` +
       `FPS: <b>${st.fps}</b> (${st.frameMs} ms)<br>` +
       `Entities: <b>${st.entities}</b> | Draws: <b>${st.drawCalls}</b><br>` +
-      `WASM RAM: <b>${Math.round(st.wasmMemoryBytes / 1024)} KB</b>`;
+      `Instanced: <b>${st.render.instancedObjects}</b> objs (${st.render.instancedRuns} batches)<br>` +
+      `WASM RAM: <b>${Math.round(st.wasmMemoryBytes / 1024)} KB</b> · F2 Profiler`;
   });
 
   scene.postProcess = createPostProcessPreset(activePpPreset);

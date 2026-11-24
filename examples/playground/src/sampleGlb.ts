@@ -1,20 +1,57 @@
-/** Builds an in-memory binary GLB octahedron crystal to exercise the Rust glTF/GLB parser out of the box. */
+/** Builds an in-memory binary GLB faceted quartz/gemstone crystal with verified outward CCW winding. */
 export function buildSampleCrystalGlb(): Uint8Array {
-  const top: [number, number, number] = [0, 1.6, 0];
-  const bot: [number, number, number] = [0, -1.6, 0];
-  const ring: Array<[number, number, number]> = [
-    [1.0, 0, 0],
-    [0, 0, 1.0],
-    [-1.0, 0, 0],
-    [0, 0, -1.0],
-  ];
+  const sides = 8;
+  const top: [number, number, number] = [0, 1.38, 0];
+  const bot: [number, number, number] = [0, -1.38, 0];
+  const crown: Array<[number, number, number]> = [];
+  const girdle: Array<[number, number, number]> = [];
+  const lower: Array<[number, number, number]> = [];
+
+  for (let i = 0; i < sides; i++) {
+    const a = (i / sides) * Math.PI * 2;
+    const b = ((i + 0.5) / sides) * Math.PI * 2;
+    crown.push([Math.cos(a) * 0.56, 0.72, Math.sin(a) * 0.56]);
+    girdle.push([Math.cos(b) * 0.88, 0.08, Math.sin(b) * 0.88]);
+    lower.push([Math.cos(a) * 0.54, -0.62, Math.sin(a) * 0.54]);
+  }
 
   const pos: number[] = [];
-  for (let i = 0; i < 4; i++) {
-    const a = ring[i];
-    const b = ring[(i + 1) % 4];
-    pos.push(...top, ...b, ...a);
-    pos.push(...bot, ...a, ...b);
+  const pushOutwardTri = (
+    p1: [number, number, number],
+    p2: [number, number, number],
+    p3: [number, number, number]
+  ) => {
+    const ux = p2[0] - p1[0];
+    const uy = p2[1] - p1[1];
+    const uz = p2[2] - p1[2];
+    const vx = p3[0] - p1[0];
+    const vy = p3[1] - p1[1];
+    const vz = p3[2] - p1[2];
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const cx = (p1[0] + p2[0] + p3[0]) / 3;
+    const cy = (p1[1] + p2[1] + p3[1]) / 3;
+    const cz = (p1[2] + p2[2] + p3[2]) / 3;
+    if (nx * cx + ny * cy + nz * cz >= 0) {
+      pos.push(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2], p3[0], p3[1], p3[2]);
+    } else {
+      pos.push(p1[0], p1[1], p1[2], p3[0], p3[1], p3[2], p2[0], p2[1], p2[2]);
+    }
+  };
+
+  for (let i = 0; i < sides; i++) {
+    const next = (i + 1) % sides;
+    // Upper crown pyramid
+    pushOutwardTri(top, crown[i], crown[next]);
+    // Crown-to-girdle facets (quad split cleanly along crown[next] - girdle[i])
+    pushOutwardTri(crown[i], girdle[i], crown[next]);
+    pushOutwardTri(crown[next], girdle[i], girdle[next]);
+    // Girdle-to-lower pavilion facets
+    pushOutwardTri(girdle[i], lower[i], lower[next]);
+    pushOutwardTri(girdle[i], lower[next], girdle[next]);
+    // Lower point
+    pushOutwardTri(bot, lower[next], lower[i]);
   }
 
   const bin = new Uint8Array(pos.length * 4);
@@ -31,16 +68,16 @@ export function buildSampleCrystalGlb(): Uint8Array {
         componentType: 5126,
         count: pos.length / 3,
         type: 'VEC3',
-        min: [-1, -1.6, -1],
-        max: [1, 1.6, 1],
+        min: [-0.9, -1.4, -0.9],
+        max: [0.9, 1.4, 0.9],
       },
     ],
     materials: [
       {
         pbrMetallicRoughness: {
-          baseColorFactor: [0.38, 0.84, 1.0, 1.0],
-          metallicFactor: 0.35,
-          roughnessFactor: 0.2,
+          baseColorFactor: [0.42, 0.88, 1.0, 1.0],
+          metallicFactor: 0.45,
+          roughnessFactor: 0.14,
         },
       },
     ],
