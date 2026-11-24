@@ -3,6 +3,7 @@ import {
   createPresetMaterial,
   DialogueRunner,
   Engine,
+  OrbitControls,
   POST_PROCESS_PRESET_NAMES,
   SHADER_BLOCK_IDS,
   SHADER_PRESET_NAMES,
@@ -81,6 +82,9 @@ async function bootstrap() {
   const { scene, assets, input, audio } = engine;
 
   let mode: '3d' | '2d' | 'forest' = '3d';
+  let cameraMode: 'fps' | 'orbit' = 'fps';
+  const orbit = new OrbitControls({ target: [0, 2.7, -3], radius: 7.5, phi: 1.15, autoRotate: true });
+  orbit.enabled = false;
   let forestGame: ForestGameController | null = null;
   let arena: ArenaController | null = null;
   let sfxEnabled = true;
@@ -572,6 +576,8 @@ async function bootstrap() {
 
   function startForestMode() {
     arena = null;
+    orbit.enabled = false;
+    orbit.detach();
     btnForest.classList.add('active');
     btn3d.classList.remove('active');
     btn2d.classList.remove('active');
@@ -606,12 +612,118 @@ async function bootstrap() {
     build3DArena();
   };
   btn2d.onclick = () => {
+    orbit.enabled = false;
+    orbit.detach();
     btn2d.classList.add('active');
     btn3d.classList.remove('active');
     btnForest.classList.remove('active');
     build2DOMORIStyleScene();
   };
   btnForest.onclick = startForestMode;
+
+  const btnCamFps = document.getElementById('btn-cam-fps')!;
+  const btnCamOrbit = document.getElementById('btn-cam-orbit')!;
+  const selOrbitTarget = document.getElementById('sel-orbit-target') as HTMLSelectElement;
+  const chkOrbitAuto = document.getElementById('chk-orbit-auto') as HTMLInputElement;
+
+  function focusOrbitPreset(key: string) {
+    if (!arena) return;
+    if (key === 'water') {
+      const [wx, wy, wz] = arena.waterCenter;
+      orbit.setView([wx, wy + 0.8, wz], 7.8, -0.75, 1.08);
+    } else if (key === 'room') {
+      const [rx, ry, rz] = arena.roomCenter;
+      orbit.setView([rx + 1.2, ry + 1.6, rz], 9.2, 1.4, 1.15);
+    } else if (key === 'arena') {
+      orbit.setView([0, 1.5, -2.5], 24.0, 0.35, 1.02);
+    } else {
+      orbit.setView([0, 2.7, -3.0], 6.4, 0.25, 1.18);
+    }
+  }
+
+  function setCameraMode(next: 'fps' | 'orbit') {
+    cameraMode = next;
+    btnCamFps.classList.toggle('active', next === 'fps');
+    btnCamOrbit.classList.toggle('active', next === 'orbit');
+    if (next === 'orbit') {
+      if (document.pointerLockElement) document.exitPointerLock();
+      crosshairEl.style.display = 'none';
+      orbit.attach(canvas);
+      orbit.enabled = true;
+      focusOrbitPreset(selOrbitTarget.value);
+    } else {
+      orbit.enabled = false;
+      orbit.detach();
+      if (mode === '3d') crosshairEl.style.display = 'block';
+    }
+  }
+
+  btnCamFps.onclick = () => setCameraMode('fps');
+  btnCamOrbit.onclick = () => setCameraMode('orbit');
+  selOrbitTarget.onchange = () => {
+    if (cameraMode === 'orbit') focusOrbitPreset(selOrbitTarget.value);
+  };
+  chkOrbitAuto.onchange = () => {
+    orbit.autoRotate = chkOrbitAuto.checked;
+  };
+
+  // Water 2.0 customization controls
+  const btnWReal = document.getElementById('btn-water-realistic')!;
+  const btnWAnime = document.getElementById('btn-water-anime')!;
+  const btnWCyber = document.getElementById('btn-water-cyber')!;
+  const slWStyle = document.getElementById('sl-w-style') as HTMLInputElement;
+  const slWAmp = document.getElementById('sl-w-amp') as HTMLInputElement;
+  const slWChop = document.getElementById('sl-w-chop') as HTMLInputElement;
+  const slWFoam = document.getElementById('sl-w-foam') as HTMLInputElement;
+  const slWClarity = document.getElementById('sl-w-clarity') as HTMLInputElement;
+
+  function syncWaterUi() {
+    if (!arena) return;
+    const u = arena.waterDesc.uniforms;
+    const st = u.waterStyle ?? 0;
+    const chop = u.waterChoppiness ?? 0.62;
+    const foam = u.waterFoam ?? 0.65;
+    const clarity = u.waterClarity ?? 0.66;
+    slWStyle.value = String(st);
+    document.getElementById('val-w-style')!.textContent = st.toFixed(2);
+    slWAmp.value = String(u.waveAmp);
+    document.getElementById('val-w-amp')!.textContent = u.waveAmp.toFixed(2);
+    slWChop.value = String(chop);
+    document.getElementById('val-w-chop')!.textContent = chop.toFixed(2);
+    slWFoam.value = String(foam);
+    document.getElementById('val-w-foam')!.textContent = foam.toFixed(2);
+    slWClarity.value = String(clarity);
+    document.getElementById('val-w-clarity')!.textContent = clarity.toFixed(2);
+  }
+
+  const pickWaterPreset = (name: 'realistic' | 'anime' | 'cyber') => {
+    arena?.setWaterPreset(name);
+    btnWReal.classList.toggle('active', name === 'realistic');
+    btnWAnime.classList.toggle('active', name === 'anime');
+    btnWCyber.classList.toggle('active', name === 'cyber');
+    syncWaterUi();
+  };
+  btnWReal.onclick = () => pickWaterPreset('realistic');
+  btnWAnime.onclick = () => pickWaterPreset('anime');
+  btnWCyber.onclick = () => pickWaterPreset('cyber');
+
+  const bindWaterSlider = (
+    sl: HTMLInputElement,
+    valId: string,
+    apply: (v: number) => Record<string, number>
+  ) => {
+    sl.oninput = () => {
+      const v = Number(sl.value);
+      document.getElementById(valId)!.textContent = v.toFixed(2);
+      arena?.updateWaterUniforms(apply(v));
+    };
+  };
+  bindWaterSlider(slWStyle, 'val-w-style', (v) => ({ waterStyle: v }));
+  bindWaterSlider(slWAmp, 'val-w-amp', (v) => ({ waveAmp: v }));
+  bindWaterSlider(slWChop, 'val-w-chop', (v) => ({ waterChoppiness: v }));
+  bindWaterSlider(slWFoam, 'val-w-foam', (v) => ({ waterFoam: v }));
+  bindWaterSlider(slWClarity, 'val-w-clarity', (v) => ({ waterClarity: v }));
+
   document.getElementById('btn-spawn-box')!.onclick = () => spawnDynamicBody('box');
   document.getElementById('btn-spawn-sphere')!.onclick = () => spawnDynamicBody('sphere');
   document.getElementById('btn-drop-ramp')!.onclick = () => spawnDynamicBody('box', true);
@@ -622,6 +734,7 @@ async function bootstrap() {
   };
 
   canvas.addEventListener('click', () => {
+    if (mode === '3d' && cameraMode === 'orbit') return;
     if (mode === '3d' || mode === 'forest') {
       if (!input.isPointerLocked()) input.requestPointerLock();
       else if (mode === '3d') fireRaycastImpulse();
@@ -656,6 +769,10 @@ async function bootstrap() {
     const clipNames = Object.keys(handle.clips);
     if (handle.skeletonId !== null && clipNames.length > 0) {
       scene.playAnimation(eId, handle.skeletonId, handle.clips[clipNames[0]], { loop: true });
+    }
+    if (cameraMode === 'orbit') {
+      const glbPos = scene.getPosition(eId);
+      orbit.setView(glbPos, Math.max(4, handle.boundsRadius * 2.5));
     }
   });
 
@@ -720,17 +837,21 @@ async function bootstrap() {
       if (input.wasKeyPressed('KeyF')) fireRaycastImpulse();
 
       const [dx, dy] = input.consumeMouseDelta();
-      yaw -= dx * 0.0024;
-      pitch = Math.max(-1.25, Math.min(1.1, pitch - dy * 0.0022));
+      if (cameraMode === 'orbit') {
+        orbit.update(dt, scene.camera);
+      } else {
+        yaw -= dx * 0.0024;
+        pitch = Math.max(-1.25, Math.min(1.1, pitch - dy * 0.0022));
 
-      const [px, py, pz] = scene.getPosition(player);
-      const eyeY = py + 0.65;
-      scene.camera.position = [px, eyeY, pz];
-      scene.camera.target = [
-        px - Math.sin(yaw) * Math.cos(pitch),
-        eyeY + Math.sin(pitch),
-        pz - Math.cos(yaw) * Math.cos(pitch),
-      ];
+        const [px, py, pz] = scene.getPosition(player);
+        const eyeY = py + 0.65;
+        scene.camera.position = [px, eyeY, pz];
+        scene.camera.target = [
+          px - Math.sin(yaw) * Math.cos(pitch),
+          eyeY + Math.sin(pitch),
+          pz - Math.cos(yaw) * Math.cos(pitch),
+        ];
+      }
 
       arena?.update(dt, spinTime);
       const prompt = arena?.getInteractPrompt() ?? null;

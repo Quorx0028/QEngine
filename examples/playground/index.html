@@ -263,7 +263,48 @@
 
       <div class="hint">
         <b>3D:</b> WASD бег · Shift спринт · Space прыжок · <b>E</b> дверь/лампа · <b>L</b> свет · C/Q/R спавн · <b>F / ЛКМ</b> импульс · <b>F2</b> профайлер · Drag&Drop <code>.glb</code>.<br>
-        <b>Forest Escape:</b> броди с фонариком (F), убегай от монстра, найди 3 кристалла и добеги до выхода!
+        <b>Orbit 3D:</b> ЛКМ вращать · ПКМ / Shift двигать · Колесо зум (универсально для 3D-витрин).
+      </div>
+
+      <div class="section-title">Камера / 3D Viewer (OrbitControls)</div>
+      <div class="row">
+        <button id="btn-cam-fps" class="active">FPS Прогулка</button>
+        <button id="btn-cam-orbit">Orbit 3D Превью</button>
+      </div>
+      <div class="row">
+        <select id="sel-orbit-target" style="flex:1">
+          <option value="crystal">Фокус: Кристалл / .GLB</option>
+          <option value="water">Фокус: Бассейн (Вода 2.0)</option>
+          <option value="room">Фокус: Тёмная комната</option>
+          <option value="arena">Фокус: Вся арена</option>
+        </select>
+        <label class="chk"><input type="checkbox" id="chk-orbit-auto" checked /> Auto</label>
+      </div>
+
+      <div class="section-title">Вода 2.0 (Gerstner + Аниме / Реализм)</div>
+      <div class="row">
+        <button id="btn-water-realistic" class="active">Realistic</button>
+        <button id="btn-water-anime">Anime</button>
+        <button id="btn-water-cyber">Cyber</button>
+      </div>
+      <div class="row">
+        <label class="slider" style="flex:1">Стиль (Real ↔ Anime): <span id="val-w-style">0.00</span>
+          <input id="sl-w-style" type="range" min="0" max="1" step="0.05" value="0" />
+        </label>
+        <label class="slider" style="flex:1">Волны: <span id="val-w-amp">0.08</span>
+          <input id="sl-w-amp" type="range" min="0" max="0.16" step="0.005" value="0.075" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="slider" style="flex:1">Крутизна: <span id="val-w-chop">0.62</span>
+          <input id="sl-w-chop" type="range" min="0" max="1.1" step="0.04" value="0.62" />
+        </label>
+        <label class="slider" style="flex:1">Пена: <span id="val-w-foam">0.65</span>
+          <input id="sl-w-foam" type="range" min="0" max="1.2" step="0.05" value="0.65" />
+        </label>
+        <label class="slider" style="flex:1">Прозр.: <span id="val-w-clarity">0.66</span>
+          <input id="sl-w-clarity" type="range" min="0" max="1" step="0.05" value="0.66" />
+        </label>
       </div>
 
       <div class="section-title">Глобальный шейдер (весь экран)</div>

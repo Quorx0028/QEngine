@@ -22,7 +22,8 @@ export type ShaderBlockId =
   | 'microDetail'
   | 'clearcoat'
   | 'subsurfaceWrap'
-  | 'terrainSplat';
+  | 'terrainSplat'
+  | 'waterSurface';
 
 export interface MeshSubmesh {
   indexOffset: number;
@@ -63,6 +64,10 @@ export interface MaterialUniforms {
   clearcoatRoughness?: number;
   subsurface?: number;
   bumpScale?: number;
+  waterStyle?: number;
+  waterFoam?: number;
+  waterChoppiness?: number;
+  waterClarity?: number;
 }
 
 export interface MaterialDesc {

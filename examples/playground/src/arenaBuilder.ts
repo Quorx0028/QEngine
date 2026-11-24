@@ -43,6 +43,12 @@ export interface ArenaController {
   crystalMatId: number;
   propsMatId: number;
   crateTexId: number;
+  waterMatId: number;
+  waterDesc: MaterialDesc;
+  waterCenter: Vec3Tuple;
+  roomCenter: Vec3Tuple;
+  setWaterPreset: (preset: 'realistic' | 'anime' | 'cyber') => void;
+  updateWaterUniforms: (patch: Partial<MaterialDesc['uniforms']>) => void;
   getInteractPrompt: () => string | null;
   tryInteract: () => void;
   toggleRoomLight: () => void;
@@ -102,7 +108,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const crateTex = makeCrateWoodTexture(assets);
 
   const floorMesh = assets.registerMesh('floor', createPlaneGeometry(56, 56, 28), 'scene');
-  const waterMesh = assets.registerMesh('water-surface', createPlaneGeometry(6.3, 6.3, 28), 'scene');
+  const waterMesh = assets.registerMesh('water-surface', createPlaneGeometry(6.52, 6.52, 44), 'scene');
   const boxMesh = assets.registerMesh('box', createBoxGeometry(0.5, 0.5, 0.5), 'scene');
   const sphereMesh = assets.registerMesh('sphere', createSphereGeometry(0.55, 18, 24), 'scene');
   const cylMesh = assets.registerMesh('cyl', createCylinderGeometry(0.45, 0.9, 20), 'scene');
@@ -361,24 +367,8 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   addStaticBox([waterCenter[0] - 3.6, 0.22, waterCenter[2]], [0.9, 0.44, 1.9], wallMat);
   addStaticBox([waterCenter[0] - 2.9, 0.35, waterCenter[2]], [0.7, 0.7, 1.9], wallMat);
 
-  const waterSurfaceMat = assets.createMaterial(
-    'water-surface-mat',
-    {
-      blocks: ['pbrLighting', 'vertexWave', 'voronoiCaustics', 'glassRefract', 'fresnelGlow', 'distanceFog'],
-      uniforms: {
-        ...createPresetMaterial('waveSurface').uniforms,
-        baseColor: [0.08, 0.56, 0.78, 0.62],
-        glowColor: [0.45, 0.95, 1.0],
-        roughness: 0.08,
-        waveAmp: 0.06,
-        waveFreq: 3.1,
-        fresnelPower: 2.2,
-      },
-      transparent: true,
-      doubleSided: true,
-    },
-    'scene-fx'
-  );
+  const waterDesc: MaterialDesc = createPresetMaterial('waterRealistic');
+  const waterSurfaceMat = assets.createMaterial('water-surface-mat', waterDesc, 'scene-fx');
   const waterSurface = scene.createEntity();
   scene.setTransform(waterSurface, { position: [waterCenter[0], 0.98, waterCenter[2]], immediate: true });
   scene.setMesh3D(waterSurface, {
@@ -388,6 +378,13 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     boundsRadius: 6,
   });
 
+  const splashDropMat = assets.createPreset(
+    'water-splash-drop',
+    'cyberNeon',
+    { uniforms: { baseColor: [0.85, 0.97, 1.0, 1], glowColor: [0.55, 0.96, 1.0] } },
+    'scene-fx'
+  );
+
   scene.addWaterZone({
     center: [waterCenter[0], 0.52, waterCenter[2]],
     halfExtents: [3.1, 0.52, 3.1],
@@ -396,6 +393,12 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     angularDrag: 2.6,
     flow: [0.35, 0, 0.22],
   });
+
+  // Waterline splash sensor fires automatic particle splashes when any body hits the surface
+  const waterSplashSensor = scene.createEntity();
+  scene.setTransform(waterSplashSensor, { position: [waterCenter[0], 0.94, waterCenter[2]], immediate: true });
+  scene.setCollider3D(waterSplashSensor, { kind: 'aabb', halfExtents: [3.05, 0.16, 3.05] });
+  scene.setTrigger(waterSplashSensor, true);
 
   // Buoyant crates + buoy sphere + heavy sinking steel sphere in pool
   const poolBodies: EntityId[] = [];
@@ -424,14 +427,14 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   scene.setMesh3D(sinker, { meshId: sphereMesh.meshId, materialId: metalMatId, boundsRadius: 0.7 });
 
   const splashEmitter = new ParticleEmitter(scene, {
-    maxParticles: 48,
-    lifetime: 0.7,
-    gravity: -14,
-    spread: [1.3, 1.2, 1.3],
-    speedMin: 1.8,
-    speedMax: 4.2,
+    maxParticles: 64,
+    lifetime: 0.75,
+    gravity: -16,
+    spread: [1.5, 1.3, 1.5],
+    speedMin: 2.0,
+    speedMax: 4.8,
     meshId: moteMesh.meshId,
-    materialId: buoyMatId,
+    materialId: splashDropMat,
   });
 
   // ======================== ZONE: DARK ROOM (E-DOOR + SPOTLIGHT + DUST) ========================
@@ -697,6 +700,16 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     if (ev.entityA === jumpPadTrigger || ev.entityB === jumpPadTrigger) {
       const other = ev.entityA === jumpPadTrigger ? ev.entityB : ev.entityA;
       bounceEntity(other);
+    } else if (ev.entityA === waterSplashSensor || ev.entityB === waterSplashSensor) {
+      const other = ev.entityA === waterSplashSensor ? ev.entityB : ev.entityA;
+      if (other !== floor && other !== waterSurface) {
+        const op = scene.getPosition(other);
+        const [, ovy] = scene.getVelocity(other);
+        if (Math.abs(ovy) > 1.2) {
+          splashEmitter.emit(Math.min(24, Math.max(8, Math.round(Math.abs(ovy) * 2.5))), [op[0], 1.04, op[2]]);
+          playSfx(260, 0.11, 'sine', 0.08);
+        }
+      }
     }
   });
 
@@ -773,6 +786,37 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     crystalMatId,
     propsMatId,
     crateTexId: crateTex,
+    waterMatId: waterSurfaceMat,
+    waterDesc,
+    waterCenter,
+    roomCenter: roomC,
+
+    setWaterPreset(preset) {
+      const fresh =
+        preset === 'anime'
+          ? createPresetMaterial('waterAnime')
+          : preset === 'cyber'
+            ? createPresetMaterial('waterRealistic', {
+                uniforms: {
+                  baseColor: [0.06, 0.24, 0.56, 0.82],
+                  edgeColor: [0.22, 0.04, 0.45],
+                  glowColor: [0.15, 1.0, 0.88],
+                  waterStyle: 0.35,
+                  waterFoam: 0.92,
+                  waterChoppiness: 0.82,
+                  waterClarity: 0.52,
+                },
+              })
+            : createPresetMaterial('waterRealistic');
+      waterDesc.blocks = [...fresh.blocks];
+      waterDesc.uniforms = { ...fresh.uniforms };
+      assets.updateMaterial(waterSurfaceMat, waterDesc);
+    },
+
+    updateWaterUniforms(patch) {
+      Object.assign(waterDesc.uniforms, patch);
+      assets.updateMaterial(waterSurfaceMat, { uniforms: waterDesc.uniforms });
+    },
 
     getInteractPrompt() {
       const [px, , pz] = scene.getPosition(player);

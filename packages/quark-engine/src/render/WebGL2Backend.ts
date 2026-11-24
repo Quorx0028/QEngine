@@ -1423,6 +1423,10 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(prog, 'u_clearcoatRoughness'), u.clearcoatRoughness ?? 0.14);
     gl.uniform1f(this.uLoc(prog, 'u_subsurface'), u.subsurface ?? 0);
     gl.uniform1f(this.uLoc(prog, 'u_bumpScale'), u.bumpScale ?? 0.04);
+    gl.uniform1f(this.uLoc(prog, 'u_waterStyle'), u.waterStyle ?? 0);
+    gl.uniform1f(this.uLoc(prog, 'u_waterFoam'), u.waterFoam ?? 0.65);
+    gl.uniform1f(this.uLoc(prog, 'u_waterChoppiness'), u.waterChoppiness ?? 0.58);
+    gl.uniform1f(this.uLoc(prog, 'u_waterClarity'), u.waterClarity ?? 0.62);
     const uvScale = u.uvScale ?? [1, 1];
     gl.uniform2f(this.uLoc(prog, 'u_uvScale'), uvScale[0], uvScale[1]);
 

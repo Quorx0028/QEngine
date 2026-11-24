@@ -8,6 +8,11 @@ export {
   type EngineStats,
 } from './Engine';
 export { Input, type ActionBinding, type AxisBinding } from './Input';
+export {
+  OrbitControls,
+  type OrbitCameraTarget,
+  type OrbitControlsOptions,
+} from './OrbitControls';
 export { AnimStateMachine, type AnimTransition } from './gameplay/AnimStateMachine';
 export {
   BehaviorManager,

@@ -13,7 +13,9 @@ export type ShaderPresetName =
   | 'waterCaustics'
   | 'ps1Retro'
   | 'magmaPulse'
-  | 'ultraRealism';
+  | 'ultraRealism'
+  | 'waterRealistic'
+  | 'waterAnime';
 
 export const SHADER_PRESET_NAMES: readonly ShaderPresetName[] = [
   'pbr',
@@ -29,6 +31,8 @@ export const SHADER_PRESET_NAMES: readonly ShaderPresetName[] = [
   'ps1Retro',
   'magmaPulse',
   'ultraRealism',
+  'waterRealistic',
+  'waterAnime',
 ] as const;
 
 export function defaultMaterialUniforms(overrides: Partial<MaterialUniforms> = {}): MaterialUniforms {
@@ -52,6 +56,10 @@ export function defaultMaterialUniforms(overrides: Partial<MaterialUniforms> = {
     clearcoatRoughness: 0.14,
     subsurface: 0.0,
     bumpScale: 0.04,
+    waterStyle: 0.0,
+    waterFoam: 0.65,
+    waterChoppiness: 0.58,
+    waterClarity: 0.62,
     ...overrides,
   };
 }
@@ -205,6 +213,44 @@ function getPresetBase(preset: ShaderPresetName): MaterialDesc {
           clearcoatRoughness: 0.16,
           bumpScale: 0.035,
         }),
+      };
+    case 'waterRealistic':
+      return {
+        blocks: ['waterSurface', 'voronoiCaustics', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.06, 0.44, 0.58, 0.74],
+          edgeColor: [0.02, 0.14, 0.25],
+          glowColor: [0.38, 0.94, 1.0],
+          roughness: 0.06,
+          waveAmp: 0.075,
+          waveFreq: 1.7,
+          fresnelPower: 3.4,
+          waterStyle: 0.0,
+          waterFoam: 0.65,
+          waterChoppiness: 0.62,
+          waterClarity: 0.66,
+        }),
+        transparent: true,
+        doubleSided: true,
+      };
+    case 'waterAnime':
+      return {
+        blocks: ['waterSurface', 'distanceFog'],
+        uniforms: defaultMaterialUniforms({
+          baseColor: [0.16, 0.7, 0.98, 0.84],
+          edgeColor: [0.05, 0.32, 0.68],
+          glowColor: [0.85, 0.98, 1.0],
+          roughness: 0.12,
+          waveAmp: 0.065,
+          waveFreq: 1.4,
+          fresnelPower: 2.2,
+          waterStyle: 1.0,
+          waterFoam: 0.88,
+          waterChoppiness: 0.48,
+          waterClarity: 0.5,
+        }),
+        transparent: true,
+        doubleSided: true,
       };
   }
 }

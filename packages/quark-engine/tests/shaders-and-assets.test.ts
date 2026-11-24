@@ -94,6 +94,8 @@ describe('ShaderBlocks, ShaderPresets & AssetManager', () => {
       'ps1Retro',
       'magmaPulse',
       'ultraRealism',
+      'waterRealistic',
+      'waterAnime',
     ]);
 
     const real = createPresetMaterial('ultraRealism');
