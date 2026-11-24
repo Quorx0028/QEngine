@@ -347,15 +347,38 @@ async function bootstrap() {
     playSfx(kind === 'box' ? 320 : 480, 0.07, 'square', 0.09);
   }
 
+  function getCameraLookRay(): { origin: [number, number, number]; dir: [number, number, number] } {
+    const [ox, oy, oz] = scene.camera.position;
+    let dx: number;
+    let dy: number;
+    let dz: number;
+    if (cameraMode === 'orbit') {
+      const [tx, ty, tz] = scene.camera.target;
+      const vx = tx - ox;
+      const vy = ty - oy;
+      const vz = tz - oz;
+      const len = Math.hypot(vx, vy, vz) || 1;
+      dx = vx / len;
+      dy = vy / len;
+      dz = vz / len;
+    } else {
+      dx = -Math.sin(yaw) * Math.cos(pitch);
+      dy = Math.sin(pitch);
+      dz = -Math.cos(yaw) * Math.cos(pitch);
+    }
+    return {
+      origin: [ox + dx * 0.65, oy + dy * 0.65, oz + dz * 0.65],
+      dir: [dx, dy, dz],
+    };
+  }
+
   function fireRaycastImpulse() {
     if (mode !== '3d') return;
-    const [ox, oy, oz] = scene.camera.position;
-    const dx = -Math.sin(yaw) * Math.cos(pitch);
-    const dy = Math.sin(pitch);
-    const dz = -Math.cos(yaw) * Math.cos(pitch);
-    const hit = scene.raycast3D([ox + dx * 0.65, oy + dy * 0.65, oz + dz * 0.65], [dx, dy, dz], 35);
+    const { origin, dir } = getCameraLookRay();
+    const hit = scene.raycast3D(origin, dir, 40);
     if (hit && hit.entity !== player) {
-      scene.applyImpulse(hit.entity, [dx * 9.5, dy * 9.5 + 3.0, dz * 9.5], hit.point);
+      arena?.onRayHit(hit.entity, hit.point, hit.normal);
+      scene.applyImpulse(hit.entity, [dir[0] * 9.5, dir[1] * 9.5 + 3.0, dir[2] * 9.5], hit.point);
       scene.triggerShake(0.08, 0.14);
       playSfx(190, 0.11, 'sawtooth', 0.12);
     }
@@ -630,10 +653,19 @@ async function bootstrap() {
     if (!arena) return;
     if (key === 'water') {
       const [wx, wy, wz] = arena.waterCenter;
-      orbit.setView([wx, wy + 0.8, wz], 7.8, -0.75, 1.08);
+      orbit.setView([wx, wy + 1.15, wz], 8.2, 0.28, 1.24);
+    } else if (key === 'underwater') {
+      const [wx, , wz] = arena.waterCenter;
+      orbit.setView([wx, 1.02, wz], 2.0, 0.55, 1.52);
     } else if (key === 'room') {
       const [rx, ry, rz] = arena.roomCenter;
-      orbit.setView([rx + 1.2, ry + 1.6, rz], 9.2, 1.4, 1.15);
+      orbit.setView([rx - 0.5, ry + 1.45, rz], 3.1, 1.52, 1.32);
+    } else if (key === 'fire') {
+      orbit.setView([5.2, 0.9, -2.2], 5.6, -0.55, 1.18);
+    } else if (key === 'cloth') {
+      orbit.setView([-6.2, 2.3, -2.5], 5.8, -0.35, 1.32);
+    } else if (key === 'shatter') {
+      orbit.setView([12.0, 1.2, -7.2], 4.6, -0.18, 1.32);
     } else if (key === 'arena') {
       orbit.setView([0, 1.5, -2.5], 24.0, 0.35, 1.02);
     } else {
@@ -643,6 +675,7 @@ async function bootstrap() {
 
   function setCameraMode(next: 'fps' | 'orbit') {
     cameraMode = next;
+    arena?.stopGrapple();
     btnCamFps.classList.toggle('active', next === 'fps');
     btnCamOrbit.classList.toggle('active', next === 'orbit');
     if (next === 'orbit') {
@@ -741,6 +774,19 @@ async function bootstrap() {
     }
   });
 
+  canvas.addEventListener('contextmenu', (e) => {
+    if (mode === '3d' && cameraMode === 'fps') e.preventDefault();
+  });
+  window.addEventListener('mousedown', (e) => {
+    if (e.button === 2 && mode === '3d' && cameraMode === 'fps' && arena) {
+      const { origin, dir } = getCameraLookRay();
+      arena.startGrapple(origin, dir);
+    }
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 2) arena?.stopGrapple();
+  });
+
   window.addEventListener('dragover', (e) => e.preventDefault());
   window.addEventListener('drop', async (e) => {
     e.preventDefault();
@@ -822,6 +868,7 @@ async function bootstrap() {
     }
   });
 
+  let grappleKeyDown = false;
   engine.onUpdate((dt) => {
     spinTime += dt;
     if (input.wasKeyPressed('KeyH')) hudPanel.classList.toggle('collapsed');
@@ -835,6 +882,14 @@ async function bootstrap() {
       if (input.wasKeyPressed('KeyE')) arena?.tryInteract();
       if (input.wasKeyPressed('KeyL')) arena?.toggleRoomLight();
       if (input.wasKeyPressed('KeyF')) fireRaycastImpulse();
+      if (input.wasKeyPressed('KeyG') && arena && !grappleKeyDown) {
+        grappleKeyDown = true;
+        const { origin, dir } = getCameraLookRay();
+        arena.startGrapple(origin, dir);
+      } else if (grappleKeyDown && !input.isKeyDown('KeyG')) {
+        grappleKeyDown = false;
+        arena?.stopGrapple();
+      }
 
       const [dx, dy] = input.consumeMouseDelta();
       if (cameraMode === 'orbit') {
@@ -907,10 +962,12 @@ async function bootstrap() {
     }
 
     const st = engine.getStats();
+    const uwDepth = mode === '3d' ? scene.getUnderwaterDepth(scene.camera.position) : 0;
+    const gpuVfx = scene.getActiveParticleCount();
     statsEl.innerHTML =
-      `<b>QuarkEngine</b> (${forestGame ? forestGame.getModeLabel() : mode.toUpperCase()})<br>` +
+      `<b>QuarkEngine</b> (${forestGame ? forestGame.getModeLabel() : mode.toUpperCase()}${uwDepth > 0 ? ' · UNDERWATER' : ''})<br>` +
       `FPS: <b>${st.fps}</b> (${st.frameMs} ms)<br>` +
-      `Entities: <b>${st.entities}</b> | Draws: <b>${st.drawCalls}</b><br>` +
+      `Entities: <b>${st.entities}</b> | Draws: <b>${st.drawCalls}</b> | GPU VFX: <b>${gpuVfx}</b><br>` +
       `Instanced: <b>${st.render.instancedObjects}</b> objs (${st.render.instancedRuns} batches)<br>` +
       `WASM RAM: <b>${Math.round(st.wasmMemoryBytes / 1024)} KB</b> · F2 Profiler`;
   });

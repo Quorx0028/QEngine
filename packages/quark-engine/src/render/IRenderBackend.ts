@@ -23,7 +23,9 @@ export type ShaderBlockId =
   | 'clearcoat'
   | 'subsurfaceWrap'
   | 'terrainSplat'
-  | 'waterSurface';
+  | 'waterSurface'
+  | 'volumetricBeam'
+  | 'surfaceDecal';
 
 export interface MeshSubmesh {
   indexOffset: number;
@@ -74,6 +76,9 @@ export interface MaterialDesc {
   blocks: ShaderBlockId[];
   uniforms: MaterialUniforms;
   transparent?: boolean;
+  blendMode?: 'alpha' | 'additive';
+  depthWrite?: boolean;
+  polygonOffset?: boolean;
   doubleSided?: boolean;
   outlineWidth?: number;
   outlineColor?: [number, number, number];
@@ -96,6 +101,7 @@ export interface RenderFrameMetrics {
 
 export interface IRenderBackend {
   createMesh(geom: MeshGeometry): number;
+  updateMeshVertices?(meshId: number, vertices: Float32Array): void;
   disposeMesh(meshId: number): void;
   createMaterial(desc: MaterialDesc): number;
   updateMaterial(materialId: number, patch: Partial<MaterialDesc>): void;

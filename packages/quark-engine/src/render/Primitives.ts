@@ -279,6 +279,114 @@ export function createCylinderGeometry(radius = 0.5, halfHeight = 0.5, radialSeg
   return { vertices: new Float32Array(verts), indices: new Uint32Array(inds) };
 }
 
+/**
+ * Builds a sealed 3D volumetric water block with a subdivided wave top, 4 wave-coupled side walls,
+ * and a static bottom cap so water looks solid from any angle (above, side tanks, or underwater).
+ */
+export function createWaterVolumeGeometry(
+  width = 6,
+  height = 1.2,
+  depth = 6,
+  subdivs = 36
+): MeshGeometry {
+  const segs = Math.max(2, subdivs);
+  const verts: number[] = [];
+  const inds: number[] = [];
+  const hy = height * 0.5;
+  const hw = width * 0.5;
+  const hd = depth * 0.5;
+
+  const pushV = (x: number, y: number, z: number, nx: number, ny: number, nz: number, u: number, v: number) => {
+    verts.push(x, y, z, nx, ny, nz, u, v);
+  };
+
+  // 1. Subdivided top wave surface (y = +hy, a_normal.y = +1)
+  const cols = segs + 1;
+  for (let z = 0; z <= segs; z++) {
+    const vz = (z / segs - 0.5) * depth;
+    for (let x = 0; x <= segs; x++) {
+      const vx = (x / segs - 0.5) * width;
+      pushV(vx, hy, vz, 0, 1, 0, x / segs, z / segs);
+    }
+  }
+  for (let z = 0; z < segs; z++) {
+    for (let x = 0; x < segs; x++) {
+      const tl = z * cols + x;
+      const tr = tl + 1;
+      const bl = (z + 1) * cols + x;
+      const br = bl + 1;
+      inds.push(tl, bl, tr, tr, bl, br);
+    }
+  }
+
+  // 2. Four wave-coupled side walls (top edge matches exact perimeter vertices of top grid)
+  const addWall = (
+    pAt: (t: number) => [number, number],
+    nx: number,
+    nz: number
+  ) => {
+    const base = verts.length / 8;
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const [px, pz] = pAt(t);
+      pushV(px, hy, pz, nx, 0, nz, t, 1);
+      pushV(px, -hy, pz, nx, 0, nz, t, 0);
+    }
+    for (let i = 0; i < segs; i++) {
+      const t0 = base + i * 2;
+      const b0 = t0 + 1;
+      const t1 = t0 + 2;
+      const b1 = t0 + 3;
+      inds.push(t0, b0, t1, t1, b0, b1);
+    }
+  };
+
+  addWall((t) => [-hw + t * width, hd], 0, 1);   // Front (+Z)
+  addWall((t) => [hw - t * width, -hd], 0, -1); // Back (-Z)
+  addWall((t) => [hw, hd - t * depth], 1, 0);   // Right (+X)
+  addWall((t) => [-hw, -hd + t * depth], -1, 0); // Left (-X)
+
+  // 3. Bottom cap (y = -hy, anchored static)
+  const botBase = verts.length / 8;
+  pushV(-hw, -hy, -hd, 0, -1, 0, 0, 0);
+  pushV(hw, -hy, -hd, 0, -1, 0, 1, 0);
+  pushV(hw, -hy, hd, 0, -1, 0, 1, 1);
+  pushV(-hw, -hy, hd, 0, -1, 0, 0, 1);
+  inds.push(botBase, botBase + 1, botBase + 2, botBase, botBase + 2, botBase + 3);
+
+  return { vertices: new Float32Array(verts), indices: new Uint32Array(inds) };
+}
+
+/**
+ * Builds an open-ended frustum cone for volumetric light shafts (god-rays) with top=radiusTop, bottom=radiusBottom.
+ */
+export function createConeGeometry(
+  radiusTop = 0.25,
+  radiusBottom = 1.6,
+  height = 3.2,
+  radialSegs = 28
+): MeshGeometry {
+  const segs = Math.max(8, radialSegs);
+  const verts: number[] = [];
+  const inds: number[] = [];
+  for (let i = 0; i <= segs; i++) {
+    const u = i / segs;
+    const a = u * Math.PI * 2;
+    const cx = Math.cos(a);
+    const cz = Math.sin(a);
+    verts.push(cx * radiusTop, height * 0.5, cz * radiusTop, cx, 0.25, cz, u, 0);
+    verts.push(cx * radiusBottom, -height * 0.5, cz * radiusBottom, cx, 0.25, cz, u, 1);
+  }
+  for (let i = 0; i < segs; i++) {
+    const i0 = i * 2;
+    const i1 = i0 + 1;
+    const i2 = i0 + 2;
+    const i3 = i0 + 3;
+    inds.push(i0, i1, i2, i2, i1, i3);
+  }
+  return { vertices: new Float32Array(verts), indices: new Uint32Array(inds) };
+}
+
 /** Extracts flat world/local triangle vertices [x,y,z,...] for Physics StaticTriMesh colliders. */
 export function extractColliderTriangles(
   geom: MeshGeometry,

@@ -43,11 +43,13 @@ export type {
 } from './render/IRenderBackend';
 export {
   createBoxGeometry,
+  createConeGeometry,
   createCylinderGeometry,
   createPlaneGeometry,
   createRampGeometry,
   createSphereGeometry,
   createTerrainGeometry,
+  createWaterVolumeGeometry,
   extractColliderTriangles,
 } from './render/Primitives';
 export {
@@ -101,6 +103,7 @@ export {
   type EntityId,
   type Light2D,
   type Mesh3DOptions,
+  type ParticleSpawnOptions,
   type PointLight,
   type RichPhysicsEvent,
   type SpotLight,
@@ -108,5 +111,6 @@ export {
   type Sprite2DOptions,
   type TransformOptions,
   type TriggerEvent,
+  type VfxPresetName,
 } from './Scene';
 export { WasmBridge, type ParsedGlbResult } from './wasm/WasmBridge';

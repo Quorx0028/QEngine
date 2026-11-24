@@ -1,19 +1,20 @@
 import {
   createBoxGeometry,
+  createConeGeometry,
   createCylinderGeometry,
   createPlaneGeometry,
   createPresetMaterial,
   createRampGeometry,
   createSphereGeometry,
+  createWaterVolumeGeometry,
   extractColliderTriangles,
-  ParticleEmitter,
   quatFromEuler,
   SHADER_PRESET_NAMES,
   type AssetManager,
   type EntityId,
   type MaterialDesc,
+  type QuatTuple,
   type Scene,
-  type ShaderBlockId,
   type ShaderPresetName,
   type Vec3Tuple,
   type WasmBridge,
@@ -49,6 +50,9 @@ export interface ArenaController {
   roomCenter: Vec3Tuple;
   setWaterPreset: (preset: 'realistic' | 'anime' | 'cyber') => void;
   updateWaterUniforms: (patch: Partial<MaterialDesc['uniforms']>) => void;
+  onRayHit: (entity: EntityId, point: Vec3Tuple, normal: Vec3Tuple) => void;
+  startGrapple: (origin: Vec3Tuple, dir: Vec3Tuple) => boolean;
+  stopGrapple: () => void;
   getInteractPrompt: () => string | null;
   tryInteract: () => void;
   toggleRoomLight: () => void;
@@ -95,6 +99,21 @@ function makeCrateWoodTexture(assets: AssetManager): number {
   return assets.createTexture('crate-wood', size, size, px, false, 'scene');
 }
 
+function quatFromUpToNormal(normal: Vec3Tuple): QuatTuple {
+  const len = Math.hypot(normal[0], normal[1], normal[2]) || 1;
+  const nx = normal[0] / len;
+  const ny = normal[1] / len;
+  const nz = normal[2] / len;
+  if (ny > 0.9999) return [0, 0, 0, 1];
+  if (ny < -0.9999) return [1, 0, 0, 0];
+  // cross([0,1,0], n) = [nz, 0, -nx]
+  const cx = nz;
+  const cz = -nx;
+  const w = 1 + ny;
+  const qlen = Math.hypot(cx, cz, w) || 1;
+  return [cx / qlen, 0, cz / qlen, w / qlen];
+}
+
 export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const { scene, assets, bridge, crystalDesc, propsDesc, sceneMaterialMeta, playSfx } = ctx;
 
@@ -108,7 +127,10 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const crateTex = makeCrateWoodTexture(assets);
 
   const floorMesh = assets.registerMesh('floor', createPlaneGeometry(56, 56, 28), 'scene');
-  const waterMesh = assets.registerMesh('water-surface', createPlaneGeometry(6.52, 6.52, 44), 'scene');
+  const waterMesh = assets.registerMesh('water-surface', createWaterVolumeGeometry(6.32, 1.92, 6.32, 42), 'scene');
+  const beamMesh = assets.registerMesh('godray-cone', createConeGeometry(0.16, 2.35, 3.1, 28), 'scene');
+  const decalMesh = assets.registerMesh('decal-quad', createPlaneGeometry(0.95, 0.95, 1), 'scene');
+  const tetherMesh = assets.registerMesh('grapple-tether', createConeGeometry(0.032, 0.032, 1.0, 8), 'scene');
   const boxMesh = assets.registerMesh('box', createBoxGeometry(0.5, 0.5, 0.5), 'scene');
   const sphereMesh = assets.registerMesh('sphere', createSphereGeometry(0.55, 18, 24), 'scene');
   const cylMesh = assets.registerMesh('cyl', createCylinderGeometry(0.45, 0.9, 20), 'scene');
@@ -348,29 +370,50 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   scene.setMesh3D(wreckBall, { meshId: sphereMesh.meshId, materialId: metalMatId, boundsRadius: 1.0 });
   scene.addBallSocketJoint(anchorNode, wreckBall, { anchorA: [0, 0, 0], anchorB: [0, 2.4, 0] });
 
-  // ======================== ZONE: WATER POOL + ARCHIMEDES BUOYANCY ========================
+  // ======================== ZONE: WATER 2.0 3D VOLUME TANK + ARCHIMEDES ========================
   const waterCenter: Vec3Tuple = [14.5, 0, 3.0];
   const poolBottomMat = assets.createPreset(
     'pool-caustics',
     'waterCaustics',
-    { uniforms: { baseColor: [0.16, 0.44, 0.58, 1], glowColor: [0.42, 0.92, 1.0] } },
+    { uniforms: { baseColor: [0.14, 0.42, 0.58, 1], glowColor: [0.42, 0.92, 1.0] } },
     'scene'
   );
-  // Caustic floor + 4 stone pool rim walls + step ramp in/out
+  const tankGlassMat = assets.createPreset(
+    'tank-glass',
+    'crystalGlass',
+    {
+      uniforms: {
+        baseColor: [0.68, 0.9, 1.0, 0.24],
+        glowColor: [0.45, 0.92, 1.0],
+        roughness: 0.05,
+      },
+      transparent: true,
+      doubleSided: true,
+    },
+    'scene-fx'
+  );
+  // Caustic floor + North/East stone walls + Glass front viewing wall (South) + walk-up entry steps (West)
   addStaticBox([waterCenter[0], 0.05, waterCenter[2]], [6.4, 0.1, 6.4], poolBottomMat);
-  addStaticBox([waterCenter[0], 0.45, waterCenter[2] - 3.35], [7.1, 0.9, 0.45], wallMat);
-  addStaticBox([waterCenter[0], 0.45, waterCenter[2] + 3.35], [7.1, 0.9, 0.45], wallMat);
-  addStaticBox([waterCenter[0] + 3.35, 0.45, waterCenter[2]], [0.45, 0.9, 6.3], wallMat);
-  addStaticBox([waterCenter[0] - 3.35, 0.45, waterCenter[2] - 1.7], [0.45, 0.9, 2.9], wallMat);
-  addStaticBox([waterCenter[0] - 3.35, 0.45, waterCenter[2] + 1.7], [0.45, 0.9, 2.9], wallMat);
-  // Wide entry step on west side of pool so player can walk right in & out
-  addStaticBox([waterCenter[0] - 3.6, 0.22, waterCenter[2]], [0.9, 0.44, 1.9], wallMat);
-  addStaticBox([waterCenter[0] - 2.9, 0.35, waterCenter[2]], [0.7, 0.7, 1.9], wallMat);
+  addStaticBox([waterCenter[0], 1.06, waterCenter[2] - 3.35], [7.1, 2.12, 0.4], wallMat); // North
+  addStaticBox([waterCenter[0] + 3.35, 1.06, waterCenter[2]], [0.4, 2.12, 6.3], wallMat); // East
+  addStaticBox([waterCenter[0] - 3.35, 1.06, waterCenter[2] - 1.75], [0.4, 2.12, 2.8], wallMat); // West-N
+  addStaticBox([waterCenter[0] - 3.35, 1.06, waterCenter[2] + 1.75], [0.4, 2.12, 2.8], wallMat); // West-S
+  // Wide entry staircase on West side up to y=2.0m so player can dive into deep Underwater Mode and climb out
+  addStaticBox([waterCenter[0] - 4.75, 0.25, waterCenter[2]], [0.85, 0.5, 1.8], wallMat);
+  addStaticBox([waterCenter[0] - 4.0, 0.55, waterCenter[2]], [0.85, 1.1, 1.8], wallMat);
+  addStaticBox([waterCenter[0] - 3.25, 0.85, waterCenter[2]], [0.85, 1.7, 1.8], wallMat);
+  addStaticBox([waterCenter[0] - 2.6, 0.45, waterCenter[2]], [0.7, 0.9, 1.8], wallMat);
+
+  // Front transparent glass viewing pane on South side (+Z) to clearly see the 3D water block depth!
+  const frontGlass = scene.createEntity();
+  scene.setTransform(frontGlass, { position: [waterCenter[0], 1.06, waterCenter[2] + 3.24], scale: [6.5, 2.08, 0.14], immediate: true });
+  scene.setCollider3D(frontGlass, { kind: 'aabb', halfExtents: [3.25, 1.04, 0.07] });
+  scene.setMesh3D(frontGlass, { meshId: boxMesh.meshId, materialId: tankGlassMat, transparent: true, boundsRadius: 4.5 });
 
   const waterDesc: MaterialDesc = createPresetMaterial('waterRealistic');
   const waterSurfaceMat = assets.createMaterial('water-surface-mat', waterDesc, 'scene-fx');
   const waterSurface = scene.createEntity();
-  scene.setTransform(waterSurface, { position: [waterCenter[0], 0.98, waterCenter[2]], immediate: true });
+  scene.setTransform(waterSurface, { position: [waterCenter[0], 1.04, waterCenter[2]], immediate: true });
   scene.setMesh3D(waterSurface, {
     meshId: waterMesh.meshId,
     materialId: waterSurfaceMat,
@@ -378,26 +421,19 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     boundsRadius: 6,
   });
 
-  const splashDropMat = assets.createPreset(
-    'water-splash-drop',
-    'cyberNeon',
-    { uniforms: { baseColor: [0.85, 0.97, 1.0, 1], glowColor: [0.55, 0.96, 1.0] } },
-    'scene-fx'
-  );
-
   scene.addWaterZone({
-    center: [waterCenter[0], 0.52, waterCenter[2]],
-    halfExtents: [3.1, 0.52, 3.1],
+    center: [waterCenter[0], 1.04, waterCenter[2]],
+    halfExtents: [3.1, 0.98, 3.1],
     density: 1.45,
     linearDrag: 2.8,
     angularDrag: 2.6,
     flow: [0.35, 0, 0.22],
   });
 
-  // Waterline splash sensor fires automatic particle splashes when any body hits the surface
+  // Waterline splash sensor fires GPU particle splashes when any body hits the surface (y ~ 1.96)
   const waterSplashSensor = scene.createEntity();
-  scene.setTransform(waterSplashSensor, { position: [waterCenter[0], 0.94, waterCenter[2]], immediate: true });
-  scene.setCollider3D(waterSplashSensor, { kind: 'aabb', halfExtents: [3.05, 0.16, 3.05] });
+  scene.setTransform(waterSplashSensor, { position: [waterCenter[0], 1.96, waterCenter[2]], immediate: true });
+  scene.setCollider3D(waterSplashSensor, { kind: 'aabb', halfExtents: [3.05, 0.18, 3.05] });
   scene.setTrigger(waterSplashSensor, true);
 
   // Buoyant crates + buoy sphere + heavy sinking steel sphere in pool
@@ -405,7 +441,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   for (let i = 0; i < 3; i++) {
     const c = scene.createEntity();
     scene.setTransform(c, {
-      position: [waterCenter[0] - 1.2 + i * 1.15, 1.4, waterCenter[2] - 0.8 + (i % 2) * 1.6],
+      position: [waterCenter[0] - 1.2 + i * 1.15, 2.45, waterCenter[2] - 0.8 + (i % 2) * 1.6],
       scale: [0.75, 0.75, 0.75],
       immediate: true,
     });
@@ -415,27 +451,16 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     poolBodies.push(c);
   }
   const buoy = scene.createEntity();
-  scene.setTransform(buoy, { position: [waterCenter[0] + 0.8, 1.5, waterCenter[2] + 0.6], scale: [0.8, 0.8, 0.8], immediate: true });
+  scene.setTransform(buoy, { position: [waterCenter[0] + 0.8, 2.5, waterCenter[2] + 0.6], scale: [0.8, 0.8, 0.8], immediate: true });
   scene.setCollider3D(buoy, { kind: 'sphere', radius: 0.44 });
   scene.setRigidBody(buoy, { dynamic: true, mass: 0.28, friction: 0.6, restitution: 0.5 });
   scene.setMesh3D(buoy, { meshId: sphereMesh.meshId, materialId: buoyMatId, boundsRadius: 0.8 });
 
   const sinker = scene.createEntity();
-  scene.setTransform(sinker, { position: [waterCenter[0] - 0.6, 1.5, waterCenter[2] + 1.2], scale: [0.7, 0.7, 0.7], immediate: true });
+  scene.setTransform(sinker, { position: [waterCenter[0] - 0.6, 2.5, waterCenter[2] + 1.2], scale: [0.7, 0.7, 0.7], immediate: true });
   scene.setCollider3D(sinker, { kind: 'sphere', radius: 0.38 });
   scene.setRigidBody(sinker, { dynamic: true, mass: 12.0, friction: 0.6, restitution: 0.1 });
   scene.setMesh3D(sinker, { meshId: sphereMesh.meshId, materialId: metalMatId, boundsRadius: 0.7 });
-
-  const splashEmitter = new ParticleEmitter(scene, {
-    maxParticles: 64,
-    lifetime: 0.75,
-    gravity: -16,
-    spread: [1.5, 1.3, 1.5],
-    speedMin: 2.0,
-    speedMax: 4.8,
-    meshId: moteMesh.meshId,
-    materialId: splashDropMat,
-  });
 
   // ======================== ZONE: DARK ROOM (E-DOOR + SPOTLIGHT + DUST) ========================
   const roomC: Vec3Tuple = [-11.5, 0, 3.0]; // interior x: [-14.5..-8.5], z: [0.0..6.0], y: [0..3.8]
@@ -483,6 +508,28 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const bulbEntity = scene.createEntity();
   scene.setTransform(bulbEntity, { position: [roomC[0], 3.22, roomC[2]], scale: [0.36, 0.36, 0.36], immediate: true });
   scene.setMesh3D(bulbEntity, { meshId: sphereMesh.meshId, materialId: bulbMat, boundsRadius: 0.4 });
+
+  const beamDesc: MaterialDesc = {
+    blocks: ['volumetricBeam'],
+    uniforms: {
+      ...createPresetMaterial('ultraRealism').uniforms,
+      baseColor: [1.0, 0.86, 0.52, 0.34],
+      glowColor: [1.0, 0.78, 0.38],
+    },
+    transparent: true,
+    blendMode: 'additive',
+    depthWrite: false,
+    doubleSided: true,
+  };
+  const beamMat = assets.createMaterial('dark-room-godray', beamDesc, 'scene-fx');
+  const beamEntity = scene.createEntity();
+  scene.setTransform(beamEntity, { position: [roomC[0], 1.7, roomC[2]], immediate: true });
+  scene.setMesh3D(beamEntity, {
+    meshId: beamMesh.meshId,
+    materialId: beamMat,
+    transparent: true,
+    boundsRadius: 3.5,
+  });
 
   // Interactive Door hinged on North edge of doorway
   const hingePos: Vec3Tuple = [roomC[0] + 3.0, 1.35, roomC[2] - 0.92];
@@ -603,6 +650,199 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     boundsRadius: 2,
   });
 
+  // ======================== ZONE: CAMPFIRE + GPU PARTICLE SYSTEM 2.0 ========================
+  const firePos: Vec3Tuple = [5.2, 0, -2.2];
+  const stoneRingMat = assets.createPreset(
+    'fire-stone-ring',
+    'ultraRealism',
+    { uniforms: { baseColor: [0.24, 0.25, 0.29, 1], roughness: 0.9, metallic: 0.05 }, textureId: floorTex },
+    'scene'
+  );
+  const emberMat = assets.createPreset(
+    'fire-ember-logs',
+    'magmaPulse',
+    { uniforms: { baseColor: [0.25, 0.1, 0.04, 1], glowColor: [1.0, 0.42, 0.06] } },
+    'scene'
+  );
+  addStaticBox([firePos[0], 0.12, firePos[2]], [1.5, 0.24, 1.5], stoneRingMat);
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2;
+    addStaticBox([firePos[0] + Math.cos(ang) * 0.58, 0.28, firePos[2] + Math.sin(ang) * 0.58], [0.32, 0.22, 0.32], stoneRingMat);
+  }
+  const log1 = scene.createEntity();
+  scene.setTransform(log1, {
+    position: [firePos[0], 0.32, firePos[2]],
+    scale: [0.22, 0.92, 0.22],
+    rotation: quatFromEuler(1.15, 0.4, 0),
+    immediate: true,
+  });
+  scene.setMesh3D(log1, { meshId: cylMesh.meshId, materialId: emberMat, boundsRadius: 0.8 });
+  const log2 = scene.createEntity();
+  scene.setTransform(log2, {
+    position: [firePos[0], 0.32, firePos[2]],
+    scale: [0.22, 0.92, 0.22],
+    rotation: quatFromEuler(1.15, -0.85, 0),
+    immediate: true,
+  });
+  scene.setMesh3D(log2, { meshId: cylMesh.meshId, materialId: emberMat, boundsRadius: 0.8 });
+
+  // ======================== ZONE: VERLET CLOTH BANNER ========================
+  const polePos: Vec3Tuple = [-7.5, 0, -2.5];
+  addStaticBox([polePos[0], 1.8, polePos[2]], [0.16, 3.6, 0.16], metalMatId);
+  const clothId = scene.createCloth({
+    origin: [polePos[0] + 0.1, 3.2, polePos[2]],
+    rightStep: [0.16, 0, 0],
+    downStep: [0, -0.145, 0],
+    cols: 16,
+    rows: 11,
+    pinTop: false,
+    pinLeft: true,
+  });
+  const clothGeom = {
+    vertices: new Float32Array(scene.getClothVerticesView(clothId)),
+    indices: scene.getClothIndicesCopy(clothId),
+  };
+  const clothMesh = assets.registerMesh('verlet-cloth-banner', clothGeom, 'scene');
+  const clothMat = assets.createPreset(
+    'cloth-banner-mat',
+    'ultraRealism',
+    {
+      uniforms: {
+        baseColor: [0.9, 0.22, 0.34, 1],
+        glowColor: [1.0, 0.55, 0.25],
+        roughness: 0.65,
+        metallic: 0.08,
+      },
+      doubleSided: true,
+    },
+    'scene'
+  );
+  sceneMaterialMeta.set(clothMat, { baseColor: [0.9, 0.22, 0.34, 1] });
+  const clothEntity = scene.createEntity();
+  scene.setTransform(clothEntity, { position: [0, 0, 0], immediate: true });
+  scene.setMesh3D(clothEntity, { meshId: clothMesh.meshId, materialId: clothMat, boundsRadius: 36 });
+
+  // ======================== ZONE: SHATTER TARGETS + SURFACE DECALS + GRAPPLE ========================
+  const shatterTargets = new Set<EntityId>();
+  const crystalFragMat = assets.createPreset(
+    'shatter-crystal-glass',
+    'crystalGlass',
+    {
+      uniforms: {
+        baseColor: [0.48, 0.92, 1.0, 0.72],
+        glowColor: [0.35, 0.95, 1.0],
+        roughness: 0.08,
+      },
+      transparent: true,
+      doubleSided: true,
+    },
+    'scene-fx'
+  );
+  const targetPlinthCenter: Vec3Tuple = [12.0, 0, -7.2];
+  addStaticBox([targetPlinthCenter[0], 0.22, targetPlinthCenter[2]], [3.8, 0.44, 1.8], stoneRingMat);
+  const targetPositions: Vec3Tuple[] = [
+    [targetPlinthCenter[0] - 1.15, 1.05, targetPlinthCenter[2]],
+    [targetPlinthCenter[0], 1.15, targetPlinthCenter[2]],
+    [targetPlinthCenter[0] + 1.15, 1.05, targetPlinthCenter[2]],
+    [targetPlinthCenter[0], 2.15, targetPlinthCenter[2]],
+  ];
+  for (let i = 0; i < targetPositions.length; i++) {
+    const tgt = scene.createEntity();
+    const tall = i === 1;
+    const sc: Vec3Tuple = tall ? [0.68, 1.4, 0.32] : [0.76, 1.15, 0.34];
+    scene.setTransform(tgt, { position: targetPositions[i], scale: sc, immediate: true });
+    scene.setCollider3D(tgt, { kind: 'aabb', halfExtents: [sc[0] * 0.5, sc[1] * 0.5, sc[2] * 0.5] });
+    scene.setMesh3D(tgt, {
+      meshId: boxMesh.meshId,
+      materialId: crystalFragMat,
+      transparent: true,
+      boundsRadius: 1.5,
+    });
+    shatterTargets.add(tgt);
+  }
+
+  // Pooled Surface Decals (rendered with polygonOffset so zero Z-fighting on any wall/floor)
+  const decalMat = assets.createMaterial(
+    'impact-scorch-decal',
+    {
+      blocks: ['surfaceDecal'],
+      uniforms: {
+        ...createPresetMaterial('ultraRealism').uniforms,
+        baseColor: [0.08, 0.1, 0.14, 0.92],
+        glowColor: [0.22, 0.88, 1.0],
+      },
+      transparent: true,
+      blendMode: 'alpha',
+      depthWrite: false,
+      polygonOffset: true,
+      doubleSided: true,
+    },
+    'scene-fx'
+  );
+  const decalPool: EntityId[] = [];
+  for (let i = 0; i < 24; i++) {
+    const d = scene.createEntity();
+    scene.setTransform(d, { position: [0, -100, 0], scale: [0.001, 0.001, 0.001], immediate: true });
+    scene.setMesh3D(d, { meshId: decalMesh.meshId, materialId: decalMat, transparent: true, boundsRadius: 1.0 });
+    decalPool.push(d);
+  }
+  let decalCursor = 0;
+  const spawnDecal = (point: Vec3Tuple, normal: Vec3Tuple, size = 0.72) => {
+    const eid = decalPool[decalCursor];
+    decalCursor = (decalCursor + 1) % decalPool.length;
+    scene.setTransform(eid, {
+      position: [point[0] + normal[0] * 0.015, point[1] + normal[1] * 0.015, point[2] + normal[2] * 0.015],
+      rotation: quatFromUpToNormal(normal),
+      scale: [size, 1, size],
+      immediate: true,
+    });
+  };
+
+  // Grappling hook glowing laser-cable tether
+  const grappleTetherMat = assets.createPreset(
+    'grapple-tether-mat',
+    'cyberNeon',
+    { uniforms: { baseColor: [0.3, 0.95, 1.0, 1], glowColor: [0.25, 1.0, 0.9] } },
+    'scene-fx'
+  );
+  const tetherEntity = scene.createEntity();
+  scene.setTransform(tetherEntity, { position: [0, -100, 0], scale: [0.001, 0.001, 0.001], immediate: true });
+  scene.setMesh3D(tetherEntity, { meshId: tetherMesh.meshId, materialId: grappleTetherMat, boundsRadius: 45 });
+  let grappleActive = false;
+  let grappleAnchor: Vec3Tuple = [0, 0, 0];
+
+  const shatterEntity = (entity: EntityId, hitPt: Vec3Tuple) => {
+    if (!shatterTargets.has(entity)) return false;
+    shatterTargets.delete(entity);
+    const pos = scene.getPosition(entity);
+    scene.destroyEntity(entity);
+    scene.emitVfx('sparks', pos, 44, 0.05);
+    scene.emitVfx('magic', pos, 28, 0.05);
+    scene.triggerShake(0.11, 0.2);
+    playSfx(940, 0.16, 'triangle', 0.14);
+    for (let i = 0; i < 6; i++) {
+      const shard = scene.createEntity();
+      const ang = (i / 6) * Math.PI * 2 + Math.random() * 0.4;
+      const sc: Vec3Tuple = [0.2 + Math.random() * 0.16, 0.26 + Math.random() * 0.2, 0.16 + Math.random() * 0.12];
+      scene.setTransform(shard, {
+        position: [pos[0] + Math.cos(ang) * 0.25, pos[1] + (Math.random() - 0.3) * 0.4, pos[2] + Math.sin(ang) * 0.25],
+        scale: sc,
+        rotation: quatFromEuler(Math.random() * 3, Math.random() * 3, Math.random() * 3),
+        immediate: true,
+      });
+      scene.setCollider3D(shard, { kind: 'aabb', halfExtents: [sc[0] * 0.5, sc[1] * 0.5, sc[2] * 0.5] });
+      scene.setRigidBody(shard, { dynamic: true, mass: 0.45, friction: 0.5, restitution: 0.42 });
+      scene.setMesh3D(shard, { meshId: boxMesh.meshId, materialId: crystalFragMat, transparent: true, boundsRadius: 0.6 });
+      scene.setVelocity(
+        shard,
+        Math.cos(ang) * (4.5 + Math.random() * 4.0) + (pos[0] - hitPt[0]) * 2,
+        3.5 + Math.random() * 5.0,
+        Math.sin(ang) * (4.5 + Math.random() * 4.0) + (pos[2] - hitPt[2]) * 2
+      );
+    }
+    return true;
+  };
+
   // ======================== ZONE: HARDWARE INSTANCING + WASM A* NAV BOT ========================
   const instZoneOrigin: Vec3Tuple = [-8.5, 0, -13.5];
   const instMat = assets.createPreset(
@@ -687,7 +927,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     bounceCooldowns.set(other, 0.22);
     const [vx, , vz] = scene.getVelocity(other);
     scene.setVelocity(other, vx, 14.8, vz);
-    splashEmitter.emit(12, [padPos[0], 0.45, padPos[2]]);
+    scene.emitVfx('magic', [padPos[0], 0.45, padPos[2]], 22, 0.05);
     if (other === player) {
       scene.triggerShake(0.08, 0.14);
       playSfx(680, 0.14, 'sine', 0.14);
@@ -702,11 +942,12 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
       bounceEntity(other);
     } else if (ev.entityA === waterSplashSensor || ev.entityB === waterSplashSensor) {
       const other = ev.entityA === waterSplashSensor ? ev.entityB : ev.entityA;
-      if (other !== floor && other !== waterSurface) {
+      if (other !== floor && other !== waterSurface && other !== frontGlass) {
         const op = scene.getPosition(other);
         const [, ovy] = scene.getVelocity(other);
         if (Math.abs(ovy) > 1.2) {
-          splashEmitter.emit(Math.min(24, Math.max(8, Math.round(Math.abs(ovy) * 2.5))), [op[0], 1.04, op[2]]);
+          const burst = Math.min(48, Math.max(18, Math.round(Math.abs(ovy) * 4.2)));
+          scene.emitVfx('splash', [op[0], 1.98, op[2]], burst, 1.92);
           playSfx(260, 0.11, 'sine', 0.08);
         }
       }
@@ -733,20 +974,44 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
       accent: '#34d399',
     }),
     signs.createSign({
-      position: [10.4, 1.85, -0.4],
+      position: [10.4, 2.25, -0.4],
       yaw: -0.58,
-      badge: 'ARCHIMEDES + CAUSTICS',
-      title: 'Физика воды и волны',
-      subtitle: 'Архимедова выталкивающая сила, течение, каустика дна и брызги.',
+      badge: '3D WATER + UNDERWATER',
+      title: 'Вода 3D Блок + Подводный режим',
+      subtitle: 'Объёмная толща, стекло, брызги GPU и авто-подводный шейдер внутри.',
       accent: '#22d3ee',
     }),
     signs.createSign({
       position: [-6.8, 1.65, 5.4],
       yaw: 0.55,
-      badge: 'SPOT SHADOWS + DUST',
+      badge: 'GOD-RAYS + SHADOWS',
       title: 'Тёмная комната [E]',
-      subtitle: 'Нажми E у двери, войди под лампу [L]: реальные тени и пыль.',
+      subtitle: 'Объёмный луч света, тени SpotLight и переключение лампы [L].',
       accent: '#fbbf24',
+    }),
+    signs.createSign({
+      position: [-4.9, 1.6, -2.5],
+      yaw: -0.2,
+      badge: 'VERLET CLOTH + WIND',
+      title: 'Физика ткани (WASM)',
+      subtitle: 'Ткань реагирует на ветер и отталкивается от игрока при касании.',
+      accent: '#f472b6',
+    }),
+    signs.createSign({
+      position: [4.8, 1.45, 0.3],
+      yaw: -0.12,
+      badge: 'GPU PARTICLES (8K)',
+      title: 'Костёр и GPU Частицы',
+      subtitle: 'Огонь, дым и отскакивающие искры за 2 instanced draw call.',
+      accent: '#fb923c',
+    }),
+    signs.createSign({
+      position: [14.6, 1.65, -6.2],
+      yaw: -0.45,
+      badge: 'SHATTER · DECALS · GRAPPLE',
+      title: 'Стрельба [F/ЛКМ] и Крюк [G/ПКМ]',
+      subtitle: 'Стекло разлетается на осколки, следы на стенах, крюк тянет к цели.',
+      accent: '#38bdf8',
     }),
     signs.createSign({
       position: [-4.5, 1.7, -12.2],
@@ -779,6 +1044,8 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
 
   let wasPlayerInWater = false;
   let elapsed = 0;
+  let vfxFireAcc = 0;
+  let vfxBubbleAcc = 0;
 
   return {
     player,
@@ -790,6 +1057,52 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     waterDesc,
     waterCenter,
     roomCenter: roomC,
+
+    onRayHit(entity, point, normal) {
+      if (shatterEntity(entity, point)) return;
+      if (entity === waterSurface || entity === waterSplashSensor || entity === frontGlass) {
+        scene.emitVfx('splash', point, 34, 1.92);
+        playSfx(320, 0.12, 'sine', 0.1);
+        return;
+      }
+      if (entity === jumpPadTrigger) {
+        scene.emitVfx('magic', point, 24, 0.05);
+        return;
+      }
+      spawnDecal(point, normal, 0.68);
+      scene.emitVfx('sparks', point, 22, 0.04);
+      if (entity === crystalEntity) {
+        scene.emitVfx('confetti', point, 28, 0.04);
+      }
+    },
+
+    startGrapple(origin, dir) {
+      const hit = scene.raycast3D(origin, dir, 38);
+      if (
+        !hit ||
+        hit.entity === player ||
+        hit.entity === waterSurface ||
+        hit.entity === waterSplashSensor ||
+        hit.entity === jumpPadTrigger
+      ) {
+        return false;
+      }
+      grappleActive = true;
+      grappleAnchor = hit.point;
+      scene.emitVfx('sparks', grappleAnchor, 20, 0.04);
+      playSfx(760, 0.09, 'sawtooth', 0.11);
+      return true;
+    },
+
+    stopGrapple() {
+      if (!grappleActive) return;
+      grappleActive = false;
+      scene.setTransform(tetherEntity, {
+        position: [0, -100, 0],
+        scale: [0.001, 0.001, 0.001],
+        immediate: true,
+      });
+    },
 
     setWaterPreset(preset) {
       const fresh =
@@ -844,6 +1157,12 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
             : { baseColor: [0.18, 0.18, 0.22, 1], glowColor: [0.0, 0.0, 0.0] },
         }),
       });
+      assets.updateMaterial(beamMat, {
+        uniforms: {
+          ...beamDesc.uniforms,
+          baseColor: roomLightOn ? [1.0, 0.86, 0.52, 0.34] : [1.0, 0.86, 0.52, 0.0],
+        },
+      });
       playSfx(roomLightOn ? 780 : 380, 0.06, 'triangle', 0.11);
     },
 
@@ -882,21 +1201,53 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
         }
       }
 
-      // Water buoyancy + swimming assist for player
+      // Water buoyancy + swimming assist for player (2m deep 3D block -> py < 2.08 triggers submerge)
       const inWaterXZ = Math.abs(px - waterCenter[0]) < 3.1 && Math.abs(pz - waterCenter[2]) < 3.1;
-      const inWater = inWaterXZ && py < 1.65;
+      const inWater = inWaterXZ && py < 2.08;
       if (inWater && !wasPlayerInWater) {
-        splashEmitter.emit(16, [px, 1.0, pz]);
+        scene.emitVfx('splash', [px, 1.98, pz], 32, 1.92);
         playSfx(240, 0.14, 'sine', 0.12);
       }
       wasPlayerInWater = inWater;
       if (inWater) {
         const [, curVy] = scene.getVelocity(player);
-        const sub = Math.max(0, Math.min(1, (1.45 - py) / 1.0));
+        const sub = Math.max(0, Math.min(1, (1.88 - py) / 1.05));
         scene.applyImpulse(player, [0, sub * 32.0 * dt, 0]);
         if (curVy < -4.0) {
           const [vx, , vz] = scene.getVelocity(player);
           scene.setVelocity(player, vx, curVy * 0.88, vz);
+        }
+      }
+
+      // Grappling hook physics pull & tether transform
+      if (grappleActive) {
+        const hand: Vec3Tuple = [px, py + 0.35, pz];
+        const gx = grappleAnchor[0] - hand[0];
+        const gy = grappleAnchor[1] - hand[1];
+        const gz = grappleAnchor[2] - hand[2];
+        const gDist = Math.hypot(gx, gy, gz);
+        if (gDist < 1.35) {
+          this.stopGrapple();
+        } else {
+          const inv = 1 / gDist;
+          const pullSpeed = Math.min(24, 11 + gDist * 0.75);
+          const [vx, vy, vz] = scene.getVelocity(player);
+          const blend = Math.min(1, dt * 8.5);
+          scene.setVelocity(
+            player,
+            vx + (gx * inv * pullSpeed - vx) * blend,
+            vy + (gy * inv * pullSpeed + 2.2 - vy) * blend,
+            vz + (gz * inv * pullSpeed - vz) * blend
+          );
+          scene.setTransform(tetherEntity, {
+            position: [
+              (hand[0] + grappleAnchor[0]) * 0.5,
+              (hand[1] + grappleAnchor[1]) * 0.5,
+              (hand[2] + grappleAnchor[2]) * 0.5,
+            ],
+            rotation: quatFromUpToNormal([gx * inv, gy * inv, gz * inv]),
+            scale: [1, gDist, 1],
+          });
         }
       }
 
@@ -942,7 +1293,42 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
 
     update(dt: number, spinTime: number) {
       elapsed += dt;
-      splashEmitter.update(dt);
+
+      // Campfire & underwater GPU Particle System 2.0 emission
+      vfxFireAcc += dt;
+      if (vfxFireAcc >= 0.045) {
+        vfxFireAcc = 0;
+        scene.emitVfx('fire', [firePos[0], 0.38, firePos[2]], 5, 0.08);
+        if (Math.random() < 0.45) scene.emitVfx('smoke', [firePos[0], 0.72, firePos[2]], 2, 0.08);
+        if (Math.random() < 0.55) scene.emitVfx('sparks', [firePos[0], 0.42, firePos[2]], 3, 0.08);
+      }
+      vfxBubbleAcc += dt;
+      if (vfxBubbleAcc >= 0.16) {
+        vfxBubbleAcc = 0;
+        scene.emitVfx(
+          'bubbles',
+          [
+            waterCenter[0] + (Math.random() - 0.5) * 4.4,
+            0.22 + Math.random() * 0.9,
+            waterCenter[2] + (Math.random() - 0.5) * 4.4,
+          ],
+          3,
+          0.12
+        );
+      }
+
+      // WASM Verlet Cloth wind + player capsule push + live VBO upload
+      const [px, py, pz] = scene.getPosition(player);
+      scene.setClothWind(clothId, [
+        1.8 + Math.sin(spinTime * 2.1) * 1.4,
+        Math.sin(spinTime * 3.4) * 0.5,
+        Math.cos(spinTime * 1.6) * 2.4,
+      ]);
+      scene.pushClothSphere(clothId, [px, py + 0.35, pz], 0.75);
+      const clothVerts = scene.getClothVerticesView(clothId);
+      if (clothVerts.length > 0) {
+        assets.updateMeshVertices(clothMesh.meshId, clothVerts);
+      }
 
       // Rotate central crystal around Y smoothly
       scene.setTransform(crystalEntity, {

@@ -1,19 +1,23 @@
 pub mod animation;
+pub mod cloth;
 pub mod collision_math;
 pub mod ecs;
 pub mod gltf_loader;
 pub mod joints;
 pub mod nav;
+pub mod particles;
 pub mod physics;
 pub mod render;
 pub mod terrain;
 
 use animation::AnimationSystem;
+use cloth::{ClothGrid, ClothWorld};
 use ecs::{
     entity_index, Collider2D, Collider3D, EntityHandle, MeshInstance3D, RigidBody, Sprite2D, World,
 };
 use gltf_loader::{parse_glb, ParsedGlb};
 use nav::NavGrid;
+use particles::ParticleSystem;
 use physics::{PhysicsConfig, PhysicsWorld, TileGrid2D};
 use render::RenderQueue;
 use terrain::TerrainHeightmap;
@@ -29,6 +33,8 @@ pub struct EngineCore {
     pub physics: PhysicsWorld,
     pub render_queue: RenderQueue,
     pub animations: AnimationSystem,
+    pub particles: ParticleSystem,
+    pub cloth: ClothWorld,
     pub nav: NavGrid,
     pub last_glb: Option<ParsedGlb>,
     pub glb_bounds: [f32; 6],
@@ -41,6 +47,8 @@ impl EngineCore {
             physics: PhysicsWorld::new(PhysicsConfig::default()),
             render_queue: RenderQueue::new(),
             animations: AnimationSystem::new(),
+            particles: ParticleSystem::new(),
+            cloth: ClothWorld::new(),
             nav: NavGrid::new(),
             last_glb: None,
             glb_bounds: [0.0; 6],
@@ -103,6 +111,8 @@ pub unsafe extern "C" fn core_clear(ptr: *mut EngineCore) {
     core.world.clear();
     core.physics.clear_static_geometry();
     core.animations.clear();
+    core.particles.clear();
+    core.cloth.clear();
     core.nav.resize(0.0, 0.0, 1.0, 0, 0);
     core.render_queue.items_2d.clear();
     core.render_queue.tex_ids_2d.clear();
@@ -908,6 +918,8 @@ pub unsafe extern "C" fn core_step(
         0.0
     };
     core.animations.step(&core.world, anim_dt);
+    core.particles.step_and_pack(anim_dt);
+    core.cloth.step(anim_dt);
     core.render_queue.build_2d(&core.world);
     let vp = if view_proj_ptr.is_null() {
         Mat4::IDENTITY
@@ -1539,6 +1551,176 @@ pub unsafe extern "C" fn core_palette_offsets_len(ptr: *const EngineCore) -> usi
 #[no_mangle]
 pub unsafe extern "C" fn core_glb_clear(ptr: *mut EngineCore) {
     (*ptr).last_glb = None;
+}
+
+// ---------- GPU Particle System 2.0 ----------
+
+#[no_mangle]
+pub unsafe extern "C" fn core_spawn_particle(
+    ptr: *mut EngineCore,
+    px: f32,
+    py: f32,
+    pz: f32,
+    vx: f32,
+    vy: f32,
+    vz: f32,
+    size_start: f32,
+    size_end: f32,
+    r0: f32,
+    g0: f32,
+    b0: f32,
+    a0: f32,
+    r1: f32,
+    g1: f32,
+    b1: f32,
+    a1: f32,
+    life: f32,
+    gravity: f32,
+    drag: f32,
+    bounce: f32,
+    floor_y: f32,
+    additive: u32,
+    stretch: f32,
+) {
+    (*ptr).particles.spawn(
+        Vec3::new(px, py, pz),
+        Vec3::new(vx, vy, vz),
+        size_start,
+        size_end,
+        [r0, g0, b0, a0],
+        [r1, g1, b1, a1],
+        life,
+        gravity,
+        drag,
+        bounce,
+        floor_y,
+        additive != 0,
+        stretch,
+    );
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_particles_alpha_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr).particles.packed_alpha.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_particles_alpha_len(ptr: *const EngineCore) -> usize {
+    (*ptr).particles.packed_alpha.len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_particles_add_ptr(ptr: *const EngineCore) -> *const f32 {
+    (*ptr).particles.packed_additive.as_ptr()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_particles_add_len(ptr: *const EngineCore) -> usize {
+    (*ptr).particles.packed_additive.len()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_particles_count(ptr: *const EngineCore) -> usize {
+    (*ptr).particles.active_count()
+}
+
+// ---------- Verlet Cloth & Rope Grids ----------
+
+#[no_mangle]
+pub unsafe extern "C" fn core_create_cloth(
+    ptr: *mut EngineCore,
+    ox: f32,
+    oy: f32,
+    oz: f32,
+    rx: f32,
+    ry: f32,
+    rz: f32,
+    dx: f32,
+    dy: f32,
+    dz: f32,
+    cols: u32,
+    rows: u32,
+    pin_top: u32,
+    pin_left: u32,
+) -> u32 {
+    (*ptr).cloth.add_grid(ClothGrid::new(
+        Vec3::new(ox, oy, oz),
+        Vec3::new(rx, ry, rz),
+        Vec3::new(dx, dy, dz),
+        cols as usize,
+        rows as usize,
+        pin_top != 0,
+        pin_left != 0,
+    ))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_set_cloth_wind(
+    ptr: *mut EngineCore,
+    cloth_id: u32,
+    wx: f32,
+    wy: f32,
+    wz: f32,
+) {
+    let core = &mut *ptr;
+    if let Some(g) = core.cloth.grids.get_mut(cloth_id as usize) {
+        g.wind = Vec3::new(wx, wy, wz);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_push_cloth_sphere(
+    ptr: *mut EngineCore,
+    cloth_id: u32,
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    radius: f32,
+) {
+    let core = &mut *ptr;
+    if let Some(g) = core.cloth.grids.get_mut(cloth_id as usize) {
+        g.push_sphere(Vec3::new(cx, cy, cz), radius);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_cloth_verts_ptr(ptr: *const EngineCore, cloth_id: u32) -> *const f32 {
+    let core = &*ptr;
+    core.cloth
+        .grids
+        .get(cloth_id as usize)
+        .map(|g| g.vertex_buf.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_cloth_verts_len(ptr: *const EngineCore, cloth_id: u32) -> usize {
+    let core = &*ptr;
+    core.cloth
+        .grids
+        .get(cloth_id as usize)
+        .map(|g| g.vertex_buf.len())
+        .unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_cloth_indices_ptr(ptr: *const EngineCore, cloth_id: u32) -> *const u32 {
+    let core = &*ptr;
+    core.cloth
+        .grids
+        .get(cloth_id as usize)
+        .map(|g| g.index_buf.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn core_cloth_indices_len(ptr: *const EngineCore, cloth_id: u32) -> usize {
+    let core = &*ptr;
+    core.cloth
+        .grids
+        .get(cloth_id as usize)
+        .map(|g| g.index_buf.len())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

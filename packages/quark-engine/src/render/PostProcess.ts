@@ -241,6 +241,7 @@ uniform float u_wave;
 uniform float u_saturation;
 uniform float u_noir;
 uniform int u_hdrInput;
+uniform float u_underwater;
 
 out vec4 fragColor;
 
@@ -317,9 +318,10 @@ void main() {
   }
 
   // Dream / underwater wave distortion
-  if (u_wave > 0.0001) {
-    uv.x += sin(uv.y * 22.0 + u_time * 3.2) * u_wave;
-    uv.y += cos(uv.x * 18.0 + u_time * 2.6) * u_wave * 0.7;
+  float activeWave = max(u_wave, u_underwater * 0.0055);
+  if (activeWave > 0.0001) {
+    uv.x += sin(uv.y * 22.0 + u_time * 3.2) * activeWave;
+    uv.y += cos(uv.x * 18.0 + u_time * 2.6) * activeWave * 0.7;
   }
 
   // Retro pixelation snap across entire screen
@@ -409,6 +411,16 @@ void main() {
     float ink = smoothstep(0.08, 0.28, edge) * u_screenOutline;
     vec3 inkCol = (u_hdrInput == 1) ? vec3(0.006, 0.005, 0.015) : vec3(0.05, 0.04, 0.09);
     col = mix(col, inkCol, clamp(ink, 0.0, 1.0));
+  }
+
+  // Automatic volumetric underwater tint, depth absorption & caustic rays
+  if (u_underwater > 0.001) {
+    float uwD = linearDepth(uv);
+    float uwFog = 1.0 - exp(-uwD * 0.14);
+    float ray = 0.5 + 0.5 * sin(uv.x * 16.0 + uv.y * 5.0 + u_time * 2.4) * cos(uv.x * 9.0 - u_time * 1.7);
+    vec3 uwColor = (u_hdrInput == 1) ? vec3(0.015, 0.16, 0.28) : vec3(0.05, 0.36, 0.52);
+    col = mix(col, uwColor, clamp(uwFog * 0.72 * u_underwater, 0.0, 0.82));
+    col += uwColor * (pow(ray, 3.0) * 0.25 * (1.0 - uv.y * 0.6) * u_underwater);
   }
 
   // Final Filmic ACES Tone Mapping + sRGB Gamma when fed Linear HDR buffer

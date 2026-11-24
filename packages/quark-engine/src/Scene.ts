@@ -153,6 +153,24 @@ export interface TriggerEvent {
   entityB: EntityId;
 }
 
+export type VfxPresetName = 'fire' | 'smoke' | 'sparks' | 'splash' | 'magic' | 'confetti' | 'bubbles';
+
+export interface ParticleSpawnOptions {
+  position: Vec3Tuple;
+  velocity: Vec3Tuple;
+  sizeStart?: number;
+  sizeEnd?: number;
+  colorStart?: [number, number, number, number];
+  colorEnd?: [number, number, number, number];
+  lifetime?: number;
+  gravity?: number;
+  drag?: number;
+  bounce?: number;
+  floorY?: number;
+  additive?: boolean;
+  stretch?: number;
+}
+
 export class Scene {
   private readonly bridge: WasmBridge;
   private readonly projMat = new Float32Array(16);
@@ -201,6 +219,7 @@ export class Scene {
   private readonly triggerEnterListeners = new Set<(ev: TriggerEvent) => void>();
   private readonly triggerExitListeners = new Set<(ev: TriggerEvent) => void>();
   private readonly richEventListeners = new Set<(ev: RichPhysicsEvent) => void>();
+  private readonly waterZoneBoxes: Array<{ center: Vec3Tuple; halfExtents: Vec3Tuple }> = [];
   readonly behaviors: BehaviorManager;
 
   constructor(bridge: WasmBridge) {
@@ -411,6 +430,10 @@ export class Scene {
   }): number {
     const r = opts.rotation ?? [0, 0, 0, 1];
     const f = opts.flow ?? [0, 0, 0];
+    this.waterZoneBoxes.push({
+      center: [...opts.center],
+      halfExtents: [...opts.halfExtents],
+    });
     return this.bridge.addWaterZone(
       opts.center[0],
       opts.center[1],
@@ -432,7 +455,30 @@ export class Scene {
   }
 
   clearWaterZones(): void {
+    this.waterZoneBoxes.length = 0;
     this.bridge.clearWaterZones();
+  }
+
+  getUnderwaterDepth(point: Vec3Tuple): number {
+    let maxDepth = 0;
+    for (let i = 0; i < this.waterZoneBoxes.length; i++) {
+      const z = this.waterZoneBoxes[i];
+      if (
+        Math.abs(point[0] - z.center[0]) <= z.halfExtents[0] &&
+        Math.abs(point[2] - z.center[2]) <= z.halfExtents[2]
+      ) {
+        const top = z.center[1] + z.halfExtents[1];
+        const bot = z.center[1] - z.halfExtents[1];
+        if (point[1] >= bot && point[1] <= top) {
+          maxDepth = Math.max(maxDepth, top - point[1]);
+        }
+      }
+    }
+    return maxDepth;
+  }
+
+  isPointUnderwater(point: Vec3Tuple): boolean {
+    return this.getUnderwaterDepth(point) > 0;
   }
 
   addBallSocketJoint(
@@ -999,6 +1045,199 @@ export class Scene {
     return { view: this.viewMat, proj: this.projMat, viewProj: this.vpMat };
   }
 
+  getActiveParticleCount(): number {
+    return this.bridge.getParticlesCount();
+  }
+
+  emitParticle(opts: ParticleSpawnOptions): void {
+    const c0 = opts.colorStart ?? [1, 1, 1, 1];
+    const c1 = opts.colorEnd ?? [c0[0], c0[1], c0[2], 0];
+    this.bridge.spawnParticle(
+      opts.position[0],
+      opts.position[1],
+      opts.position[2],
+      opts.velocity[0],
+      opts.velocity[1],
+      opts.velocity[2],
+      opts.sizeStart ?? 0.2,
+      opts.sizeEnd ?? 0.05,
+      c0[0],
+      c0[1],
+      c0[2],
+      c0[3],
+      c1[0],
+      c1[1],
+      c1[2],
+      c1[3],
+      opts.lifetime ?? 0.8,
+      opts.gravity ?? -9.8,
+      opts.drag ?? 0.2,
+      opts.bounce ?? 0,
+      opts.floorY ?? 0,
+      opts.additive ?? false,
+      opts.stretch ?? 0
+    );
+  }
+
+  emitVfx(preset: VfxPresetName, origin: Vec3Tuple, count = 24, floorY = 0.02): void {
+    for (let i = 0; i < count; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = Math.random();
+      if (preset === 'fire') {
+        this.emitParticle({
+          position: [origin[0] + Math.cos(ang) * rad * 0.25, origin[1] + Math.random() * 0.15, origin[2] + Math.sin(ang) * rad * 0.25],
+          velocity: [Math.cos(ang) * 0.45, 1.4 + Math.random() * 1.9, Math.sin(ang) * 0.45],
+          sizeStart: 0.28 + Math.random() * 0.14,
+          sizeEnd: 0.04,
+          colorStart: [1.0, 0.72, 0.22, 0.92],
+          colorEnd: [0.95, 0.15, 0.02, 0.0],
+          lifetime: 0.45 + Math.random() * 0.35,
+          gravity: 1.2,
+          drag: 0.6,
+          additive: true,
+        });
+      } else if (preset === 'smoke') {
+        this.emitParticle({
+          position: [origin[0] + Math.cos(ang) * rad * 0.28, origin[1], origin[2] + Math.sin(ang) * rad * 0.28],
+          velocity: [Math.cos(ang) * 0.35, 1.0 + Math.random() * 1.1, Math.sin(ang) * 0.35],
+          sizeStart: 0.24,
+          sizeEnd: 0.85,
+          colorStart: [0.32, 0.34, 0.38, 0.45],
+          colorEnd: [0.22, 0.24, 0.28, 0.0],
+          lifetime: 1.1 + Math.random() * 0.6,
+          gravity: 0.35,
+          drag: 0.9,
+          additive: false,
+        });
+      } else if (preset === 'sparks') {
+        const spd = 2.8 + Math.random() * 5.2;
+        this.emitParticle({
+          position: [origin[0], origin[1], origin[2]],
+          velocity: [Math.cos(ang) * spd, 2.2 + Math.random() * 4.5, Math.sin(ang) * spd],
+          sizeStart: 0.13,
+          sizeEnd: 0.03,
+          colorStart: [1.0, 0.88, 0.42, 1.0],
+          colorEnd: [1.0, 0.32, 0.05, 0.0],
+          lifetime: 0.55 + Math.random() * 0.45,
+          gravity: -18,
+          drag: 0.25,
+          bounce: 0.62,
+          floorY,
+          additive: true,
+          stretch: 0.95,
+        });
+      } else if (preset === 'splash') {
+        const spd = 1.6 + Math.random() * 3.8;
+        this.emitParticle({
+          position: [origin[0] + Math.cos(ang) * rad * 0.4, origin[1], origin[2] + Math.sin(ang) * rad * 0.4],
+          velocity: [Math.cos(ang) * spd, 2.8 + Math.random() * 4.2, Math.sin(ang) * spd],
+          sizeStart: 0.14,
+          sizeEnd: 0.04,
+          colorStart: [0.85, 0.96, 1.0, 0.95],
+          colorEnd: [0.45, 0.85, 1.0, 0.0],
+          lifetime: 0.55 + Math.random() * 0.35,
+          gravity: -16,
+          drag: 0.4,
+          bounce: 0.25,
+          floorY,
+          additive: false,
+          stretch: 0.8,
+        });
+      } else if (preset === 'magic') {
+        this.emitParticle({
+          position: [origin[0] + Math.cos(ang) * rad * 0.6, origin[1] + Math.random() * 0.4, origin[2] + Math.sin(ang) * rad * 0.6],
+          velocity: [Math.cos(ang) * 1.1, 1.1 + Math.random() * 1.6, Math.sin(ang) * 1.1],
+          sizeStart: 0.18,
+          sizeEnd: 0.02,
+          colorStart: [0.35, 0.95, 1.0, 1.0],
+          colorEnd: [0.78, 0.35, 1.0, 0.0],
+          lifetime: 0.75 + Math.random() * 0.45,
+          gravity: -0.6,
+          drag: 0.8,
+          additive: true,
+        });
+      } else if (preset === 'bubbles') {
+        this.emitParticle({
+          position: [origin[0] + Math.cos(ang) * rad * 1.6, origin[1] + Math.random() * 0.4, origin[2] + Math.sin(ang) * rad * 1.6],
+          velocity: [(Math.random() - 0.5) * 0.35, 0.65 + Math.random() * 0.9, (Math.random() - 0.5) * 0.35],
+          sizeStart: 0.07 + Math.random() * 0.06,
+          sizeEnd: 0.1,
+          colorStart: [0.75, 0.95, 1.0, 0.75],
+          colorEnd: [0.9, 1.0, 1.0, 0.0],
+          lifetime: 0.9 + Math.random() * 0.6,
+          gravity: 0.4,
+          drag: 1.2,
+          additive: false,
+        });
+      } else {
+        // confetti (2D & 3D festive burst)
+        const palette: Array<[number, number, number, number]> = [
+          [1.0, 0.25, 0.45, 1],
+          [0.25, 0.9, 0.65, 1],
+          [0.3, 0.75, 1.0, 1],
+          [1.0, 0.82, 0.2, 1],
+        ];
+        const col = palette[i % palette.length];
+        this.emitParticle({
+          position: [origin[0], origin[1], origin[2]],
+          velocity: [Math.cos(ang) * (2.0 + Math.random() * 4.0), 3.0 + Math.random() * 4.5, Math.sin(ang) * (2.0 + Math.random() * 4.0)],
+          sizeStart: 0.16,
+          sizeEnd: 0.12,
+          colorStart: col,
+          colorEnd: [col[0], col[1], col[2], 0],
+          lifetime: 1.4 + Math.random() * 0.6,
+          gravity: -9.5,
+          drag: 1.8,
+          bounce: 0.3,
+          floorY,
+          additive: false,
+        });
+      }
+    }
+  }
+
+  createCloth(opts: {
+    origin: Vec3Tuple;
+    rightStep: Vec3Tuple;
+    downStep: Vec3Tuple;
+    cols: number;
+    rows: number;
+    pinTop?: boolean;
+    pinLeft?: boolean;
+  }): number {
+    return this.bridge.createCloth(
+      opts.origin[0],
+      opts.origin[1],
+      opts.origin[2],
+      opts.rightStep[0],
+      opts.rightStep[1],
+      opts.rightStep[2],
+      opts.downStep[0],
+      opts.downStep[1],
+      opts.downStep[2],
+      opts.cols,
+      opts.rows,
+      opts.pinTop ?? true,
+      opts.pinLeft ?? false
+    );
+  }
+
+  setClothWind(clothId: number, wind: Vec3Tuple): void {
+    this.bridge.setClothWind(clothId, wind[0], wind[1], wind[2]);
+  }
+
+  pushClothSphere(clothId: number, center: Vec3Tuple, radius: number): void {
+    this.bridge.pushClothSphere(clothId, center[0], center[1], center[2], radius);
+  }
+
+  getClothVerticesView(clothId: number): Float32Array {
+    return this.bridge.getClothVerticesView(clothId);
+  }
+
+  getClothIndicesCopy(clothId: number): Uint32Array {
+    return this.bridge.getClothIndicesCopy(clothId);
+  }
+
   clear(): void {
     this.behaviors.clear();
     this.collisionEnterListeners.clear();
@@ -1008,6 +1247,7 @@ export class Scene {
     this.spotLights.length = 0;
     this.lights2d.ambientColor = [1, 1, 1];
     this.lights2d.lights.length = 0;
+    this.waterZoneBoxes.length = 0;
     this.bridge.clear();
   }
 }

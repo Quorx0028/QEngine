@@ -262,7 +262,7 @@
       </div>
 
       <div class="hint">
-        <b>3D:</b> WASD бег · Shift спринт · Space прыжок · <b>E</b> дверь/лампа · <b>L</b> свет · C/Q/R спавн · <b>F / ЛКМ</b> импульс · <b>F2</b> профайлер · Drag&Drop <code>.glb</code>.<br>
+        <b>3D:</b> WASD бег · Shift спринт · Space прыжок · <b>E</b> дверь/лампа · <b>L</b> свет · C/Q/R спавн · <b>F / ЛКМ</b> выстрел/декали · <b>G / ПКМ</b> крюк-кошка · Зайди в воду для <b>подводного режима</b> · <b>F2</b> профайлер · Drag&Drop <code>.glb</code>.<br>
         <b>Orbit 3D:</b> ЛКМ вращать · ПКМ / Shift двигать · Колесо зум (универсально для 3D-витрин).
       </div>
 
@@ -274,8 +274,12 @@
       <div class="row">
         <select id="sel-orbit-target" style="flex:1">
           <option value="crystal">Фокус: Кристалл / .GLB</option>
-          <option value="water">Фокус: Бассейн (Вода 2.0)</option>
-          <option value="room">Фокус: Тёмная комната</option>
+          <option value="water">Фокус: Бассейн 3D (Вода 2.0)</option>
+          <option value="underwater">Фокус: Под водой (Underwater)</option>
+          <option value="room">Фокус: Тёмная комната + God-Rays</option>
+          <option value="fire">Фокус: Костёр + GPU Частицы</option>
+          <option value="cloth">Фокус: Ткань (Verlet Cloth)</option>
+          <option value="shatter">Фокус: Стекло (Shatter + Decals)</option>
           <option value="arena">Фокус: Вся арена</option>
         </select>
         <label class="chk"><input type="checkbox" id="chk-orbit-auto" checked /> Auto</label>

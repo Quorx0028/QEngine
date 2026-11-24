@@ -1,3 +1,5 @@
+const EMPTY_F32 = new Float32Array(0);
+
 export interface ParsedGlbSubmesh {
   indexOffset: number;
   indexCount: number;
@@ -382,6 +384,66 @@ interface CoreExports {
   ): number;
   core_build_physics_debug_lines(ptr: number): number;
   core_physics_debug_lines_ptr(ptr: number): number;
+  core_spawn_particle(
+    ptr: number,
+    px: number,
+    py: number,
+    pz: number,
+    vx: number,
+    vy: number,
+    vz: number,
+    sizeStart: number,
+    sizeEnd: number,
+    r0: number,
+    g0: number,
+    b0: number,
+    a0: number,
+    r1: number,
+    g1: number,
+    b1: number,
+    a1: number,
+    life: number,
+    gravity: number,
+    drag: number,
+    bounce: number,
+    floorY: number,
+    additive: number,
+    stretch: number
+  ): void;
+  core_particles_alpha_ptr(ptr: number): number;
+  core_particles_alpha_len(ptr: number): number;
+  core_particles_add_ptr(ptr: number): number;
+  core_particles_add_len(ptr: number): number;
+  core_particles_count(ptr: number): number;
+  core_create_cloth(
+    ptr: number,
+    ox: number,
+    oy: number,
+    oz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    cols: number,
+    rows: number,
+    pinTop: number,
+    pinLeft: number
+  ): number;
+  core_set_cloth_wind(ptr: number, clothId: number, wx: number, wy: number, wz: number): void;
+  core_push_cloth_sphere(
+    ptr: number,
+    clothId: number,
+    cx: number,
+    cy: number,
+    cz: number,
+    radius: number
+  ): void;
+  core_cloth_verts_ptr(ptr: number, clothId: number): number;
+  core_cloth_verts_len(ptr: number, clothId: number): number;
+  core_cloth_indices_ptr(ptr: number, clothId: number): number;
+  core_cloth_indices_len(ptr: number, clothId: number): number;
   core_parse_glb(ptr: number, bytesPtr: number, bytesLen: number): number;
   core_glb_vertices_ptr(ptr: number): number;
   core_glb_vertices_len(ptr: number): number;
@@ -1519,6 +1581,140 @@ export class WasmBridge {
       this.exports.core_glb_clear(this.corePtr);
       this.dealloc(ptr, bytes.byteLength);
     }
+  }
+
+  spawnParticle(
+    px: number,
+    py: number,
+    pz: number,
+    vx: number,
+    vy: number,
+    vz: number,
+    sizeStart: number,
+    sizeEnd: number,
+    r0: number,
+    g0: number,
+    b0: number,
+    a0: number,
+    r1: number,
+    g1: number,
+    b1: number,
+    a1: number,
+    life: number,
+    gravity: number,
+    drag: number,
+    bounce: number,
+    floorY: number,
+    additive: boolean,
+    stretch: number
+  ): void {
+    this.exports.core_spawn_particle(
+      this.corePtr,
+      px,
+      py,
+      pz,
+      vx,
+      vy,
+      vz,
+      sizeStart,
+      sizeEnd,
+      r0,
+      g0,
+      b0,
+      a0,
+      r1,
+      g1,
+      b1,
+      a1,
+      life,
+      gravity,
+      drag,
+      bounce,
+      floorY,
+      additive ? 1 : 0,
+      stretch
+    );
+  }
+
+  getParticlesAlphaView(): Float32Array {
+    this.refreshViews();
+    const ptr = this.exports.core_particles_alpha_ptr(this.corePtr);
+    const len = this.exports.core_particles_alpha_len(this.corePtr);
+    if (!ptr || len <= 0) return EMPTY_F32;
+    const start = ptr >>> 2;
+    return this.f32View.subarray(start, start + len);
+  }
+
+  getParticlesAddView(): Float32Array {
+    this.refreshViews();
+    const ptr = this.exports.core_particles_add_ptr(this.corePtr);
+    const len = this.exports.core_particles_add_len(this.corePtr);
+    if (!ptr || len <= 0) return EMPTY_F32;
+    const start = ptr >>> 2;
+    return this.f32View.subarray(start, start + len);
+  }
+
+  getParticlesCount(): number {
+    return this.exports.core_particles_count(this.corePtr);
+  }
+
+  createCloth(
+    ox: number,
+    oy: number,
+    oz: number,
+    rx: number,
+    ry: number,
+    rz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    cols: number,
+    rows: number,
+    pinTop: boolean,
+    pinLeft: boolean
+  ): number {
+    return this.exports.core_create_cloth(
+      this.corePtr,
+      ox,
+      oy,
+      oz,
+      rx,
+      ry,
+      rz,
+      dx,
+      dy,
+      dz,
+      cols,
+      rows,
+      pinTop ? 1 : 0,
+      pinLeft ? 1 : 0
+    );
+  }
+
+  setClothWind(clothId: number, wx: number, wy: number, wz: number): void {
+    this.exports.core_set_cloth_wind(this.corePtr, clothId, wx, wy, wz);
+  }
+
+  pushClothSphere(clothId: number, cx: number, cy: number, cz: number, radius: number): void {
+    this.exports.core_push_cloth_sphere(this.corePtr, clothId, cx, cy, cz, radius);
+  }
+
+  getClothVerticesView(clothId: number): Float32Array {
+    this.refreshViews();
+    const ptr = this.exports.core_cloth_verts_ptr(this.corePtr, clothId);
+    const len = this.exports.core_cloth_verts_len(this.corePtr, clothId);
+    if (!ptr || len <= 0) return EMPTY_F32;
+    const start = ptr >>> 2;
+    return this.f32View.subarray(start, start + len);
+  }
+
+  getClothIndicesCopy(clothId: number): Uint32Array {
+    this.refreshViews();
+    const ptr = this.exports.core_cloth_indices_ptr(this.corePtr, clothId);
+    const len = this.exports.core_cloth_indices_len(this.corePtr, clothId);
+    if (!ptr || len <= 0) return new Uint32Array(0);
+    const start = ptr >>> 2;
+    return this.u32View.slice(start, start + len);
   }
 
   dispose(): void {

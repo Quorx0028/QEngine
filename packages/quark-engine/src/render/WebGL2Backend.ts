@@ -250,6 +250,67 @@ void main() {
 }
 `;
 
+const VFX_VERT = `#version 300 es
+precision highp float;
+layout(location = 0) in vec2 a_quadPos;
+layout(location = 1) in vec4 a_pPosSize;
+layout(location = 2) in vec4 a_pCol;
+layout(location = 3) in vec4 a_pVelStretch;
+
+uniform mat4 u_viewProj;
+uniform vec3 u_camRight;
+uniform vec3 u_camUp;
+
+out vec2 v_uv;
+out vec4 v_color;
+
+void main() {
+  float size = a_pPosSize.w;
+  vec3 worldPos = a_pPosSize.xyz;
+  float stretch = a_pVelStretch.w;
+  vec3 vel = a_pVelStretch.xyz;
+  float speed = length(vel);
+  if (stretch > 0.005 && speed > 0.25) {
+    vec3 dir = vel / speed;
+    vec3 camForward = cross(u_camRight, u_camUp);
+    vec3 side = cross(dir, camForward);
+    if (dot(side, side) < 0.001) side = u_camRight;
+    else side = normalize(side);
+    float lenScale = size * (1.0 + min(speed * stretch * 0.16, 4.5));
+    worldPos += side * (a_quadPos.x * size * 0.55) + dir * (a_quadPos.y * lenScale);
+  } else {
+    worldPos += (u_camRight * a_quadPos.x + u_camUp * a_quadPos.y) * size;
+  }
+  v_uv = a_quadPos * 2.0;
+  v_color = a_pCol;
+  gl_Position = u_viewProj * vec4(worldPos, 1.0);
+}
+`;
+
+const VFX_FRAG = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+in vec4 v_color;
+uniform int u_hdrOutput;
+uniform int u_additive;
+out vec4 fragColor;
+
+void main() {
+  float d = length(v_uv);
+  if (d >= 1.0) discard;
+  float soft = (u_additive == 1)
+    ? pow(max(1.0 - d, 0.0), 2.2)
+    : smoothstep(1.0, 0.15, d);
+  vec3 col = (u_hdrOutput == 1) ? pow(max(v_color.rgb, vec3(0.0)), vec3(2.2)) : v_color.rgb;
+  if (u_additive == 1) {
+    col *= (1.0 + pow(max(1.0 - d, 0.0), 3.0) * 1.6);
+  }
+  float a = v_color.a * soft;
+  if (a < 0.005) discard;
+  fragColor = vec4(col, a);
+}
+`;
+
 const LIGHT2D_VERT = `#version 300 es
 precision highp float;
 uniform vec2 u_camCenter;
@@ -353,6 +414,9 @@ export class WebGL2Backend implements IRenderBackend {
   private spriteQuadVbo: WebGLBuffer;
   private spriteInstVbo: WebGLBuffer;
   private spriteInstScratch = new Float32Array(16 * 128);
+  private vfxProgram: GpuProgram;
+  private vfxVao: WebGLVertexArrayObject;
+  private vfxInstVbo: WebGLBuffer;
   private readonly light2dPosScratch = new Float32Array(32);
   private readonly light2dColScratch = new Float32Array(48);
   private readonly light2dRadScratch = new Float32Array(16);
@@ -398,6 +462,7 @@ export class WebGL2Backend implements IRenderBackend {
     this.skyProgram = this.compileProgram('__sky__', SKY_VERT, SKY_FRAG);
     this.outlineProgram = this.compileProgram('__outline__', OUTLINE_VERT, OUTLINE_FRAG);
     this.spriteProgram = this.compileProgram('__sprite2d__', SPRITE_VERT, SPRITE_FRAG);
+    this.vfxProgram = this.compileProgram('__vfx__', VFX_VERT, VFX_FRAG);
     this.light2dProgram = this.compileProgram('__light2d__', LIGHT2D_VERT, LIGHT2D_FRAG);
     this.debugLineProgram = this.compileProgram('__debug_lines__', DEBUG_LINE_VERT, DEBUG_LINE_FRAG);
     this.debugLineVao = gl.createVertexArray()!;
@@ -465,6 +530,21 @@ export class WebGL2Backend implements IRenderBackend {
     for (let loc = 1; loc <= 4; loc++) {
       gl.enableVertexAttribArray(loc);
       gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, stride, (loc - 1) * 16);
+      gl.vertexAttribDivisor(loc, 1);
+    }
+    gl.bindVertexArray(null);
+
+    this.vfxVao = gl.createVertexArray()!;
+    this.vfxInstVbo = gl.createBuffer()!;
+    gl.bindVertexArray(this.vfxVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVbo);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vfxInstVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, 48 * 512, gl.DYNAMIC_DRAW);
+    for (let loc = 1; loc <= 3; loc++) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 48, (loc - 1) * 16);
       gl.vertexAttribDivisor(loc, 1);
     }
     gl.bindVertexArray(null);
@@ -684,6 +764,15 @@ export class WebGL2Backend implements IRenderBackend {
     return id;
   }
 
+  updateMeshVertices(meshId: number, vertices: Float32Array): void {
+    const mesh = this.meshes.get(meshId);
+    if (!mesh) return;
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
   disposeMesh(meshId: number): void {
     const mesh = this.meshes.get(meshId);
     if (!mesh) return;
@@ -858,7 +947,9 @@ export class WebGL2Backend implements IRenderBackend {
       this.spotShadowActive = false;
     }
 
-    const usePp = isPostProcessActive(scene.postProcess);
+    const uwDepth = scene.camera.mode === '3d' ? scene.getUnderwaterDepth(scene.camera.position) : 0;
+    const underwaterFactor = uwDepth > 0 ? Math.min(1, 0.55 + uwDepth * 0.45) : 0;
+    const usePp = isPostProcessActive(scene.postProcess) || underwaterFactor > 0.001;
     this.hdrActive = usePp && this.supportsFloatFbo;
     if (usePp) {
       this.ensurePostProcessFbos(canvas.width, canvas.height);
@@ -887,12 +978,13 @@ export class WebGL2Backend implements IRenderBackend {
       drawCalls += this.render3DPass(bridge, scene, viewProj, timeSec);
     }
     drawCalls += this.render2DPass(bridge, scene, viewProj, aspect);
+    drawCalls += this.renderGpuParticlesPass(bridge, scene, viewProj);
     if (scene.debugPhysics && scene.camera.mode === '3d') {
       drawCalls += this.renderDebugLinesPass(scene, viewProj);
     }
 
     if (usePp) {
-      drawCalls += this.renderPostProcess(canvas.width, canvas.height, scene.postProcess, timeSec);
+      drawCalls += this.renderPostProcess(canvas.width, canvas.height, scene.postProcess, timeSec, underwaterFactor);
     }
     return drawCalls;
   }
@@ -943,7 +1035,13 @@ export class WebGL2Backend implements IRenderBackend {
     return 1;
   }
 
-  private renderPostProcess(w: number, h: number, pp: PostProcessConfig, timeSec: number): number {
+  private renderPostProcess(
+    w: number,
+    h: number,
+    pp: PostProcessConfig,
+    timeSec: number,
+    underwaterFactor = 0
+  ): number {
     const gl = this.gl;
     let calls = 0;
     gl.disable(gl.DEPTH_TEST);
@@ -1021,6 +1119,7 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_saturation'), pp.saturation);
     gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_noir'), pp.noir);
     gl.uniform1i(this.uLoc(this.ppCompositeProgram, 'u_hdrInput'), this.hdrActive ? 1 : 0);
+    gl.uniform1f(this.uLoc(this.ppCompositeProgram, 'u_underwater'), underwaterFactor);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     calls++;
@@ -1568,11 +1667,21 @@ export class WebGL2Backend implements IRenderBackend {
         const desc = activeMat.desc;
         if (desc.transparent) {
           gl.enable(gl.BLEND);
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-          gl.depthMask(false);
+          if (desc.blendMode === 'additive') {
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+          } else {
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          }
+          gl.depthMask(desc.depthWrite === true);
         } else {
           gl.disable(gl.BLEND);
-          gl.depthMask(true);
+          gl.depthMask(desc.depthWrite !== false);
+        }
+        if (desc.polygonOffset) {
+          gl.enable(gl.POLYGON_OFFSET_FILL);
+          gl.polygonOffset(-2, -2);
+        } else {
+          gl.disable(gl.POLYGON_OFFSET_FILL);
         }
 
         if (desc.doubleSided) {
@@ -1618,10 +1727,91 @@ export class WebGL2Backend implements IRenderBackend {
       }
     }
 
+    gl.disable(gl.POLYGON_OFFSET_FILL);
     gl.depthMask(true);
     gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
     return drawCalls;
+  }
+
+  private renderGpuParticlesPass(bridge: WasmBridge, scene: Scene, viewProj: Float32Array): number {
+    const alphaData = bridge.getParticlesAlphaView();
+    const addData = bridge.getParticlesAddView();
+    if (alphaData.length === 0 && addData.length === 0) return 0;
+
+    const gl = this.gl;
+    let calls = 0;
+
+    let rx = 1;
+    let ry = 0;
+    let rz = 0;
+    let ux = 0;
+    let uy = 1;
+    let uz = 0;
+    if (scene.camera.mode === '3d') {
+      const p = scene.camera.position;
+      const t = scene.camera.target;
+      let fx = t[0] - p[0];
+      let fy = t[1] - p[1];
+      let fz = t[2] - p[2];
+      const fLen = Math.hypot(fx, fy, fz) || 1;
+      fx /= fLen;
+      fy /= fLen;
+      fz /= fLen;
+      const up = scene.camera.up;
+      rx = fy * up[2] - fz * up[1];
+      ry = fz * up[0] - fx * up[2];
+      rz = fx * up[1] - fy * up[0];
+      const rLen = Math.hypot(rx, ry, rz) || 1;
+      rx /= rLen;
+      ry /= rLen;
+      rz /= rLen;
+      ux = ry * fz - rz * fy;
+      uy = rz * fx - rx * fz;
+      uz = rx * fy - ry * fx;
+    }
+
+    gl.useProgram(this.vfxProgram.program);
+    gl.uniformMatrix4fv(this.uLoc(this.vfxProgram, 'u_viewProj'), false, viewProj);
+    gl.uniform3f(this.uLoc(this.vfxProgram, 'u_camRight'), rx, ry, rz);
+    gl.uniform3f(this.uLoc(this.vfxProgram, 'u_camUp'), ux, uy, uz);
+    gl.uniform1i(this.uLoc(this.vfxProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
+
+    gl.bindVertexArray(this.vfxVao);
+    if (scene.camera.mode === '3d') {
+      gl.enable(gl.DEPTH_TEST);
+    } else {
+      gl.disable(gl.DEPTH_TEST);
+    }
+    gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.BLEND);
+
+    if (alphaData.length >= 12) {
+      const count = Math.floor(alphaData.length / 12);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vfxInstVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, alphaData, gl.DYNAMIC_DRAW);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.uniform1i(this.uLoc(this.vfxProgram, 'u_additive'), 0);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+      calls++;
+    }
+
+    if (addData.length >= 12) {
+      const count = Math.floor(addData.length / 12);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vfxInstVbo);
+      gl.bufferData(gl.ARRAY_BUFFER, addData, gl.DYNAMIC_DRAW);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+      gl.uniform1i(this.uLoc(this.vfxProgram, 'u_additive'), 1);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+      calls++;
+    }
+
+    gl.bindVertexArray(null);
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST);
+    return calls;
   }
 
   private render2DPass(
@@ -1768,6 +1958,8 @@ export class WebGL2Backend implements IRenderBackend {
     gl.deleteVertexArray(this.spriteVao);
     gl.deleteBuffer(this.spriteQuadVbo);
     gl.deleteBuffer(this.spriteInstVbo);
+    gl.deleteVertexArray(this.vfxVao);
+    gl.deleteBuffer(this.vfxInstVbo);
     gl.deleteVertexArray(this.debugLineVao);
     gl.deleteBuffer(this.debugLineVbo);
   }

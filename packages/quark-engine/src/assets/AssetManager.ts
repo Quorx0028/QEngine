@@ -86,6 +86,10 @@ export class AssetManager {
     return handle;
   }
 
+  updateMeshVertices(meshId: number, vertices: Float32Array): void {
+    this.backend?.updateMeshVertices?.(meshId, vertices);
+  }
+
   createPreset(
     name: string,
     preset: ShaderPresetName,

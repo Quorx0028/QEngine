@@ -23,6 +23,8 @@ export const SHADER_BLOCK_IDS: readonly ShaderBlockId[] = [
   'subsurfaceWrap',
   'terrainSplat',
   'waterSurface',
+  'volumetricBeam',
+  'surfaceDecal',
 ] as const;
 
 export interface ComposeShaderConfig {
@@ -151,6 +153,7 @@ out vec2 v_uv;
 out vec4 v_shadowCoord;
 out vec4 v_spotShadowCoord;
 out float v_waveCrest;
+out float v_waterFace;
 
 ${vertexWaveFn}
 ${waterVertexFn}
@@ -159,6 +162,7 @@ void main() {
   vec3 localPos = a_position;
   vec3 localNormal = a_normal;
   v_waveCrest = 0.0;
+  v_waterFace = 1.0;
   if (u_skinned == 1) {
     float wSum = a_weights.x + a_weights.y + a_weights.z + a_weights.w;
     if (wSum > 0.0001) {
@@ -175,6 +179,8 @@ void main() {
   ${
     has('waterSurface')
       ? `
+  v_waterFace = step(0.5, a_normal.y);
+  float waveWeight = (abs(a_position.y) < 0.001) ? 1.0 : smoothstep(-0.02, 0.02, a_position.y);
   vec3 gTan = vec3(1.0, 0.0, 0.0);
   vec3 gBin = vec3(0.0, 0.0, 1.0);
   float wBase = max(u_waveFreq, 0.25);
@@ -185,8 +191,10 @@ void main() {
   wDisp += gerstnerWave(localPos, vec2(-0.61, 0.79), 0.14 * chop * ampScale, 3.15 / wBase, 1.42, u_time, gTan, gBin);
   wDisp += gerstnerWave(localPos, vec2(0.39, -0.92), 0.11 * chop * ampScale, 1.92 / wBase, 1.78, u_time, gTan, gBin);
   wDisp += gerstnerWave(localPos, vec2(-0.86, -0.51), 0.08 * chop * ampScale, 1.18 / wBase, 2.15, u_time, gTan, gBin);
-  localPos += wDisp;
-  localNormal = normalize(cross(gBin, gTan));
+  localPos += wDisp * waveWeight;
+  if (v_waterFace > 0.5) {
+    localNormal = normalize(cross(gBin, gTan));
+  }
   v_waveCrest = clamp((wDisp.y / max(u_waveAmp * 1.15, 0.015)) * 0.5 + 0.5, 0.0, 1.0);
   `
       : ''
@@ -359,7 +367,7 @@ vec3 evalTerrainSplat(vec3 baseAlbedo, vec3 wp, vec3 n) {
 `);
   }
 
-  if (has('dissolveNoise') || has('microDetail') || has('waterSurface')) {
+  if (has('dissolveNoise') || has('microDetail') || has('waterSurface') || has('volumetricBeam') || has('surfaceDecal')) {
     blockSnippets.push(`
 float hash31(vec3 p) {
   p = fract(p * 0.1031);
@@ -480,6 +488,7 @@ void evalWaterSurface(
   vec3 wp,
   vec2 uv,
   float waveCrest,
+  float waterFace,
   inout vec3 n,
   vec3 v,
   vec3 l,
@@ -496,60 +505,101 @@ void evalWaterSurface(
   out vec3 outColor,
   out float outAlpha
 ) {
-  float n1 = valueNoise3(vec3(wp.xz * 2.4 + vec2(u_time * 0.45, u_time * 0.28), u_time * 0.25));
-  float n2 = valueNoise3(vec3(wp.xz * 5.7 - vec2(u_time * 0.62, -u_time * 0.51), u_time * 0.4));
-  float eps = 0.08;
-  float gx = valueNoise3(vec3((wp.xz + vec2(eps, 0.0)) * 3.8 + vec2(u_time * 0.5, 0.0), 0.5)) -
-             valueNoise3(vec3((wp.xz - vec2(eps, 0.0)) * 3.8 + vec2(u_time * 0.5, 0.0), 0.5));
-  float gz = valueNoise3(vec3((wp.xz + vec2(0.0, eps)) * 3.8 - vec2(0.0, u_time * 0.42), 1.5)) -
-             valueNoise3(vec3((wp.xz - vec2(0.0, eps)) * 3.8 - vec2(0.0, u_time * 0.42), 1.5));
-  float rippleStrength = mix(1.0, 0.35, style) * (0.28 + choppiness * 0.65);
-  n = normalize(n + vec3(-gx, 0.0, -gz) * (1.25 * rippleStrength));
+  // Side & bottom volumetric tank walls (coupled seamlessly to wave perimeter)
+  if (waterFace < 0.5) {
+    float wallY = clamp(uv.y, 0.0, 1.0);
+    float causticBand = valueNoise3(vec3(wp.xz * 2.2 + vec2(u_time * 0.35, -u_time * 0.25), wp.y * 1.8 - u_time * 0.5));
+    vec3 volCol = mix(deepLin * 0.9, shallowLin * 0.85, wallY);
+    volCol += glowLin * (smoothstep(0.55, 0.92, causticBand) * 0.24 * wallY);
+    float sideFresnel = pow(1.0 - max(dot(n, v), 0.05), 3.0);
+    volCol = mix(volCol, skyHorizLin * 0.65, sideFresnel * 0.38 * (1.0 - style * 0.5));
+    outColor = volCol;
+    outAlpha = clamp(mix(0.84, 0.42, clamp(clarity, 0.0, 1.0)) + sideFresnel * 0.15, 0.32, 0.92);
+    return;
+  }
+
+  float n1 = valueNoise3(vec3(wp.xz * 2.6 + vec2(u_time * 0.45, u_time * 0.28), u_time * 0.25));
+  float n2 = valueNoise3(vec3(wp.xz * 6.4 - vec2(u_time * 0.68, -u_time * 0.51), u_time * 0.42));
+  float eps = 0.06;
+  float gx1 = valueNoise3(vec3((wp.xz + vec2(eps, 0.0)) * 4.2 + vec2(u_time * 0.5, 0.0), 0.5)) -
+              valueNoise3(vec3((wp.xz - vec2(eps, 0.0)) * 4.2 + vec2(u_time * 0.5, 0.0), 0.5));
+  float gz1 = valueNoise3(vec3((wp.xz + vec2(0.0, eps)) * 4.2 - vec2(0.0, u_time * 0.42), 1.5)) -
+              valueNoise3(vec3((wp.xz - vec2(0.0, eps)) * 4.2 - vec2(0.0, u_time * 0.42), 1.5));
+  float gx2 = valueNoise3(vec3((wp.xz + vec2(eps * 0.5, 0.0)) * 10.5 - vec2(u_time * 0.72, 0.2), 2.3)) -
+              valueNoise3(vec3((wp.xz - vec2(eps * 0.5, 0.0)) * 10.5 - vec2(u_time * 0.72, 0.2), 2.3));
+  float gz2 = valueNoise3(vec3((wp.xz + vec2(0.0, eps * 0.5)) * 10.5 + vec2(0.15, u_time * 0.65), 2.9)) -
+              valueNoise3(vec3((wp.xz - vec2(0.0, eps * 0.5)) * 10.5 + vec2(0.15, u_time * 0.65), 2.9));
+  float rippleStrength = mix(1.0, 0.30, style) * (0.28 + choppiness * 0.72);
+  n = normalize(n + vec3(-(gx1 + gx2 * 0.55), 0.0, -(gz1 + gz2 * 0.55)) * (1.15 * rippleStrength));
 
   float ndotv = max(dot(n, v), 0.02);
-  float fresnelReal = clamp(0.02 + 0.98 * pow(1.0 - ndotv, max(fresnelPow, 1.5)), 0.0, 1.0);
+  float fresnelReal = clamp(0.02 + 0.98 * pow(1.0 - ndotv, max(fresnelPow, 2.0)), 0.0, 1.0);
   float fresnelToon = smoothstep(0.46, 0.54, 1.0 - ndotv);
   float fresnel = mix(fresnelReal, fresnelToon, style);
 
   vec3 r = reflect(-v, n);
-  float skyMix = smoothstep(-0.02, 0.68, r.y);
+  float skyMix = smoothstep(-0.02, 0.65, r.y);
   vec3 reflCol = mix(skyHorizLin, skyTopLin, skyMix);
-  float sunSpecReal = pow(max(dot(r, l), 0.0), mix(180.0, 420.0, 1.0 - style * 0.5)) * 2.4 * shadow;
+  float sunSpecReal = pow(max(dot(r, l), 0.0), mix(240.0, 520.0, clamp(choppiness, 0.0, 1.0))) * 3.2 * shadow;
   float sunSpecToon = smoothstep(0.955, 0.972, max(dot(r, l), 0.0)) * 1.45 * shadow;
-  vec3 specCol = lColLin * max(lInt, 0.4) * mix(sunSpecReal, sunSpecToon, style);
+  vec3 specCol = lColLin * max(lInt, 0.45) * mix(sunSpecReal, sunSpecToon, style);
 
   // Depth absorption & anime stepped water bands
   float edgeDist = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
-  float shallowEdge = 1.0 - smoothstep(0.02, 0.24, edgeDist);
-  float depthMix = mix(clamp(1.0 - waveCrest * 0.65 - shallowEdge * 0.55, 0.0, 1.0), smoothstep(0.32, 0.68, 1.0 - waveCrest), style);
+  float shallowEdge = 1.0 - smoothstep(0.01, 0.14, edgeDist);
+  float depthMix = mix(clamp(1.0 - waveCrest * 0.55 - shallowEdge * 0.4, 0.0, 1.0), smoothstep(0.32, 0.68, 1.0 - waveCrest), style);
   vec3 waterBody = mix(shallowLin, deepLin, depthMix);
-  waterBody *= (0.45 + 0.55 * clamp(dot(n, l) * 0.5 + 0.5, 0.0, 1.0) * mix(0.65, 1.0, shadow));
-  waterBody += glowLin * (0.14 * waveCrest + 0.08 * n1) * (1.0 - style * 0.45);
+  waterBody *= (0.42 + 0.58 * clamp(dot(n, l) * 0.5 + 0.5, 0.0, 1.0) * mix(0.65, 1.0, shadow));
+  waterBody += glowLin * (0.09 * waveCrest + 0.03 * n1) * (1.0 - style * 0.5);
 
-  vec3 realMix = mix(waterBody, reflCol, fresnel * 0.85) + specCol;
+  vec3 realMix = mix(waterBody, reflCol, fresnel * 0.88) + specCol;
   vec3 animeBand = mix(shallowLin * 1.12, deepLin * 1.15, smoothstep(0.38, 0.46, fresnel * 0.6 + (1.0 - waveCrest) * 0.5));
   vec3 animeMix = mix(animeBand, reflCol * 0.9 + glowLin * 0.25, fresnel * 0.45) + specCol;
   vec3 litWater = mix(realMix, animeMix, style);
 
-  // Organic crest foam & lapping shoreline edge foam
-  float frothNoise = n1 * 0.6 + n2 * 0.4;
-  float crestMaskReal = smoothstep(0.66, 0.92, waveCrest + (frothNoise - 0.5) * 0.35);
+  // Crisp realistic peak foam & anime Ghibli shoreline foam (zero muddy clouds on calm water!)
+  float frothNoise = n1 * 0.55 + n2 * 0.45;
+  float crestMaskReal = smoothstep(0.84, 0.99, waveCrest + (frothNoise - 0.5) * 0.16);
   float crestMaskToon = smoothstep(0.70, 0.75, waveCrest + (frothNoise - 0.5) * 0.24);
-  float shoreWave = 1.0 - smoothstep(0.0, 0.09 + 0.03 * sin(u_time * 3.1 + frothNoise * 6.0), edgeDist);
-  float shoreFoamReal = shoreWave * smoothstep(0.32, 0.68, frothNoise);
-  float shoreFoamToon = smoothstep(0.45, 0.52, shoreWave * frothNoise * 1.45);
+  float shoreWaveReal = 1.0 - smoothstep(0.0, 0.032 + 0.012 * sin(u_time * 3.1 + frothNoise * 6.0), edgeDist);
+  float shoreWaveToon = 1.0 - smoothstep(0.0, 0.085 + 0.025 * sin(u_time * 3.1 + frothNoise * 6.0), edgeDist);
+  float shoreFoamReal = shoreWaveReal * smoothstep(0.45, 0.78, frothNoise);
+  float shoreFoamToon = smoothstep(0.45, 0.52, shoreWaveToon * frothNoise * 1.45);
   float foam = clamp((mix(crestMaskReal, crestMaskToon, style) + mix(shoreFoamReal, shoreFoamToon, style)) * foamAmt, 0.0, 1.0);
-  vec3 foamCol = mix(vec3(0.86, 0.94, 1.0), vec3(0.98, 0.99, 1.0), style) * (0.65 + 0.35 * max(dot(n, l), 0.2));
+  vec3 foamCol = mix(vec3(0.90, 0.96, 1.0), vec3(0.98, 0.99, 1.0), style) * (0.68 + 0.32 * max(dot(n, l), 0.25));
 
   outColor = mix(litWater, foamCol, foam);
   float baseAlpha = mix(0.88, 0.34, clamp(clarity, 0.0, 1.0));
-  outAlpha = clamp(mix(baseAlpha, 0.95, fresnel * 0.65 + foam * 0.85), 0.22, 0.98);
+  outAlpha = clamp(mix(baseAlpha, 0.96, fresnel * 0.65 + foam * 0.85), 0.24, 0.98);
 }
 `);
   }
 
-  const lightingBody = has('waterSurface')
-    ? `vec3 _wCol = vec3(0.0); float _wAlpha = alpha; evalWaterSurface(albedoLin, srgbToLin(u_edgeColor), srgbToLin(u_glowColor), v_worldPos, v_uv, v_waveCrest, n, v, l, lColLin, u_lightIntensity, skyTopLin, skyHorizLin, clamp(u_waterStyle, 0.0, 1.0), max(u_waterFoam, 0.0), clamp(u_waterChoppiness, 0.0, 1.2), clamp(u_waterClarity, 0.0, 1.0), u_fresnelPower, shadowFactor, _wCol, _wAlpha); color = _wCol; alpha = _wAlpha;`
+  const lightingBody = has('volumetricBeam')
+    ? `
+  float ndotvBeam = abs(dot(n, v));
+  float edgeFade = pow(clamp(ndotvBeam, 0.0, 1.0), 1.65);
+  float vFade = smoothstep(0.0, 0.25, v_uv.y) * smoothstep(1.0, 0.08, v_uv.y);
+  float swirl = valueNoise3(vec3(v_worldPos * 1.45 + vec3(0.0, u_time * 0.28, 0.0)));
+  color = srgbToLin(u_glowColor) * (0.65 + 0.55 * swirl);
+  alpha = clamp(u_baseColor.a * edgeFade * vFade * (0.7 + 0.45 * swirl), 0.0, 1.0);
+`
+    : has('surfaceDecal')
+      ? `
+  vec2 dUv = v_uv * 2.0 - 1.0;
+  float r = length(dUv);
+  if (r > 0.98) discard;
+  float nCrack = valueNoise3(vec3(dUv * 5.2, u_dissolve * 10.0));
+  float ring = smoothstep(0.68, 0.78, r) * (1.0 - smoothstep(0.84, 0.96, r));
+  float core = 1.0 - smoothstep(0.18, 0.85, r + (nCrack - 0.5) * 0.35);
+  float crackLine = 1.0 - smoothstep(0.0, 0.14, abs(sin(atan(dUv.y, dUv.x) * 6.0 + nCrack * 4.5)));
+  vec3 scorchCol = albedoLin * (0.45 + 0.55 * shadowFactor);
+  vec3 emberCol = srgbToLin(u_glowColor) * (ring * 1.45 + crackLine * (1.0 - r) * 0.75);
+  color = mix(scorchCol, emberCol, clamp(ring + crackLine * 0.4, 0.0, 1.0));
+  alpha = clamp((core * 0.85 + ring * 0.9) * u_baseColor.a, 0.0, 1.0);
+`
+      : has('waterSurface')
+    ? `vec3 _wCol = vec3(0.0); float _wAlpha = alpha; evalWaterSurface(albedoLin, srgbToLin(u_edgeColor), srgbToLin(u_glowColor), v_worldPos, v_uv, v_waveCrest, v_waterFace, n, v, l, lColLin, u_lightIntensity, skyTopLin, skyHorizLin, clamp(u_waterStyle, 0.0, 1.0), max(u_waterFoam, 0.0), clamp(u_waterChoppiness, 0.0, 1.2), clamp(u_waterClarity, 0.0, 1.0), u_fresnelPower, shadowFactor, _wCol, _wAlpha); color = _wCol; alpha = _wAlpha;`
     : has('celLighting')
     ? `color = evalCelLighting(albedoLin, n, v, l, lColLin * 1.45, u_lightIntensity, ambLin * 1.45, shadowTintLin, u_celSteps, shadowFactor);`
     : has('pbrLighting')
@@ -565,6 +615,7 @@ in vec2 v_uv;
 in vec4 v_shadowCoord;
 in vec4 v_spotShadowCoord;
 in float v_waveCrest;
+in float v_waterFace;
 
 ${FRAME_GLOBALS_UBO}
 uniform sampler2D u_shadowMap;
