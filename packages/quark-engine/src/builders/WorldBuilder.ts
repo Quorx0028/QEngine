@@ -634,7 +634,14 @@ export class WorldBuilder {
     const doors: DoorHandle[] = [];
 
     if (opts.floor !== false) {
-      entities.push(this.box({ pos: [cx, floorY - 0.08, cz], size: [w, 0.16, d], material: floorMat }));
+      // +0.02 m offset above `floorY` avoids coplanar Z-fighting with a world ground slab at `y = 0`
+      entities.push(
+        this.box({
+          pos: [cx, floorY - 0.06, cz],
+          size: [Math.max(0.2, w - 0.02), 0.16, Math.max(0.2, d - 0.02)],
+          material: floorMat,
+        })
+      );
     }
     if (opts.roof !== false) {
       entities.push(this.box({ pos: [cx, floorY + h + t * 0.4, cz], size: [w + t, t * 0.8, d + t], material: wallMat }));

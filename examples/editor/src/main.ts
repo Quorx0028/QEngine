@@ -107,7 +107,7 @@ async function bootstrapEditor() {
       const def = doc.entities.find((x) => x.id === did);
       if (!def) return;
       const xf = engine.scene.getTransform(eid);
-      const yOffset = def.kind === 'room' && def.roomConfig?.floor !== false ? 0.09 : 0;
+      const yOffset = def.kind === 'room' && def.roomConfig?.floor !== false ? 0.06 : 0;
       def.position = [round2(xf.position[0]), round2(xf.position[1] + yOffset), round2(xf.position[2])];
       if (gMode === 'scale' && (def.kind === 'box' || def.kind === 'trigger')) {
         def.size = [
