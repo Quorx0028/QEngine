@@ -57,6 +57,8 @@ layout(std140) uniform FrameGlobals {
   vec4 u_spotPosRange[4];
   vec4 u_spotDirInner[4];
   vec4 u_spotColOuter[4];
+  vec4 u_dryZones[4];
+  vec4 u_dryCeilY;
 };
 #define u_cameraPos (u_camPosTime.xyz)
 #define u_time (u_camPosTime.w)
@@ -521,19 +523,16 @@ void evalWaterSurface(
     return;
   }
 
-  float n1 = valueNoise3(vec3(wp.xz * 2.6 + vec2(u_time * 0.45, u_time * 0.28), u_time * 0.25));
-  float n2 = valueNoise3(vec3(wp.xz * 6.4 - vec2(u_time * 0.68, -u_time * 0.51), u_time * 0.42));
-  float eps = 0.06;
-  float gx1 = valueNoise3(vec3((wp.xz + vec2(eps, 0.0)) * 4.2 + vec2(u_time * 0.5, 0.0), 0.5)) -
-              valueNoise3(vec3((wp.xz - vec2(eps, 0.0)) * 4.2 + vec2(u_time * 0.5, 0.0), 0.5));
-  float gz1 = valueNoise3(vec3((wp.xz + vec2(0.0, eps)) * 4.2 - vec2(0.0, u_time * 0.42), 1.5)) -
-              valueNoise3(vec3((wp.xz - vec2(0.0, eps)) * 4.2 - vec2(0.0, u_time * 0.42), 1.5));
-  float gx2 = valueNoise3(vec3((wp.xz + vec2(eps * 0.5, 0.0)) * 10.5 - vec2(u_time * 0.72, 0.2), 2.3)) -
-              valueNoise3(vec3((wp.xz - vec2(eps * 0.5, 0.0)) * 10.5 - vec2(u_time * 0.72, 0.2), 2.3));
-  float gz2 = valueNoise3(vec3((wp.xz + vec2(0.0, eps * 0.5)) * 10.5 + vec2(0.15, u_time * 0.65), 2.9)) -
-              valueNoise3(vec3((wp.xz - vec2(0.0, eps * 0.5)) * 10.5 + vec2(0.15, u_time * 0.65), 2.9));
-  float rippleStrength = mix(1.0, 0.30, style) * (0.28 + choppiness * 0.72);
-  n = normalize(n + vec3(-(gx1 + gx2 * 0.55), 0.0, -(gz1 + gz2 * 0.55)) * (1.15 * rippleStrength));
+  // Fast analytical capillary ripples (replaces 10x expensive 3D valueNoise calls per water pixel!)
+  float n1 = puddleNoise2(wp.xz * 2.4 + vec2(u_time * 0.45, u_time * 0.28));
+  float n2 = puddleNoise2(wp.xz * 5.8 - vec2(u_time * 0.62, -u_time * 0.48));
+  vec2 rw1 = wp.xz * 5.6 + vec2(u_time * 2.2, u_time * 1.4);
+  vec2 rw2 = wp.xz * 9.2 - vec2(u_time * 2.8, -u_time * 1.9);
+  vec2 rw3 = wp.xz * 14.5 + vec2(-u_time * 3.1, u_time * 2.4);
+  float gx = cos(rw1.x + 0.5 * sin(rw1.y)) * 0.55 + cos(rw2.x * 0.8 - rw2.y * 0.6) * 0.35 + cos(rw3.x * 0.7 + rw3.y * 0.7) * 0.22;
+  float gz = sin(rw1.y + 0.5 * cos(rw1.x)) * 0.55 - cos(rw2.y * 0.8 + rw2.x * 0.6) * 0.35 + sin(rw3.y * 0.7 - rw3.x * 0.7) * 0.22;
+  float rippleStrength = mix(1.0, 0.28, style) * (0.28 + choppiness * 0.72);
+  n = normalize(n + vec3(-gx, 0.0, -gz) * (0.26 * rippleStrength));
   float rainRingGlow = 0.0;
   if (u_rainIntensity > 0.01) {
     vec2 rGrad = vec2(0.0);
@@ -802,15 +801,15 @@ float evalShadowMap(sampler2D smap, vec4 sc, vec3 n, vec3 l) {
   float ang = ignNoise(gl_FragCoord.xy) * 6.2831853;
   vec2 radius = ts * 2.35;
 
-  // 10-tap Vogel Disk PCF (golden angle spiral avoids grid patterns)
+  // 6-tap Vogel Disk PCF (golden angle spiral avoids grid patterns while cutting shadow ALU by 40%)
   float sum = 0.0;
-  for (int i = 0; i < 10; i++) {
-    float r = sqrt((float(i) + 0.5) / 10.0);
+  for (int i = 0; i < 6; i++) {
+    float r = sqrt((float(i) + 0.5) / 6.0);
     float theta = float(i) * 2.39996323 + ang;
     vec2 offset = vec2(cos(theta), sin(theta)) * r * radius;
     sum += (z <= texture(smap, proj.xy + offset).r) ? 1.0 : 0.0;
   }
-  return sum * 0.1;
+  return sum * 0.1666667;
 }
 
 float evalShadow(vec4 sc, vec3 n, vec3 l) {
@@ -935,32 +934,47 @@ void main() {
     !has('waterSurface') && !has('volumetricBeam') && !has('surfaceDecal') && !has('voronoiCaustics')
       ? `
   if (u_wetness > 0.01 && n.y > 0.94) {
-    float slopeMask = smoothstep(0.94, 0.99, n.y);
-    float pf = evalPuddleFbm(v_worldPos.xz * 0.24);
-    float puddle = smoothstep(0.56 - u_wetness * 0.24, 0.72 - u_wetness * 0.14, pf) * u_wetness * slopeMask;
-    albedoLin *= mix(1.0, 0.52, u_wetness * 0.45 * slopeMask + puddle * 0.42);
-    matRoughness = mix(matRoughness, 0.03, puddle * 0.94);
-    matClearcoat = max(matClearcoat, puddle * 0.96);
-    matClearcoatRoughness = mix(matClearcoatRoughness, 0.03, puddle);
-    if (u_rainIntensity > 0.01 && puddle > 0.05) {
-      vec2 pGrad = vec2(0.0);
-      evalRainRipples(v_worldPos.xz * 0.95, u_time, u_rainIntensity, pGrad, puddleRingGlow);
-      n = normalize(n + vec3(pGrad.x, 0.0, pGrad.y) * (puddle * 0.95));
-      puddleRingGlow *= puddle;
+    float dryMask = 1.0;
+    for (int dz = 0; dz < 4; dz++) {
+      vec4 zBox = u_dryZones[dz];
+      if (v_worldPos.y < u_dryCeilY[dz] && v_worldPos.x > zBox.x && v_worldPos.x < zBox.y && v_worldPos.z > zBox.z && v_worldPos.z < zBox.w) {
+        dryMask = 0.0;
+      }
+    }
+    float slopeMask = smoothstep(0.94, 0.99, n.y) * dryMask;
+    if (slopeMask > 0.01) {
+      float pf = evalPuddleFbm(v_worldPos.xz * 0.24);
+      float puddle = smoothstep(0.56 - u_wetness * 0.24, 0.72 - u_wetness * 0.14, pf) * u_wetness * slopeMask;
+      albedoLin *= mix(1.0, 0.52, u_wetness * 0.45 * slopeMask + puddle * 0.42);
+      matRoughness = mix(matRoughness, 0.03, puddle * 0.94);
+      matClearcoat = max(matClearcoat, puddle * 0.96);
+      matClearcoatRoughness = mix(matClearcoatRoughness, 0.03, puddle);
+      if (u_rainIntensity > 0.01 && puddle > 0.05) {
+        vec2 pGrad = vec2(0.0);
+        evalRainRipples(v_worldPos.xz * 0.95, u_time, u_rainIntensity, pGrad, puddleRingGlow);
+        n = normalize(n + vec3(pGrad.x, 0.0, pGrad.y) * (puddle * 0.95));
+        puddleRingGlow *= puddle;
+      }
     }
   }
   `
       : ''
   }
 
-  float shadowFactor = evalShadow(v_shadowCoord, n, l);
+  float shadowFactor = ${has('volumetricBeam') || has('surfaceDecal') ? '1.0' : 'evalShadow(v_shadowCoord, n, l)'};
 
   vec3 color;
   ${lightingBody}
+  ${
+    has('volumetricBeam') || has('surfaceDecal') || has('waterSurface')
+      ? ''
+      : `
   ${has('envIBL') ? 'color += evalEnvIBL(albedoLin, n, v, l, lColLin * max(u_lightIntensity, 0.25), skyTopLin, skyHorizLin, matMetallic, matRoughness, matClearcoat, matClearcoatRoughness);' : ''}
   color += evalPointLights(albedoLin, v_worldPos, n, v, matMetallic, matRoughness, matClearcoat, matClearcoatRoughness, matSubsurface, ${has('celLighting') ? '1.0' : '0.0'});
   color += evalSpotLights(albedoLin, v_worldPos, n, v, matMetallic, matRoughness, matClearcoat, matClearcoatRoughness, matSubsurface, ${has('celLighting') ? '1.0' : '0.0'}, v_spotShadowCoord);
   color += mix(skyHorizLin, vec3(0.85, 0.94, 1.0), 0.5) * (puddleRingGlow * 0.28);
+  `
+  }
   color += srgbToLin(u_emissiveColor) + (u_hasEmissiveMap == 1 ? srgbToLin(texture(u_emissiveMap, v_uv).rgb) : vec3(0.0));
 
   ${has('rimLight') ? 'color += srgbToLin(evalRimLight(n, v, u_rimColor, u_rimPower)) * 0.55;' : ''}

@@ -16,6 +16,7 @@ import {
   type ShaderBlockId,
   type ShaderPresetName,
   type Vec3Tuple,
+  type CloudStyle,
 } from 'quark-engine';
 import wasmUrl from 'quark-engine/wasm?url';
 import {
@@ -220,6 +221,8 @@ async function bootstrap() {
     yaw = 0;
     pitch = -0.14;
     wasGrounded = true;
+    scene.setWeather(weatherMode);
+    scene.setCloudStyle((document.getElementById('sel-cloud-style') as HTMLSelectElement).value as CloudStyle);
 
     hotspots
       .add({
@@ -870,6 +873,11 @@ async function bootstrap() {
   btnWSnow.onclick = () => setWeather('snow');
   btnWRain.onclick = () => setWeather('rain');
   btnWDownpour.onclick = () => setWeather('downpour');
+
+  const selCloudStyle = document.getElementById('sel-cloud-style') as HTMLSelectElement;
+  selCloudStyle.onchange = () => {
+    scene.setCloudStyle(selCloudStyle.value as CloudStyle);
+  };
 
   // Water 2.0 customization controls
   const btnWReal = document.getElementById('btn-water-realistic')!;

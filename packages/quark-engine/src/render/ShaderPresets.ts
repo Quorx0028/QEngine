@@ -216,7 +216,7 @@ function getPresetBase(preset: ShaderPresetName): MaterialDesc {
       };
     case 'waterRealistic':
       return {
-        blocks: ['waterSurface', 'voronoiCaustics', 'distanceFog'],
+        blocks: ['waterSurface', 'distanceFog'],
         uniforms: defaultMaterialUniforms({
           baseColor: [0.04, 0.34, 0.54, 0.78],
           edgeColor: [0.015, 0.1, 0.24],

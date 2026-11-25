@@ -118,6 +118,8 @@ export {
   type RigidBodyOptions,
   type Sprite2DOptions,
   type TransformOptions,
+  type CloudStyle,
+  type DryZoneBox,
   type TriggerEvent,
   type VfxPresetName,
   type WeatherState,

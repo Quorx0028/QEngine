@@ -264,7 +264,7 @@ export class WorldBuilder {
     const key = '__wb_unit_cyl__';
     let h = this.meshCache.get(key) ?? this.assets.getMesh(key);
     if (!h) {
-      h = this.assets.registerMesh(key, createCylinderGeometry(0.5, 1.0, 18), this.defaultTag);
+      h = this.assets.registerMesh(key, createCylinderGeometry(0.5, 0.5, 18), this.defaultTag);
     }
     this.meshCache.set(key, h);
     return h.meshId;
@@ -623,6 +623,7 @@ export class WorldBuilder {
     }
     if (opts.roof !== false) {
       entities.push(this.box({ pos: [cx, floorY + h + t * 0.4, cz], size: [w + t, t * 0.8, d + t], material: wallMat }));
+      this.scene.addDryZone({ center: [cx, floorY + h * 0.5, cz], size: [w, h, d] });
     }
 
     const doorMap = new Map<RoomSide, DoorConfig>();

@@ -133,6 +133,7 @@ uniform vec3 u_lightColor;
 uniform float u_time;
 uniform float u_cloudCoverage;
 uniform float u_rainIntensity;
+uniform int u_cloudStyle;
 uniform int u_hdrOutput;
 out vec4 fragColor;
 
@@ -192,32 +193,70 @@ void main() {
   float mieGlow = (pow(sunAmt, 48.0) * 0.85 + pow(sunAmt, 7.0) * 0.22) * (1.0 - storm * 0.68);
   col += lLin * (sunDisc + mieGlow);
 
-  // Twinkling stars only in dark night / dusk sky (linear luminance < 0.055)
-  float nightMask = smoothstep(0.055, 0.012, dot(topLin, vec3(0.299, 0.587, 0.114))) * smoothstep(0.02, 0.3, dir.y);
+  // Crisp round twinkling stars (ONLY in dark night skies, never square grid tiles!)
+  float topLum = dot(topLin, vec3(0.299, 0.587, 0.114));
+  float nightMask = smoothstep(0.045, 0.008, topLum) * smoothstep(0.02, 0.25, dir.y);
   if (nightMask > 0.01) {
-    vec2 starUv = floor(dir.xz / max(dir.y + 0.25, 0.1) * 95.0);
-    float sh = skyHash(starUv);
-    float star = step(0.9945, sh) * (0.55 + 0.45 * sin(u_time * 3.0 + sh * 62.0));
-    col += vec3(0.85, 0.92, 1.0) * star * nightMask * (1.0 - storm);
+    vec2 starGrid = dir.xz / max(dir.y + 0.25, 0.12) * 85.0;
+    vec2 sCell = floor(starGrid);
+    vec2 sLocal = fract(starGrid);
+    float sh = skyHash(sCell);
+    vec2 sPos = vec2(0.25 + 0.5 * skyHash(sCell + 13.7), 0.25 + 0.5 * skyHash(sCell + 41.3));
+    float dStar = length(sLocal - sPos);
+    float star = step(0.968, sh) * smoothstep(0.18, 0.02, dStar) * (0.55 + 0.45 * sin(u_time * 3.0 + sh * 62.0));
+    col += vec3(0.9, 0.95, 1.0) * star * nightMask * (1.0 - storm);
   }
 
-  // Layered drifting FBM clouds across sky dome (visible from horizon up to zenith)
+  // Multi-style procedural clouds: 0=Realistic cumulus, 1=Anime cel-shaded, 2=Dramatic/Storm, 3=Clear wisps
   if (dir.y > -0.04) {
     vec2 cloudUv = dir.xz / (max(dir.y, 0.0) + 0.14);
-    float windSpeed = 0.036 * (1.0 + u_rainIntensity * 1.4);
-    float nBase = skyFbm(cloudUv * 0.62 + vec2(u_time * windSpeed, u_time * windSpeed * 0.45));
-    float nDetail = skyFbm(cloudUv * 1.45 - vec2(u_time * windSpeed * 0.65, -u_time * windSpeed * 0.3));
-    float density = nBase * 0.7 + nDetail * 0.3;
-    float thresh = mix(0.64, 0.28, clamp(u_cloudCoverage, 0.0, 1.0));
-    float cloudMask = smoothstep(thresh, thresh + 0.16, density) * smoothstep(-0.02, 0.09, dir.y);
+    float windSpeed = (u_cloudStyle == 2 ? 0.052 : 0.032) * (1.0 + u_rainIntensity * 1.4);
+    vec2 drift = vec2(u_time * windSpeed, u_time * windSpeed * 0.4);
+    float warp = skyFbm(cloudUv * 0.45 + drift * 0.6);
+    float nBase = skyFbm(cloudUv * 0.62 + drift + vec2(warp * 0.35, -warp * 0.25));
+    float nDetail = skyFbm(cloudUv * 1.65 - drift * 0.7);
+    float nFine = skyNoise(cloudUv * 4.2 + drift * 1.3);
+    float density = nBase * 0.62 + nDetail * 0.26 + nFine * 0.12;
 
-    // Crisp sunlit white/silver cumulus tops vs cool atmospheric cloud bellies
-    float edgeLight = smoothstep(thresh, thresh + 0.28, nBase);
-    float silver = pow(sunAmt, 8.0) * 0.65 * (1.0 - storm * 0.75);
-    vec3 cloudBright = mix(vec3(0.95, 0.97, 1.0) * 0.7 + lLin * 0.85, vec3(0.32, 0.36, 0.42), storm);
-    vec3 cloudDark = mix(horLin * 0.58 + topLin * 0.38, vec3(0.065, 0.08, 0.11), storm);
-    vec3 cloudCol = mix(cloudDark, cloudBright, 0.32 + 0.68 * edgeLight) + lLin * silver;
-    col = mix(col, cloudCol, cloudMask * mix(0.9, 0.97, storm));
+    float horizonFade = smoothstep(-0.02, 0.11, dir.y);
+    float styleCov = u_cloudStyle == 3 ? 0.16 : u_cloudStyle == 2 ? max(u_cloudCoverage, 0.74) : u_cloudCoverage;
+    float thresh = mix(0.68, 0.28, clamp(styleCov, 0.0, 1.0));
+
+    if (u_cloudStyle == 1) {
+      // Anime (Shinkai / Ghibli): crisp painted cel bands with creamy lit rims & vivid blue-violet bases
+      float maskA = smoothstep(thresh, thresh + 0.045, density) * horizonFade;
+      float band1 = smoothstep(thresh + 0.05, thresh + 0.09, nBase * 0.8 + nDetail * 0.2);
+      float rimHi = smoothstep(thresh + 0.16, thresh + 0.21, nBase + sunAmt * 0.12);
+      vec3 cShadow = mix(mix(horLin * 0.55, topLin * 0.75, 0.55), vec3(0.14, 0.17, 0.25), storm);
+      vec3 cMid = mix(vec3(0.84, 0.90, 0.98) * 0.85, vec3(0.32, 0.36, 0.44), storm);
+      vec3 cBright = mix(vec3(1.0, 0.98, 0.94) + lLin * 0.55, vec3(0.45, 0.49, 0.56), storm);
+      vec3 animeCloud = mix(cShadow, cMid, band1);
+      animeCloud = mix(animeCloud, cBright, rimHi);
+      col = mix(col, animeCloud, maskA * 0.94);
+    } else if (u_cloudStyle == 2) {
+      // Dramatic: towering multi-layer storm & golden-rimmed sunset clouds
+      float maskD = smoothstep(thresh - 0.04, thresh + 0.18, density) * horizonFade;
+      float billow = smoothstep(thresh, thresh + 0.32, nBase * 0.75 + nFine * 0.25);
+      float rim = pow(clamp(1.0 - density + sunAmt * 0.55, 0.0, 1.0), 3.0) * pow(sunAmt, 4.0) * 1.35 * (1.0 - storm * 0.55);
+      vec3 darkBase = mix(vec3(0.08, 0.09, 0.14), vec3(0.04, 0.05, 0.075), storm);
+      vec3 topRim = mix(lLin * 1.1 + horLin * 0.5, vec3(0.24, 0.28, 0.35), storm);
+      vec3 dramCol = mix(darkBase, topRim, billow * 0.78) + lLin * rim;
+      col = mix(col, dramCol, maskD * 0.96);
+    } else if (u_cloudStyle == 3) {
+      // Clear wisps: subtle airy high-altitude cirrus streaks
+      float wisp = smoothstep(0.56, 0.78, nBase * 0.55 + nDetail * 0.45) * horizonFade * 0.45;
+      vec3 wispCol = mix(horLin, vec3(0.98, 0.99, 1.0), 0.7) + lLin * (pow(sunAmt, 6.0) * 0.3);
+      col = mix(col, wispCol, wisp);
+    } else {
+      // Realistic cumulus: sculpted domain-warped tops, silver-lining sun scatter & soft undersides
+      float cloudMask = smoothstep(thresh, thresh + 0.14, density) * horizonFade;
+      float upLit = clamp((nBase - thresh) * 2.8 + (nDetail - 0.45) * 0.45, 0.0, 1.0);
+      float silver = pow(sunAmt, 10.0) * 0.85 * (1.0 - cloudMask * 0.4) * (1.0 - storm * 0.75);
+      vec3 cloudBright = mix(vec3(0.96, 0.98, 1.0) * 0.78 + lLin * 0.82, vec3(0.30, 0.34, 0.40), storm);
+      vec3 cloudDark = mix(horLin * 0.52 + topLin * 0.38, vec3(0.06, 0.075, 0.105), storm);
+      vec3 cloudCol = mix(cloudDark, cloudBright, 0.25 + 0.75 * upLit) + lLin * silver;
+      col = mix(col, cloudCol, cloudMask * mix(0.92, 0.97, storm));
+    }
   }
 
   if (u_hdrOutput == 0) {
@@ -451,7 +490,7 @@ export class WebGL2Backend implements IRenderBackend {
   private readonly lightViewMat = new Float32Array(16);
   private readonly lightVpMat = new Float32Array(16);
   private readonly spotVpMat = new Float32Array(16);
-  private readonly frameUboScratch = new Float32Array(160);
+  private readonly frameUboScratch = new Float32Array(180);
   private frameGlobalsUbo: WebGLBuffer;
   private uboBound = false;
   private readonly parallelCompileExt: { COMPLETION_STATUS_KHR: number } | null;
@@ -1255,6 +1294,15 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(this.uLoc(this.skyProgram, 'u_time'), timeSec);
     gl.uniform1f(this.uLoc(this.skyProgram, 'u_cloudCoverage'), scene.weather.cloudCoverage);
     gl.uniform1f(this.uLoc(this.skyProgram, 'u_rainIntensity'), scene.weather.rainIntensity);
+    const cStyle =
+      scene.weather.cloudStyle === 'anime'
+        ? 1
+        : scene.weather.cloudStyle === 'dramatic'
+          ? 2
+          : scene.weather.cloudStyle === 'clear'
+            ? 3
+            : 0;
+    gl.uniform1i(this.uLoc(this.skyProgram, 'u_cloudStyle'), cStyle);
     gl.uniform1i(this.uLoc(this.skyProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
     gl.bindVertexArray(this.skyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1533,6 +1581,25 @@ export class WebGL2Backend implements IRenderBackend {
       u[cBase + 1] = sp.color[1] * sp.intensity;
       u[cBase + 2] = sp.color[2] * sp.intensity;
       u[cBase + 3] = Math.cos(((sp.outerConeDeg ?? 35) * Math.PI) / 180);
+    }
+
+    const dryZones = scene.getDryZones();
+    for (let i = 0; i < 4; i++) {
+      const base = 160 + i * 4;
+      if (i < dryZones.length) {
+        const dz = dryZones[i];
+        u[base] = dz.minX;
+        u[base + 1] = dz.maxX;
+        u[base + 2] = dz.minZ;
+        u[base + 3] = dz.maxZ;
+        u[176 + i] = dz.ceilY;
+      } else {
+        u[base] = 0;
+        u[base + 1] = 0;
+        u[base + 2] = 0;
+        u[base + 3] = 0;
+        u[176 + i] = -9999;
+      }
     }
 
     gl.bindBuffer(gl.UNIFORM_BUFFER, this.frameGlobalsUbo);

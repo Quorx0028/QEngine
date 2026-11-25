@@ -154,13 +154,23 @@ export interface TriggerEvent {
 }
 
 export type WeatherType = 'clear' | 'snow' | 'rain' | 'downpour';
+export type CloudStyle = 'realistic' | 'anime' | 'dramatic' | 'clear';
 
 export interface WeatherState {
   type: WeatherType;
+  cloudStyle: CloudStyle;
   rainIntensity: number;
   wetness: number;
   cloudCoverage: number;
   cloudSpeed: number;
+}
+
+export interface DryZoneBox {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  ceilY: number;
 }
 
 export type VfxPresetName =
@@ -171,6 +181,7 @@ export type VfxPresetName =
   | 'magic'
   | 'confetti'
   | 'bubbles'
+  | 'dust'
   | 'rain'
   | 'downpour'
   | 'snow';
@@ -235,6 +246,7 @@ export class Scene {
   fogDensity = 0.008;
   readonly weather: WeatherState = {
     type: 'clear',
+    cloudStyle: 'realistic',
     rainIntensity: 0,
     wetness: 0,
     cloudCoverage: 0.48,
@@ -250,6 +262,7 @@ export class Scene {
   private readonly triggerExitListeners = new Set<(ev: TriggerEvent) => void>();
   private readonly richEventListeners = new Set<(ev: RichPhysicsEvent) => void>();
   private readonly waterZoneBoxes: Array<{ center: Vec3Tuple; halfExtents: Vec3Tuple }> = [];
+  private readonly dryZoneBoxes: DryZoneBox[] = [];
   readonly behaviors: BehaviorManager;
 
   constructor(bridge: WasmBridge) {
@@ -409,6 +422,27 @@ export class Scene {
       this.weather.rainIntensity = Math.max(this.weather.rainIntensity, 0.95);
       this.weather.wetness = Math.max(this.weather.wetness, 0.78);
     }
+  }
+
+  setCloudStyle(style: CloudStyle): void {
+    this.weather.cloudStyle = style;
+  }
+
+  /** Marks an indoor covered volume (e.g. roofed room) so shader puddles & rain ripples stay outside. */
+  addDryZone(opts: { center: Vec3Tuple; size: Vec3Tuple }): void {
+    const [cx, cy, cz] = opts.center;
+    const [w, h, d] = opts.size;
+    this.dryZoneBoxes.push({
+      minX: cx - w * 0.5,
+      maxX: cx + w * 0.5,
+      minZ: cz - d * 0.5,
+      maxZ: cz + d * 0.5,
+      ceilY: cy + h * 0.5 - 0.12,
+    });
+  }
+
+  getDryZones(): readonly DryZoneBox[] {
+    return this.dryZoneBoxes;
   }
 
   advanceEffects(dt: number): void {
@@ -1319,12 +1353,33 @@ export class Scene {
           drag: 1.2,
           additive: false,
         });
+      } else if (preset === 'dust') {
+        this.emitParticle({
+          position: [
+            origin[0] + (Math.random() - 0.5) * 4.6,
+            Math.max(floorY + 0.3, origin[1] + (Math.random() - 0.5) * 2.4),
+            origin[2] + (Math.random() - 0.5) * 4.6,
+          ],
+          velocity: [(Math.random() - 0.5) * 0.22, 0.04 + Math.random() * 0.12, (Math.random() - 0.5) * 0.22],
+          sizeStart: 0.045 + Math.random() * 0.04,
+          sizeEnd: 0.025,
+          colorStart: [1.0, 0.9, 0.58, 0.78],
+          colorEnd: [1.0, 0.78, 0.38, 0.0],
+          lifetime: 2.2 + Math.random() * 1.6,
+          gravity: 0.02,
+          drag: 1.5,
+          additive: true,
+        });
       } else if (preset === 'rain' || preset === 'downpour') {
         const heavy = preset === 'downpour';
         const span = heavy ? 32 : 28;
         const px = origin[0] + (Math.random() - 0.5) * span;
-        const py = Math.max(floorY + 0.6, origin[1] - 8.5 + Math.random() * 11.5);
         const pz = origin[2] + (Math.random() - 0.5) * span;
+        const roofHit = this.raycast3D([px, 28, pz], [0, -1, 0], 30);
+        const surfaceY = roofHit ? Math.max(floorY, roofHit.point[1]) : floorY;
+        const minSpawnY = surfaceY + 0.45;
+        const maxSpawnY = Math.max(minSpawnY + 2.5, origin[1] + 3.0);
+        const py = minSpawnY + Math.random() * (maxSpawnY - minSpawnY);
         const speedY = heavy ? -24 - Math.random() * 7 : -18 - Math.random() * 5;
         this.emitParticle({
           position: [px, py, pz],
@@ -1337,14 +1392,13 @@ export class Scene {
           gravity: -28,
           drag: 0.04,
           bounce: 0.28,
-          floorY,
+          floorY: surfaceY + 0.02,
           additive: false,
           stretch: heavy ? 2.8 : 2.2,
         });
-        if (Math.random() < (heavy ? 0.35 : 0.16)) {
-          // Tiny ground droplet pop right at impact height so rain visibly hits puddles & floor
+        if (Math.random() < (heavy ? 0.32 : 0.14)) {
           this.emitParticle({
-            position: [px, floorY + 0.05, pz],
+            position: [px, surfaceY + 0.05, pz],
             velocity: [(Math.random() - 0.5) * 1.6, 1.4 + Math.random() * 1.4, (Math.random() - 0.5) * 1.6],
             sizeStart: 0.075,
             sizeEnd: 0.02,
@@ -1352,14 +1406,18 @@ export class Scene {
             colorEnd: [0.75, 0.9, 1.0, 0.0],
             lifetime: 0.24,
             gravity: -16,
-            floorY,
+            floorY: surfaceY + 0.02,
             additive: false,
           });
         }
       } else if (preset === 'snow') {
         const px = origin[0] + (Math.random() - 0.5) * 30;
-        const py = Math.max(floorY + 0.4, origin[1] - 10.5 + Math.random() * 13.0);
         const pz = origin[2] + (Math.random() - 0.5) * 30;
+        const roofHit = this.raycast3D([px, 28, pz], [0, -1, 0], 30);
+        const surfaceY = roofHit ? Math.max(floorY, roofHit.point[1]) : floorY;
+        const minSpawnY = surfaceY + 0.35;
+        const maxSpawnY = Math.max(minSpawnY + 2.0, origin[1] + 2.5);
+        const py = minSpawnY + Math.random() * (maxSpawnY - minSpawnY);
         this.emitParticle({
           position: [px, py, pz],
           velocity: [(Math.random() - 0.5) * 1.5, -2.0 - Math.random() * 1.2, (Math.random() - 0.5) * 1.5],
@@ -1371,7 +1429,7 @@ export class Scene {
           gravity: -0.25,
           drag: 0.12,
           bounce: 0.04,
-          floorY,
+          floorY: surfaceY + 0.02,
           additive: false,
         });
       } else {
@@ -1453,6 +1511,7 @@ export class Scene {
     this.lights2d.ambientColor = [1, 1, 1];
     this.lights2d.lights.length = 0;
     this.waterZoneBoxes.length = 0;
+    this.dryZoneBoxes.length = 0;
     this.weather.type = 'clear';
     this.weather.rainIntensity = 0;
     this.weather.wetness = 0;

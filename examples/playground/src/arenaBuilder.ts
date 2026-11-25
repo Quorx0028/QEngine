@@ -137,7 +137,6 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const boxMesh = assets.registerMesh('box', createBoxGeometry(0.5, 0.5, 0.5), 'scene');
   const sphereMesh = assets.registerMesh('sphere', createSphereGeometry(0.55, 18, 24), 'scene');
   const cylMesh = assets.registerMesh('cyl', createCylinderGeometry(0.45, 0.9, 20), 'scene');
-  const moteMesh = assets.registerMesh('dust-mote', createSphereGeometry(0.014, 6, 8), 'scene');
   const rampGentleGeom = createRampGeometry(4.0, 2.0, 7.0);
   const rampGentleMesh = assets.registerMesh('ramp-gentle', rampGentleGeom, 'scene');
   const rampSteepGeom = createRampGeometry(4.2, 3.0, 5.2);
@@ -562,47 +561,8 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     immediate: true,
   });
 
-  // Glowing golden dust particles inside the Dark Room (instanced in 1 draw call!)
-  const dustMatId = assets.createPreset(
-    'dust-mote-mat',
-    'cyberNeon',
-    {
-      uniforms: {
-        baseColor: [1.0, 0.9, 0.65, 1.0],
-        glowColor: [1.0, 0.8, 0.42],
-      },
-    },
-    'scene'
-  );
-  interface DustMote {
-    entity: EntityId;
-    bx: number;
-    by: number;
-    bz: number;
-    phase: number;
-    speed: number;
-    scale: number;
-  }
-  const dustMotes: DustMote[] = [];
-  for (let i = 0; i < 76; i++) {
-    const bx = roomC[0] + (Math.random() - 0.5) * 4.8;
-    const by = 0.45 + Math.random() * 2.75;
-    const bz = roomC[2] + (Math.random() - 0.5) * 4.8;
-    const sc = 0.65 + Math.random() * 1.15;
-    const e = scene.createEntity();
-    scene.setTransform(e, { position: [bx, by, bz], scale: [sc, sc, sc], immediate: true });
-    scene.setMesh3D(e, { meshId: moteMesh.meshId, materialId: dustMatId, boundsRadius: 0.15 });
-    dustMotes.push({
-      entity: e,
-      bx,
-      by,
-      bz,
-      phase: Math.random() * Math.PI * 2,
-      speed: 0.6 + Math.random() * 0.9,
-      scale: sc,
-    });
-  }
-
+  // Register Dark Room as covered dry interior so floor stays dry without raindrop puddles
+  scene.addDryZone({ center: [roomC[0], 2.0, roomC[2]], size: [6.4, 4.0, 6.4] });
   let roomLightOn = true;
 
   // Lights: SpotLight[0] INSIDE dark room casts real-time 1024px perspective shadows!
@@ -1405,6 +1365,9 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
           3,
           0.12
         );
+        if (roomLightOn) {
+          scene.emitVfx('dust', [roomC[0], 1.75, roomC[2]], 3, 0.1);
+        }
       }
 
       // WASM Verlet Cloth wind + player capsule push + live VBO upload
@@ -1442,19 +1405,6 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
         scene.setTransform(blk.entity, {
           position: [blk.x, h * 0.5, blk.z],
           scale: [0.58, h, 0.58],
-        });
-      }
-
-      // Animate floating warm dust motes in Dark Room light cone
-      for (const m of dustMotes) {
-        const t = spinTime * m.speed + m.phase;
-        const mx = m.bx + Math.sin(t * 0.7) * 0.28;
-        const my = m.by + Math.cos(t * 0.55) * 0.24;
-        const mz = m.bz + Math.cos(t * 0.65) * 0.28;
-        const visScale = roomLightOn ? m.scale : m.scale * 0.35;
-        scene.setTransform(m.entity, {
-          position: [mx, my, mz],
-          scale: [visScale, visScale, visScale],
         });
       }
 
