@@ -23,6 +23,42 @@ export {
   type GizmoMode,
   type TransformGizmoOptions,
 } from './builders/TransformGizmo';
+export {
+  BLUEPRINT_NODE_CATALOG,
+  BlueprintRuntime,
+  NODE_SPEC_BY_TYPE,
+  type BlueprintHostApi,
+  type BlueprintNodeSpec,
+} from './editor/BlueprintRuntime';
+export {
+  generateProceduralTexturePixels,
+  loadImageDataUrlTexture,
+} from './editor/ProceduralTextures';
+export {
+  ProjectRunner,
+  type ProjectRunnerCallbacks,
+} from './editor/ProjectRunner';
+export {
+  createStarterProject,
+  makeMaterialFromPreset,
+  type BlueprintEdge,
+  type BlueprintGraph,
+  type BlueprintNode,
+  type BlueprintNodeType,
+  type EditorEntityDef,
+  type EditorEntityKind,
+  type EditorEnvironmentDef,
+  type EditorLightConfig,
+  type EditorMaterialDef,
+  type EditorPhysicsDef,
+  type EditorPlayerConfig,
+  type EditorRoomConfig,
+  type EditorWeldDef,
+  type PhysicsMode,
+  type ProceduralTextureKind,
+  type QuarkProjectDoc,
+  type StarterTemplateId,
+} from './editor/ProjectSchema';
 export { AnimStateMachine, type AnimTransition } from './gameplay/AnimStateMachine';
 export {
   BehaviorManager,

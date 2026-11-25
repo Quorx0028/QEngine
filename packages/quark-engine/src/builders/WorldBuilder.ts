@@ -100,6 +100,8 @@ export interface DoorConfig {
   width?: number;
   height?: number;
   interactive?: boolean;
+  /** Carve the doorway opening without spawning a hinged wooden door leaf. */
+  noLeaf?: boolean;
 }
 
 export interface WindowConfig {
@@ -679,21 +681,23 @@ export class WorldBuilder {
             })
           );
         }
-        const pivotPos: Vec3Tuple = alongX
-          ? [wallCenter[0] - dw * 0.5, floorY + dh * 0.5, wallCenter[2]]
-          : [wallCenter[0], floorY + dh * 0.5, wallCenter[2] - dw * 0.5];
-        const dhdl = this.registerHingedDoor(
-          side,
-          pivotPos,
-          dw - 0.04,
-          dh,
-          Math.min(0.16, t * 0.6),
-          alongX,
-          doorMat,
-          doorCfg.interactive !== false
-        );
-        entities.push(dhdl.entity);
-        doors.push(dhdl);
+        if (!doorCfg.noLeaf) {
+          const pivotPos: Vec3Tuple = alongX
+            ? [wallCenter[0] - dw * 0.5, floorY + dh * 0.5, wallCenter[2]]
+            : [wallCenter[0], floorY + dh * 0.5, wallCenter[2] - dw * 0.5];
+          const dhdl = this.registerHingedDoor(
+            side,
+            pivotPos,
+            dw - 0.04,
+            dh,
+            Math.min(0.16, t * 0.6),
+            alongX,
+            doorMat,
+            doorCfg.interactive !== false
+          );
+          entities.push(dhdl.entity);
+          doors.push(dhdl);
+        }
         return;
       }
 

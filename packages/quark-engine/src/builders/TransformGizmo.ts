@@ -11,8 +11,12 @@ export type GizmoAxis = 'x' | 'y' | 'z';
 export interface TransformGizmoOptions {
   ignoreEntities?: Iterable<EntityId>;
   isSelectable?: (entity: EntityId) => boolean;
+  canDrag?: (entity: EntityId) => boolean;
+  snapStep?: number;
+  rotSnapDeg?: number;
   onSelect?: (entity: EntityId | null) => void;
   onChange?: (entity: EntityId, mode: GizmoMode) => void;
+  onDragEnd?: (entity: EntityId, mode: GizmoMode) => void;
 }
 
 /**
@@ -25,8 +29,12 @@ export class TransformGizmo {
   private readonly orbit: OrbitControls | null;
   private readonly ignoreEntities: Set<EntityId>;
   private readonly customSelectable?: (entity: EntityId) => boolean;
+  private readonly customCanDrag?: (entity: EntityId) => boolean;
   private readonly onSelectCb?: (entity: EntityId | null) => void;
   private readonly onChangeCb?: (entity: EntityId, mode: GizmoMode) => void;
+  private readonly onDragEndCb?: (entity: EntityId, mode: GizmoMode) => void;
+  private snapStep = 0;
+  private rotSnapDeg = 0;
 
   private mode: GizmoMode = 'translate';
   private enabled = false;
@@ -65,8 +73,17 @@ export class TransformGizmo {
     this.orbit = orbit;
     this.ignoreEntities = new Set(opts.ignoreEntities ?? []);
     this.customSelectable = opts.isSelectable;
+    this.customCanDrag = opts.canDrag;
+    this.snapStep = Math.max(0, opts.snapStep ?? 0);
+    this.rotSnapDeg = Math.max(0, opts.rotSnapDeg ?? 0);
     this.onSelectCb = opts.onSelect;
     this.onChangeCb = opts.onChange;
+    this.onDragEndCb = opts.onDragEnd;
+  }
+
+  setSnap(moveStep: number, rotDeg = 0): void {
+    this.snapStep = Math.max(0, moveStep);
+    this.rotSnapDeg = Math.max(0, rotDeg);
   }
 
   private ensureHandles(): void {
@@ -281,6 +298,7 @@ export class TransformGizmo {
     const xf = this.scene.getTransform(eid);
     const hit = this.hitTestAxis(ray.origin, ray.dir, xf.position);
     if (!hit) return;
+    if (this.customCanDrag && !this.customCanDrag(eid)) return;
 
     // Grabbed an axis handle! Pause OrbitControls while dragging
     e.stopPropagation();
@@ -314,9 +332,14 @@ export class TransformGizmo {
       const ray = this.scene.screenToRay(e.clientX, e.clientY, rect);
       const res = rayClosestToAxis(ray.origin, ray.dir, this.dragStartPos, axisVec);
       if (res) {
-        const delta = res.tAxis - this.dragStartT;
+        const rawDelta = res.tAxis - this.dragStartT;
+        const delta =
+          this.snapStep > 0 ? Math.round(rawDelta / this.snapStep) * this.snapStep : rawDelta;
         const nextPos: Vec3Tuple = [...this.dragStartPos];
         nextPos[axisIdx] += delta;
+        if (this.snapStep > 0) {
+          nextPos[axisIdx] = Math.round(nextPos[axisIdx] / this.snapStep) * this.snapStep;
+        }
         this.scene.setTransform(eid, {
           position: nextPos,
           rotation: this.dragStartRot,
@@ -328,7 +351,11 @@ export class TransformGizmo {
         this.onChangeCb?.(eid, this.mode);
       }
     } else if (this.mode === 'rotate') {
-      const ang = (e.clientX - this.dragStartX) * 0.012;
+      let ang = (e.clientX - this.dragStartX) * 0.012;
+      if (this.rotSnapDeg > 0) {
+        const stepRad = (this.rotSnapDeg * Math.PI) / 180;
+        ang = Math.round(ang / stepRad) * stepRad;
+      }
       const nextRot = mulQuatAxisAngle(this.dragStartRot, axisVec, ang);
       this.scene.setTransform(eid, {
         position: this.dragStartPos,
@@ -386,9 +413,13 @@ export class TransformGizmo {
 
   private endDrag(): void {
     if (!this.dragAxis) return;
+    const finished = this.selected;
     this.dragAxis = null;
     if (this.orbit) {
       this.orbit.enabled = this.prevOrbitEnabled;
+    }
+    if (finished !== null) {
+      this.onDragEndCb?.(finished, this.mode);
     }
   }
 
