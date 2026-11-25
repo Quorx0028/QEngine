@@ -320,13 +320,17 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     const mId = assets.createPreset(`gallery-${presetName}`, presetName, {}, 'scene');
     const e = scene.createEntity();
     const x = -15 + idx * 2.5;
+    const isSphere = idx % 2 === 0;
     scene.setTransform(e, { position: [x, 1.35, -19.0], scale: [1.15, 1.15, 1.15], immediate: true });
-    scene.setCollider3D(e, { kind: 'aabb', halfExtents: [0.6, 0.6, 0.6] });
+    scene.setCollider3D(
+      e,
+      isSphere ? { kind: 'sphere', radius: 0.63 } : { kind: 'aabb', halfExtents: [0.575, 0.575, 0.575] }
+    );
     scene.setMesh3D(e, {
-      meshId: idx % 2 === 0 ? sphereMesh.meshId : boxMesh.meshId,
+      meshId: isSphere ? sphereMesh.meshId : boxMesh.meshId,
       materialId: mId,
       transparent: presetName === 'hologram' || presetName === 'crystalGlass',
-      boundsRadius: 1.5,
+      boundsRadius: isSphere ? 0.6 : 0.9,
     });
   });
 

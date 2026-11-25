@@ -25,6 +25,8 @@ import {
   type SceneMaterialMeta,
 } from './arenaBuilder';
 import { startForestEscapeGame, type ForestGameController } from './forestGame';
+import { startGModSandbox, type GModSandboxController } from './gmodGame';
+import { startWebShowcaseMode, type WebShowcaseController } from './webShowcase';
 
 type MoodName = 'daylight' | 'sunset' | 'cyber' | 'pastel';
 
@@ -86,7 +88,11 @@ async function bootstrap() {
   const engine = await Engine.init({ canvas, wasmUrl });
   const { scene, assets, input, audio } = engine;
 
-  let mode: '3d' | '2d' | 'forest' = '3d';
+  let mode: '3d' | '2d' | 'forest' | 'gmod' | 'site' = '3d';
+  let gmodGame: GModSandboxController | null = null;
+  let webShowcase: WebShowcaseController | null = null;
+  const gmodHudEl = document.getElementById('gmod-hud')!;
+  const siteOverlayEl = document.getElementById('site-overlay')!;
   let cameraMode: 'fps' | 'orbit' = 'fps';
   const orbit = new OrbitControls({ target: [0, 2.7, -3], radius: 7.5, phi: 1.15, autoRotate: true });
   orbit.enabled = false;
@@ -177,6 +183,16 @@ async function bootstrap() {
 
   function hideForestUi() {
     forestGame = null;
+    if (gmodGame) {
+      gmodGame.dispose();
+      gmodGame = null;
+    }
+    if (webShowcase) {
+      webShowcase.dispose();
+      webShowcase = null;
+    }
+    hudPanel.classList.remove('collapsed');
+    statsEl.style.display = 'block';
     forestHudEl.style.display = 'none';
     forestBannerEl.style.display = 'none';
     interactPromptEl.classList.remove('visible');
@@ -677,17 +693,23 @@ async function bootstrap() {
   const btn3d = document.getElementById('btn-3d')!;
   const btn2d = document.getElementById('btn-2d')!;
   const btnForest = document.getElementById('btn-forest')!;
+  const btnGmod = document.getElementById('btn-gmod')!;
+  const btnSite = document.getElementById('btn-site')!;
+
+  const setActiveModeBtn = (activeBtn: HTMLElement) => {
+    [btn3d, btn2d, btnForest, btnGmod, btnSite].forEach((b) =>
+      b.classList.toggle('active', b === activeBtn)
+    );
+  };
 
   function startForestMode() {
+    hideForestUi();
     arena = null;
     orbit.enabled = false;
     orbit.detach();
-    btnForest.classList.add('active');
-    btn3d.classList.remove('active');
-    btn2d.classList.remove('active');
+    setActiveModeBtn(btnForest);
     dialogueActive = false;
     dialogueBox.classList.remove('visible');
-    interactPromptEl.classList.remove('visible');
     scene.spotLights.length = 0;
     crosshairEl.style.display = 'block';
     mode = 'forest';
@@ -707,23 +729,60 @@ async function bootstrap() {
     );
   }
 
+  function startGModMode() {
+    hideForestUi();
+    arena = null;
+    orbit.enabled = false;
+    orbit.detach();
+    setActiveModeBtn(btnGmod);
+    dialogueActive = false;
+    dialogueBox.classList.remove('visible');
+    scene.spotLights.length = 0;
+    crosshairEl.style.display = 'block';
+    hudPanel.classList.add('collapsed');
+    mode = 'gmod';
+    gmodGame = startGModSandbox(engine, input, gmodHudEl, playSfx);
+  }
+
+  function startSiteMode() {
+    hideForestUi();
+    arena = null;
+    orbit.enabled = false;
+    orbit.detach();
+    setActiveModeBtn(btnSite);
+    dialogueActive = false;
+    dialogueBox.classList.remove('visible');
+    scene.spotLights.length = 0;
+    crosshairEl.style.display = 'none';
+    hudPanel.classList.add('collapsed');
+    statsEl.style.display = 'none';
+    mode = 'site';
+    webShowcase = startWebShowcaseMode(
+      engine,
+      siteOverlayEl,
+      () => {
+        setActiveModeBtn(btn3d);
+        build3DArena();
+      },
+      playSfx
+    );
+  }
+
   document.getElementById('btn-forest-retry')!.onclick = startForestMode;
 
   btn3d.onclick = () => {
-    btn3d.classList.add('active');
-    btn2d.classList.remove('active');
-    btnForest.classList.remove('active');
+    setActiveModeBtn(btn3d);
     build3DArena();
   };
   btn2d.onclick = () => {
     orbit.enabled = false;
     orbit.detach();
-    btn2d.classList.add('active');
-    btn3d.classList.remove('active');
-    btnForest.classList.remove('active');
+    setActiveModeBtn(btn2d);
     build2DOMORIStyleScene();
   };
   btnForest.onclick = startForestMode;
+  btnGmod.onclick = startGModMode;
+  btnSite.onclick = startSiteMode;
 
   const btnCamFps = document.getElementById('btn-cam-fps')!;
   const btnCamOrbit = document.getElementById('btn-cam-orbit')!;
@@ -942,6 +1001,8 @@ async function bootstrap() {
   document.getElementById('btn-reset')!.onclick = () => {
     if (mode === '3d') build3DArena();
     else if (mode === '2d') build2DOMORIStyleScene();
+    else if (mode === 'gmod') startGModMode();
+    else if (mode === 'site') startSiteMode();
     else startForestMode();
   };
 
@@ -1034,7 +1095,7 @@ async function bootstrap() {
       wasGrounded = grounded;
       scene.setVelocity(player, vx, nextVy, vz);
       arena?.fixedUpdate(fixedDt);
-    } else {
+    } else if (mode === '2d') {
       let mx = 0;
       let my = 0;
       if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp')) my += 1;
@@ -1054,6 +1115,10 @@ async function bootstrap() {
 
     if (mode === 'forest' && forestGame) {
       forestGame.update(dt);
+    } else if (mode === 'gmod' && gmodGame) {
+      gmodGame.update(dt, spinTime);
+    } else if (mode === 'site' && webShowcase) {
+      webShowcase.update(dt, spinTime);
     } else if (mode === '3d') {
       if (input.wasKeyPressed('KeyC')) spawnDynamicBody('box');
       if (input.wasKeyPressed('KeyQ')) spawnDynamicBody('sphere');
@@ -1109,7 +1174,7 @@ async function bootstrap() {
       } else {
         interactPromptEl.classList.remove('visible');
       }
-    } else {
+    } else if (mode === '2d') {
       const [hx, hy] = scene.getPosition(hero2d);
       scene.camera.position = [hx, hy, 10];
       scene.camera.target = [hx, hy, 0];

@@ -1653,9 +1653,9 @@ impl PhysicsWorld {
                 max_depth = max_depth.max(c.depth);
             }
 
-            // Wake sleeping partner on genuine dynamic impact or intrusion > 2.2 cm
+            // Wake sleeping partner on genuine dynamic impact or intrusion > 8 mm
             let rel_speed_sq = (world.velocities[a] - world.velocities[b]).length_squared();
-            if rel_speed_sq > 0.02 || max_depth > 0.022 {
+            if rel_speed_sq > 0.008 || max_depth > 0.008 {
                 for &target in &[a, b] {
                     let mut woke_idx = None;
                     if let Some(rb) = &mut world.rigid_bodies[target] {
@@ -2155,12 +2155,12 @@ impl PhysicsWorld {
     }
 
     fn solve_3d_position_constraints(&self, world: &mut World) {
-        const POS_SLOP: f32 = 0.0022;
-        const DYN_ERP: f32 = 0.45;
-        const STAT_ERP: f32 = 0.85;
-        const MAX_CORR: f32 = 0.14;
+        const POS_SLOP: f32 = 0.0015;
+        const DYN_ERP: f32 = 0.58;
+        const STAT_ERP: f32 = 0.88;
+        const MAX_CORR: f32 = 0.16;
 
-        for _ in 0..4 {
+        for _ in 0..5 {
             for c in &self.manifolds {
                 if c.is_dynamic_b {
                     continue;
@@ -2337,6 +2337,12 @@ impl PhysicsWorld {
             if c.is_dynamic_b {
                 self.island_has_contact[c.b] = true;
                 unite(&mut self.island_parent, c.a, c.b);
+            }
+        }
+        for c in &self.manifolds {
+            if c.depth > 0.008 {
+                let root = find_root(&mut self.island_parent, c.a);
+                self.island_all_calm[root] = false;
             }
         }
 
