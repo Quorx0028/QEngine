@@ -42,6 +42,7 @@ export interface ArenaBuildContext {
 
 export interface ArenaController {
   player: EntityId;
+  floorEntity: EntityId;
   crystalEntity: EntityId;
   crystalMatId: number;
   propsMatId: number;
@@ -1120,6 +1121,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
 
   return {
     player,
+    floorEntity: floor,
     crystalEntity,
     crystalMatId,
     propsMatId,

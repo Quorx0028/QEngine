@@ -87,6 +87,12 @@ export class Engine {
     updateMs: 0,
     renderMs: 0,
   };
+  private pendingCaptures: Array<{
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+    quality: number;
+    resolve: (dataUrl: string) => void;
+    reject: (err: unknown) => void;
+  }> = [];
 
   private constructor(bridge: WasmBridge, options: EngineOptions) {
     this.bridge = bridge;
@@ -168,6 +174,34 @@ export class Engine {
   clearError(): void {
     this.lastError = null;
     this.diagnostics?.hideCrash();
+  }
+
+  /**
+   * Captures the active WebGL2 canvas frame as a Data URL immediately after rendering,
+   * avoiding blank frames even when `preserveDrawingBuffer` is disabled.
+   */
+  captureScreenshot(
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp' = 'image/png',
+    quality = 0.92
+  ): Promise<string> {
+    if (!this.canvas) {
+      return Promise.reject(new Error('Cannot capture screenshot without an attached canvas'));
+    }
+    return new Promise<string>((resolve, reject) => {
+      this.pendingCaptures.push({ mimeType, quality, resolve, reject });
+      if (!this.running && this.renderFrameHook) {
+        const aspect = this.canvas!.height > 0 ? this.canvas!.width / this.canvas!.height : 16 / 9;
+        this.lastDrawCalls = this.renderFrameHook(aspect);
+        const jobs = this.pendingCaptures.splice(0, this.pendingCaptures.length);
+        for (const job of jobs) {
+          try {
+            job.resolve(this.canvas!.toDataURL(job.mimeType, job.quality));
+          } catch (err) {
+            job.reject(err);
+          }
+        }
+      }
+    });
   }
 
   isProfilerVisible(): boolean {
@@ -263,6 +297,16 @@ export class Engine {
       phase = 'render';
       if (this.renderFrameHook) {
         this.lastDrawCalls = this.renderFrameHook(aspect);
+      }
+      if (this.pendingCaptures.length > 0 && this.canvas) {
+        const jobs = this.pendingCaptures.splice(0, this.pendingCaptures.length);
+        for (const job of jobs) {
+          try {
+            job.resolve(this.canvas.toDataURL(job.mimeType, job.quality));
+          } catch (capErr) {
+            job.reject(capErr);
+          }
+        }
       }
       const t4 = this.nowMs();
 

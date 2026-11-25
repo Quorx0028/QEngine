@@ -204,6 +204,34 @@ pub unsafe extern "C" fn core_get_position(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn core_get_transform(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    out_buf: *mut f32,
+) -> u32 {
+    let core = &*ptr;
+    if !core.world.is_alive(entity) || out_buf.is_null() {
+        return 0;
+    }
+    let idx = entity_index(entity);
+    let p = core.world.curr_pos[idx];
+    let r = core.world.curr_rot[idx];
+    let s = core.world.scale[idx];
+    let out = std::slice::from_raw_parts_mut(out_buf, 10);
+    out[0] = p.x;
+    out[1] = p.y;
+    out[2] = p.z;
+    out[3] = r.x;
+    out[4] = r.y;
+    out[5] = r.z;
+    out[6] = r.w;
+    out[7] = s.x;
+    out[8] = s.y;
+    out[9] = s.z;
+    1
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn core_set_velocity(
     ptr: *mut EngineCore,
     entity: EntityHandle,

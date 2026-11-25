@@ -3,11 +3,15 @@ import {
   createPresetMaterial,
   DialogueRunner,
   Engine,
+  HotspotOverlay,
   OrbitControls,
   POST_PROCESS_PRESET_NAMES,
   SHADER_BLOCK_IDS,
   SHADER_PRESET_NAMES,
+  TransformGizmo,
+  type GizmoMode,
   type MaterialDesc,
+  type OrbitKeyframe,
   type PostProcessPresetName,
   type ShaderBlockId,
   type ShaderPresetName,
@@ -85,6 +89,22 @@ async function bootstrap() {
   let cameraMode: 'fps' | 'orbit' = 'fps';
   const orbit = new OrbitControls({ target: [0, 2.7, -3], radius: 7.5, phi: 1.15, autoRotate: true });
   orbit.enabled = false;
+  const hotspots = new HotspotOverlay(scene, canvas, orbit);
+  hotspots.setVisible(false);
+  const gizmoStatusEl = document.getElementById('gizmo-status')!;
+  const btnGizmoToggle = document.getElementById('btn-gizmo-toggle')!;
+  const gizmo = new TransformGizmo(scene, assets, orbit, {
+    isSelectable: (eid) => eid !== player && eid !== arena?.floorEntity,
+    onSelect: (eid) => {
+      gizmoStatusEl.textContent = eid !== null
+        ? `Выбрано: Entity #${eid} (тяни за X/Y/Z)`
+        : gizmo.isEnabled()
+          ? 'Кликни куб, сферу или кристалл в Orbit 3D'
+          : 'Включи Gizmo и кликни объект в Orbit 3D';
+    },
+  });
+  let weatherMode: 'clear' | 'rain' | 'snow' = 'clear';
+  let weatherAcc = 0;
   let forestGame: ForestGameController | null = null;
   let arena: ArenaController | null = null;
   let sfxEnabled = true;
@@ -159,6 +179,14 @@ async function bootstrap() {
     forestHudEl.style.display = 'none';
     forestBannerEl.style.display = 'none';
     interactPromptEl.classList.remove('visible');
+    hotspots.clear();
+    hotspots.setVisible(false);
+    gizmo.setEnabled(false);
+    gizmo.detach();
+    gizmo.resetHandles();
+    btnGizmoToggle.textContent = 'Gizmo: ВЫКЛ';
+    btnGizmoToggle.classList.remove('active');
+    assets.unloadTag('gizmo');
     assets.unloadTag('scene-fx');
     assets.unloadTag('scene-holo');
   }
@@ -192,6 +220,56 @@ async function bootstrap() {
     yaw = 0;
     pitch = -0.14;
     wasGrounded = true;
+
+    hotspots
+      .add({
+        id: 'hs-crystal',
+        position: () => scene.getPosition(crystalEntity),
+        label: 'Кристалл .GLB',
+        badge: '3D VIEWER + SHADERS',
+        description: 'Встроенный .GLB-парсер, OrbitControls и 15 шейдерных пресетов.',
+        color: '#38bdf8',
+        focusRadius: 6.2,
+      })
+      .add({
+        id: 'hs-water',
+        position: [14.5, 2.15, 3.0],
+        label: 'Вода 3D Блок',
+        badge: 'WATER VOLUME + UNDERWATER',
+        description: 'Герстнер-волны + стенки, Архимед, брызги GPU и авто-подводный шейдер.',
+        color: '#22d3ee',
+        focusRadius: 8.0,
+        focusTheta: 0.28,
+        focusPhi: 1.24,
+      })
+      .add({
+        id: 'hs-fire',
+        position: [5.2, 1.35, -2.2],
+        label: 'Костёр (GPU 8K)',
+        badge: 'INSTANCED VFX',
+        description: 'Огонь, дым и отскакивающие от пола искры за 2 draw call.',
+        color: '#fb923c',
+        focusRadius: 5.5,
+      })
+      .add({
+        id: 'hs-room',
+        position: [-11.5, 2.4, 3.0],
+        label: 'Тёмная комната + Лучи',
+        badge: 'GOD-RAYS + SPOT SHADOWS',
+        description: 'Объёмный луч света, реальные тени SpotLight и дверь на [E].',
+        color: '#fbbf24',
+        focusRadius: 5.8,
+      })
+      .add({
+        id: 'hs-ai',
+        position: [12.0, 5.2, 23.0],
+        label: 'Двор ИИ (WorldBuilder)',
+        badge: 'FROMGRID + ROOM + STAIRS',
+        description: 'Собрано декларативным API для нейросетей за несколько строк.',
+        color: '#c084fc',
+        focusRadius: 12.0,
+      });
+    syncHotspotsVisibility();
   }
 
   function build2DOMORIStyleScene() {
@@ -675,6 +753,11 @@ async function bootstrap() {
     }
   }
 
+  const chkHotspots = document.getElementById('chk-hotspots') as HTMLInputElement;
+  function syncHotspotsVisibility() {
+    hotspots.setVisible(mode === '3d' && cameraMode === 'orbit' && chkHotspots.checked);
+  }
+
   function setCameraMode(next: 'fps' | 'orbit') {
     cameraMode = next;
     arena?.stopGrapple();
@@ -689,8 +772,15 @@ async function bootstrap() {
     } else {
       orbit.enabled = false;
       orbit.detach();
+      if (gizmo.isEnabled()) {
+        gizmo.setEnabled(false);
+        gizmo.detach();
+        btnGizmoToggle.textContent = 'Gizmo: ВЫКЛ';
+        btnGizmoToggle.classList.remove('active');
+      }
       if (mode === '3d') crosshairEl.style.display = 'block';
     }
+    syncHotspotsVisibility();
   }
 
   btnCamFps.onclick = () => setCameraMode('fps');
@@ -701,6 +791,81 @@ async function bootstrap() {
   chkOrbitAuto.onchange = () => {
     orbit.autoRotate = chkOrbitAuto.checked;
   };
+  chkHotspots.onchange = syncHotspotsVisibility;
+
+  // Screenshot capture + Scroll-Tour Camera Timeline (#5 Web Showcase Kit)
+  document.getElementById('btn-screenshot')!.onclick = async () => {
+    const dataUrl = await engine.captureScreenshot('image/png');
+    (window as unknown as { __lastScreenshotDataUrl?: string }).__lastScreenshotDataUrl = dataUrl;
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = 'quark-engine-shot.png';
+    a.click();
+  };
+
+  const TOUR_KEYFRAMES: OrbitKeyframe[] = [
+    { progress: 0.0, target: [0, 2.7, -3.0], radius: 6.4, theta: 0.25, phi: 1.18 },
+    { progress: 0.25, target: [14.5, 1.2, 3.0], radius: 8.2, theta: 0.28, phi: 1.24 },
+    { progress: 0.5, target: [5.2, 0.9, -2.2], radius: 5.6, theta: -0.55, phi: 1.18 },
+    { progress: 0.75, target: [-11.5, 1.5, 3.0], radius: 4.0, theta: 1.52, phi: 1.28 },
+    { progress: 1.0, target: [0, 2.2, 22.5], radius: 19.5, theta: Math.PI, phi: 1.12 },
+  ];
+  const slTour = document.getElementById('sl-tour') as HTMLInputElement;
+  const valTour = document.getElementById('val-tour')!;
+  slTour.oninput = () => {
+    const t = Number(slTour.value);
+    valTour.textContent = `${Math.round(t * 100)}%`;
+    if (mode === '3d') {
+      if (cameraMode !== 'orbit') setCameraMode('orbit');
+      orbit.autoRotate = false;
+      chkOrbitAuto.checked = false;
+      orbit.applyTimeline(TOUR_KEYFRAMES, t);
+    }
+  };
+
+  // Transform Gizmo + GPU Weather controls (#6)
+  const btnGzMove = document.getElementById('btn-gz-move')!;
+  const btnGzRotate = document.getElementById('btn-gz-rotate')!;
+  const btnGzScale = document.getElementById('btn-gz-scale')!;
+  const setGizmoMode = (m: GizmoMode) => {
+    gizmo.setMode(m);
+    btnGzMove.classList.toggle('active', m === 'translate');
+    btnGzRotate.classList.toggle('active', m === 'rotate');
+    btnGzScale.classList.toggle('active', m === 'scale');
+  };
+  btnGzMove.onclick = () => setGizmoMode('translate');
+  btnGzRotate.onclick = () => setGizmoMode('rotate');
+  btnGzScale.onclick = () => setGizmoMode('scale');
+  btnGizmoToggle.onclick = () => {
+    if (mode !== '3d') return;
+    const next = !gizmo.isEnabled();
+    if (next && cameraMode !== 'orbit') setCameraMode('orbit');
+    gizmo.setEnabled(next);
+    if (next) {
+      gizmo.attach(canvas);
+      if (gizmo.getSelected() === null && crystalEntity) gizmo.select(crystalEntity);
+    } else {
+      gizmo.detach();
+    }
+    btnGizmoToggle.textContent = next ? 'Gizmo: ВКЛ' : 'Gizmo: ВЫКЛ';
+    btnGizmoToggle.classList.toggle('active', next);
+    gizmoStatusEl.textContent = next
+      ? `Выбрано: Entity #${gizmo.getSelected() ?? '-'} (тяни за X/Y/Z)`
+      : 'Включи Gizmo и кликни объект в Orbit 3D';
+  };
+
+  const btnWClear = document.getElementById('btn-weather-clear')!;
+  const btnWRain = document.getElementById('btn-weather-rain')!;
+  const btnWSnow = document.getElementById('btn-weather-snow')!;
+  const setWeather = (w: 'clear' | 'rain' | 'snow') => {
+    weatherMode = w;
+    btnWClear.classList.toggle('active', w === 'clear');
+    btnWRain.classList.toggle('active', w === 'rain');
+    btnWSnow.classList.toggle('active', w === 'snow');
+  };
+  btnWClear.onclick = () => setWeather('clear');
+  btnWRain.onclick = () => setWeather('rain');
+  btnWSnow.onclick = () => setWeather('snow');
 
   // Water 2.0 customization controls
   const btnWReal = document.getElementById('btn-water-realistic')!;
@@ -911,6 +1076,19 @@ async function bootstrap() {
       }
 
       arena?.update(dt, spinTime);
+      hotspots.update();
+      gizmo.update();
+
+      if (weatherMode !== 'clear') {
+        weatherAcc += dt;
+        const stepInterval = weatherMode === 'rain' ? 0.03 : 0.05;
+        if (weatherAcc >= stepInterval) {
+          weatherAcc = 0;
+          const [cx, , cz] = scene.camera.target;
+          scene.emitVfx(weatherMode, [cx, 12.5, cz], weatherMode === 'rain' ? 28 : 16, 0.04);
+        }
+      }
+
       const prompt = arena?.getInteractPrompt() ?? null;
       if (prompt) {
         interactPromptEl.textContent = prompt;

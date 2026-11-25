@@ -63,6 +63,7 @@ interface CoreExports {
     immediate: number
   ): void;
   core_get_position(ptr: number, entity: number, outPtr: number): number;
+  core_get_transform(ptr: number, entity: number, outPtr: number): number;
   core_set_velocity(ptr: number, entity: number, vx: number, vy: number, vz: number): void;
   core_get_velocity(ptr: number, entity: number, outPtr: number): number;
   core_set_rigid_body(
@@ -637,6 +638,24 @@ export class WasmBridge {
     out[1] = this.f32View[base + 1];
     out[2] = this.f32View[base + 2];
     return out;
+  }
+
+  getTransform(entity: number): {
+    position: [number, number, number];
+    rotation: [number, number, number, number];
+    scale: [number, number, number];
+  } {
+    this.refreshViews();
+    const ok = this.exports.core_get_transform(this.corePtr, entity, this.scratchPtr);
+    if (!ok) {
+      return { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] };
+    }
+    const b = this.scratchPtr >>> 2;
+    return {
+      position: [this.f32View[b], this.f32View[b + 1], this.f32View[b + 2]],
+      rotation: [this.f32View[b + 3], this.f32View[b + 4], this.f32View[b + 5], this.f32View[b + 6]],
+      scale: [this.f32View[b + 7], this.f32View[b + 8], this.f32View[b + 9]],
+    };
   }
 
   setVelocity(entity: number, vx: number, vy: number, vz: number): void {

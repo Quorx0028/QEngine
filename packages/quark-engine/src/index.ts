@@ -12,7 +12,15 @@ export {
   OrbitControls,
   type OrbitCameraTarget,
   type OrbitControlsOptions,
+  type OrbitKeyframe,
 } from './OrbitControls';
+export { HotspotOverlay, type HotspotOptions } from './ui/Hotspots';
+export {
+  TransformGizmo,
+  type GizmoAxis,
+  type GizmoMode,
+  type TransformGizmoOptions,
+} from './builders/TransformGizmo';
 export { AnimStateMachine, type AnimTransition } from './gameplay/AnimStateMachine';
 export {
   BehaviorManager,

@@ -153,7 +153,16 @@ export interface TriggerEvent {
   entityB: EntityId;
 }
 
-export type VfxPresetName = 'fire' | 'smoke' | 'sparks' | 'splash' | 'magic' | 'confetti' | 'bubbles';
+export type VfxPresetName =
+  | 'fire'
+  | 'smoke'
+  | 'sparks'
+  | 'splash'
+  | 'magic'
+  | 'confetti'
+  | 'bubbles'
+  | 'rain'
+  | 'snow';
 
 export interface ParticleSpawnOptions {
   position: Vec3Tuple;
@@ -176,6 +185,9 @@ export class Scene {
   private readonly projMat = new Float32Array(16);
   private readonly viewMat = new Float32Array(16);
   private readonly vpMat = new Float32Array(16);
+  private readonly queryProjMat = new Float32Array(16);
+  private readonly queryViewMat = new Float32Array(16);
+  private readonly queryVpMat = new Float32Array(16);
 
   readonly camera: CameraState = {
     mode: '3d',
@@ -289,6 +301,10 @@ export class Scene {
 
   getPosition(entity: EntityId, out?: Vec3Tuple): Vec3Tuple {
     return this.bridge.getPosition(entity, out);
+  }
+
+  getTransform(entity: EntityId): { position: Vec3Tuple; rotation: QuatTuple; scale: Vec3Tuple } {
+    return this.bridge.getTransform(entity);
   }
 
   setVelocity(entity: EntityId, vx: number, vy: number, vz: number): void {
@@ -1045,6 +1061,98 @@ export class Scene {
     return { view: this.viewMat, proj: this.projMat, viewProj: this.vpMat };
   }
 
+  /** Projects a 3D/2D world position to screen pixel coordinates `[0..width, 0..height]`. */
+  worldToScreen(
+    point: Vec3Tuple,
+    viewportWidth: number,
+    viewportHeight: number
+  ): { x: number; y: number; depth: number; visible: boolean } {
+    const w = Math.max(viewportWidth, 1);
+    const h = Math.max(viewportHeight, 1);
+    const aspect = w / h;
+    if (this.camera.mode === '2d') {
+      const halfH = (this.camera.orthoHeight / Math.max(this.camera.zoom, 0.1)) * 0.5;
+      const halfW = halfH * Math.max(aspect, 0.001);
+      mat4Ortho(
+        this.camera.position[0] - halfW,
+        this.camera.position[0] + halfW,
+        this.camera.position[1] - halfH,
+        this.camera.position[1] + halfH,
+        -50,
+        50,
+        this.queryVpMat
+      );
+    } else {
+      mat4Perspective((this.camera.fovDeg * Math.PI) / 180, aspect, this.camera.near, this.camera.far, this.queryProjMat);
+      mat4LookAt(this.camera.position, this.camera.target, this.camera.up, this.queryViewMat);
+      mat4Multiply(this.queryProjMat, this.queryViewMat, this.queryVpMat);
+    }
+    const m = this.queryVpMat;
+    const x = point[0], y = point[1], z = point[2];
+    const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const cz = m[2] * x + m[6] * y + m[10] * z + m[14];
+    const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+    if (cw <= 0.0001) {
+      return { x: -9999, y: -9999, depth: cw, visible: false };
+    }
+    const ndcX = cx / cw;
+    const ndcY = cy / cw;
+    const ndcZ = cz / cw;
+    const sx = (ndcX * 0.5 + 0.5) * w;
+    const sy = (0.5 - ndcY * 0.5) * h;
+    const visible = ndcX >= -1.08 && ndcX <= 1.08 && ndcY >= -1.08 && ndcY <= 1.08 && ndcZ >= -1 && ndcZ <= 1.01;
+    return { x: sx, y: sy, depth: cw, visible };
+  }
+
+  /** Converts pointer CSS coordinates and viewport rect into a normalized world-space ray. */
+  screenToRay(
+    clientX: number,
+    clientY: number,
+    rect: { left: number; top: number; width: number; height: number }
+  ): { origin: Vec3Tuple; dir: Vec3Tuple } {
+    const rw = Math.max(rect.width, 1);
+    const rh = Math.max(rect.height, 1);
+    const nx = ((clientX - rect.left) / rw) * 2 - 1;
+    const ny = 1 - ((clientY - rect.top) / rh) * 2;
+    const aspect = rw / rh;
+
+    if (this.camera.mode === '2d') {
+      const halfH = (this.camera.orthoHeight / Math.max(this.camera.zoom, 0.1)) * 0.5;
+      const halfW = halfH * aspect;
+      return {
+        origin: [this.camera.position[0] + nx * halfW, this.camera.position[1] + ny * halfH, 20],
+        dir: [0, 0, -1],
+      };
+    }
+
+    const pos = this.camera.position;
+    const tgt = this.camera.target;
+    const up = this.camera.up;
+    let fx = tgt[0] - pos[0], fy = tgt[1] - pos[1], fz = tgt[2] - pos[2];
+    const fl = Math.hypot(fx, fy, fz) || 1;
+    fx /= fl; fy /= fl; fz /= fl;
+
+    let rx = fy * up[2] - fz * up[1];
+    let ry = fz * up[0] - fx * up[2];
+    let rz = fx * up[1] - fy * up[0];
+    const rl = Math.hypot(rx, ry, rz) || 1;
+    rx /= rl; ry /= rl; rz /= rl;
+
+    const ux = ry * fz - rz * fy;
+    const uy = rz * fx - rx * fz;
+    const uz = rx * fy - ry * fx;
+
+    const tanHalf = Math.tan(((this.camera.fovDeg * Math.PI) / 180) * 0.5);
+    let dx = fx + rx * (nx * aspect * tanHalf) + ux * (ny * tanHalf);
+    let dy = fy + ry * (nx * aspect * tanHalf) + uy * (ny * tanHalf);
+    let dz = fz + rz * (nx * aspect * tanHalf) + uz * (ny * tanHalf);
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    dx /= dl; dy /= dl; dz /= dl;
+
+    return { origin: [pos[0], pos[1], pos[2]], dir: [dx, dy, dz] };
+  }
+
   getActiveParticleCount(): number {
     return this.bridge.getParticlesCount();
   }
@@ -1167,6 +1275,36 @@ export class Scene {
           lifetime: 0.9 + Math.random() * 0.6,
           gravity: 0.4,
           drag: 1.2,
+          additive: false,
+        });
+      } else if (preset === 'rain') {
+        this.emitParticle({
+          position: [origin[0] + (Math.random() - 0.5) * 28, origin[1] + Math.random() * 3, origin[2] + (Math.random() - 0.5) * 28],
+          velocity: [-1.4 + (Math.random() - 0.5) * 0.6, -18 - Math.random() * 6, -0.9 + (Math.random() - 0.5) * 0.6],
+          sizeStart: 0.09,
+          sizeEnd: 0.06,
+          colorStart: [0.74, 0.88, 1.0, 0.68],
+          colorEnd: [0.65, 0.82, 1.0, 0.0],
+          lifetime: 0.72 + Math.random() * 0.25,
+          gravity: -26,
+          drag: 0.05,
+          bounce: 0.22,
+          floorY,
+          additive: false,
+          stretch: 2.2,
+        });
+      } else if (preset === 'snow') {
+        this.emitParticle({
+          position: [origin[0] + (Math.random() - 0.5) * 28, origin[1] + Math.random() * 2.5, origin[2] + (Math.random() - 0.5) * 28],
+          velocity: [(Math.random() - 0.5) * 1.4, -1.6 - Math.random() * 0.9, (Math.random() - 0.5) * 1.4],
+          sizeStart: 0.11 + Math.random() * 0.08,
+          sizeEnd: 0.06,
+          colorStart: [0.95, 0.98, 1.0, 0.88],
+          colorEnd: [0.95, 0.98, 1.0, 0.0],
+          lifetime: 3.1 + Math.random() * 0.8,
+          gravity: -0.35,
+          drag: 0.65,
+          floorY,
           additive: false,
         });
       } else {

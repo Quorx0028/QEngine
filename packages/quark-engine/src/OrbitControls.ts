@@ -22,6 +22,15 @@ export interface OrbitCameraTarget {
   target: Vec3Tuple;
 }
 
+export interface OrbitKeyframe {
+  /** Normalized scroll/timeline progress in `[0..1]`. */
+  progress: number;
+  target: Vec3Tuple;
+  radius: number;
+  theta: number;
+  phi: number;
+}
+
 /**
  * Spherical orbit/pan/zoom camera controller for 3D viewers, product showcases, and inspection modes.
  * Works both headlessly and attached to a canvas element with smooth exponential damping.
@@ -192,6 +201,75 @@ export class OrbitControls {
       this.pan(-dx * this.panSpeed * 4, dy * this.panSpeed * 4);
     }
   };
+
+  getState(): { target: Vec3Tuple; radius: number; theta: number; phi: number } {
+    return {
+      target: [this.desiredTarget[0], this.desiredTarget[1], this.desiredTarget[2]],
+      radius: this.targetRadius,
+      theta: this.targetTheta,
+      phi: this.targetPhi,
+    };
+  }
+
+  /**
+   * Samples a scroll/presentation camera timeline at `progress` (`0..1`) with smoothstep easing.
+   * Ideal for Apple/product-style scroll-driven 3D web experiences.
+   */
+  applyTimeline(keyframes: readonly OrbitKeyframe[], progress01: number): void {
+    if (keyframes.length === 0) return;
+    const sorted = keyframes.length > 1 ? [...keyframes].sort((a, b) => a.progress - b.progress) : keyframes;
+    const t = clamp(progress01, 0, 1);
+    if (t <= sorted[0].progress || sorted.length === 1) {
+      const k = sorted[0];
+      this.setView(k.target, k.radius, k.theta, k.phi);
+      return;
+    }
+    const last = sorted[sorted.length - 1];
+    if (t >= last.progress) {
+      this.setView(last.target, last.radius, last.theta, last.phi);
+      return;
+    }
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i];
+      const b = sorted[i + 1];
+      if (t >= a.progress && t <= b.progress) {
+        const span = Math.max(1e-5, b.progress - a.progress);
+        const u = (t - a.progress) / span;
+        const s = u * u * (3 - 2 * u);
+        const dTheta = Math.atan2(Math.sin(b.theta - a.theta), Math.cos(b.theta - a.theta));
+        this.setView(
+          [
+            a.target[0] + (b.target[0] - a.target[0]) * s,
+            a.target[1] + (b.target[1] - a.target[1]) * s,
+            a.target[2] + (b.target[2] - a.target[2]) * s,
+          ],
+          a.radius + (b.radius - a.radius) * s,
+          a.theta + dTheta * s,
+          a.phi + (b.phi - a.phi) * s
+        );
+        return;
+      }
+    }
+  }
+
+  /** Binds a scrollable element (or `window`) to drive camera keyframes automatically. Returns an unbind callback. */
+  bindScrollTimeline(keyframes: readonly OrbitKeyframe[], scrollTarget?: HTMLElement | Window): () => void {
+    if (typeof window === 'undefined') return () => {};
+    const target = scrollTarget ?? window;
+    const updateFromScroll = () => {
+      if (target === window) {
+        const maxScroll = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
+        this.applyTimeline(keyframes, window.scrollY / maxScroll);
+      } else {
+        const el = target as HTMLElement;
+        const maxScroll = Math.max(1, el.scrollHeight - el.clientHeight);
+        this.applyTimeline(keyframes, el.scrollTop / maxScroll);
+      }
+    };
+    target.addEventListener('scroll', updateFromScroll, { passive: true });
+    updateFromScroll();
+    return () => target.removeEventListener('scroll', updateFromScroll);
+  }
 
   private readonly onPointerUp = (): void => {
     this.dragMode = 'none';
