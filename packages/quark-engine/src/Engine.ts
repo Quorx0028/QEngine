@@ -7,12 +7,73 @@ import { WebGL2Backend } from './render/WebGL2Backend';
 import { Scene } from './Scene';
 import { WasmBridge } from './wasm/WasmBridge';
 
+export type QualityPreset = 'eco' | 'low' | 'medium' | 'high' | 'ultra';
+
+export interface QualityProfile {
+  maxDpr: number;
+  shadows: boolean;
+  spotShadows: boolean;
+  shadowResolution: number;
+  ssaoScale: number;
+  bloomScale: number;
+  particleScale: number;
+}
+
+const QUALITY_PROFILES: Record<QualityPreset, QualityProfile> = {
+  eco: {
+    maxDpr: 0.75,
+    shadows: false,
+    spotShadows: false,
+    shadowResolution: 512,
+    ssaoScale: 0,
+    bloomScale: 0,
+    particleScale: 0.25,
+  },
+  low: {
+    maxDpr: 1.0,
+    shadows: true,
+    spotShadows: false,
+    shadowResolution: 1024,
+    ssaoScale: 0,
+    bloomScale: 0.45,
+    particleScale: 0.5,
+  },
+  medium: {
+    maxDpr: 1.25,
+    shadows: true,
+    spotShadows: false,
+    shadowResolution: 1024,
+    ssaoScale: 0.55,
+    bloomScale: 0.85,
+    particleScale: 0.75,
+  },
+  high: {
+    maxDpr: 1.5,
+    shadows: true,
+    spotShadows: true,
+    shadowResolution: 2048,
+    ssaoScale: 1.0,
+    bloomScale: 1.0,
+    particleScale: 1.0,
+  },
+  ultra: {
+    maxDpr: 2.0,
+    shadows: true,
+    spotShadows: true,
+    shadowResolution: 2048,
+    ssaoScale: 1.25,
+    bloomScale: 1.15,
+    particleScale: 1.35,
+  },
+};
+
 export interface EngineOptions {
   canvas?: HTMLCanvasElement;
   wasmUrl?: string | URL;
   wasmBytes?: BufferSource;
   fixedDt?: number;
   maxDpr?: number;
+  quality?: QualityPreset;
   backend?: IRenderBackend;
   crashOverlay?: boolean;
   showProfiler?: boolean;
@@ -60,7 +121,8 @@ export class Engine {
   readonly canvas: HTMLCanvasElement | null;
 
   private fixedDt: number;
-  private readonly maxDpr: number;
+  private maxDpr: number;
+  private qualityPreset: QualityPreset = 'high';
   private accumulator = 0;
   private elapsedTime = 0;
   private rafId = 0;
@@ -118,6 +180,11 @@ export class Engine {
       const backend = this.renderer;
       this.renderFrameHook = (aspect: number) =>
         backend.renderFrame(this.bridge, this.scene, aspect, this.elapsedTime);
+    }
+    this.setQuality(options.quality ?? 'high');
+    if (options.maxDpr !== undefined) {
+      this.maxDpr = Math.max(0.5, options.maxDpr);
+      this.syncCanvasSize();
     }
 
     if (this.canvas) {
@@ -236,6 +303,34 @@ export class Engine {
     }
   }
 
+  getQuality(): QualityPreset {
+    return this.qualityPreset;
+  }
+
+  getQualityProfile(preset: QualityPreset = this.qualityPreset): QualityProfile {
+    return { ...QUALITY_PROFILES[preset] };
+  }
+
+  /** Switches rendering quality tier (`eco` | `low` | `medium` | `high` | `ultra`) at runtime. */
+  setQuality(preset: QualityPreset): void {
+    this.qualityPreset = preset;
+    const p = QUALITY_PROFILES[preset];
+    this.maxDpr = p.maxDpr;
+    this.scene.shadowsEnabled = p.shadows;
+    this.scene.renderQuality = {
+      spotShadows: p.spotShadows,
+      shadowResolution: p.shadowResolution,
+      ssaoScale: p.ssaoScale,
+      bloomScale: p.bloomScale,
+      particleScale: p.particleScale,
+    };
+    this.renderer?.setQuality?.({
+      shadowResolution: p.shadowResolution,
+      spotShadows: p.spotShadows,
+    });
+    this.syncCanvasSize();
+  }
+
   syncCanvasSize(): void {
     if (!this.canvas || typeof window === 'undefined') return;
     const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
@@ -292,6 +387,7 @@ export class Engine {
         [camTgt[0] - camPos[0], camTgt[1] - camPos[1], camTgt[2] - camPos[2]],
         this.scene.camera.up
       );
+      this.audio.setRainAmbience(this.scene.weather.rainIntensity);
       const t3 = this.nowMs();
 
       phase = 'render';

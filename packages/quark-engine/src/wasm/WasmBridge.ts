@@ -236,6 +236,7 @@ interface CoreExports {
   core_is_sleeping(ptr: number, entity: number): number;
   core_is_grounded(ptr: number, entity: number): number;
   core_set_collider_3d(ptr: number, entity: number, kind: number, a: number, b: number, c: number): void;
+  core_scale_collider_3d(ptr: number, entity: number, rx: number, ry: number, rz: number): void;
   core_set_collider_2d(ptr: number, entity: number, kind: number, a: number, b: number): void;
   core_add_tile_grid_2d(
     ptr: number,
@@ -731,6 +732,10 @@ export class WasmBridge {
 
   setCollider3D(entity: number, kind: number, a: number, b: number, c: number): void {
     this.exports.core_set_collider_3d(this.corePtr, entity, kind, a, b, c);
+  }
+
+  scaleCollider3D(entity: number, rx: number, ry: number, rz: number): void {
+    this.exports.core_scale_collider_3d(this.corePtr, entity, rx, ry, rz);
   }
 
   setCollider2D(entity: number, kind: number, a: number, b: number): void {

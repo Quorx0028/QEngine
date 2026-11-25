@@ -161,6 +161,53 @@
         color: #9fb0c9;
         line-height: 1.45;
       }
+      .quality-card {
+        background: rgba(15, 23, 42, 0.72);
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 10px;
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .quality-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        color: #cbd5e1;
+      }
+      .quality-head b { color: #38bdf8; }
+      .quality-segs {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 3px;
+        background: rgba(9, 13, 24, 0.9);
+        padding: 3px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .quality-segs button {
+        border: none;
+        background: transparent;
+        color: #94a3b8;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 4px 2px;
+        border-radius: 6px;
+        transition: background 0.12s, color 0.12s;
+      }
+      .quality-segs button.active {
+        background: linear-gradient(135deg, #2563eb, #0284c7);
+        color: #ffffff;
+        box-shadow: 0 1px 6px rgba(56, 189, 248, 0.35);
+      }
+      #sl-quality {
+        width: 100%;
+        accent-color: #38bdf8;
+        margin: 0;
+        cursor: pointer;
+      }
       .dialogue-box {
         position: fixed;
         left: 50%;
@@ -586,13 +633,31 @@
 
       <div class="row">
         <label class="chk"><input type="checkbox" id="chk-shadows" checked /> Shadows</label>
-        <label class="chk"><input type="checkbox" id="chk-sfx" checked /> Synth SFX</label>
+        <label class="chk"><input type="checkbox" id="chk-sfx" checked /> 3D Sound</label>
         <select id="sel-mood" title="Sky & Lighting Mood">
           <option value="daylight">Mood: Daylight</option>
           <option value="sunset">Mood: Sunset</option>
           <option value="cyber">Mood: Cyber Night</option>
           <option value="pastel">Mood: Anime Pastel</option>
         </select>
+      </div>
+
+      <div class="quality-card">
+        <div class="quality-head">
+          <span>Quality Tier</span>
+          <b id="val-quality">High · 1.5x · Shadows + SSAO</b>
+        </div>
+        <div class="quality-segs" id="quality-segs">
+          <button type="button" data-q="0">Eco</button>
+          <button type="button" data-q="1">Low</button>
+          <button type="button" data-q="2">Med</button>
+          <button type="button" data-q="3" class="active">High</button>
+          <button type="button" data-q="4">Ultra</button>
+        </div>
+        <input id="sl-quality" type="range" min="0" max="4" step="1" value="3" aria-label="Graphics Quality Tier" />
+        <label class="slider">Master Audio: <span id="val-volume">100%</span>
+          <input id="sl-volume" type="range" min="0" max="1" step="0.05" value="1" />
+        </label>
       </div>
 
       <div class="hint">

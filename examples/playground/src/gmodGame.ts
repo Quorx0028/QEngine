@@ -268,7 +268,7 @@ export function startGModSandbox(
     scene.emitVfx('sparks', center, 48, 0.04);
     scene.emitVfx('smoke', center, 20, 0.04);
     scene.triggerShake(0.24, 0.28);
-    playSfx(110, 0.28, 'sawtooth', 0.22);
+    engine.audio.playExplosion3D(center, 1.15);
 
     const toDetonate: Array<{ e: EntityId; pos: Vec3Tuple }> = [];
     for (const [eid, meta] of props) {

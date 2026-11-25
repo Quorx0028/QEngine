@@ -13,6 +13,7 @@ import {
   quatFromEuler,
   SHADER_PRESET_NAMES,
   type AssetManager,
+  type AudioSystem,
   type EntityId,
   type MaterialDesc,
   type QuatTuple,
@@ -38,6 +39,7 @@ export interface ArenaBuildContext {
   propsDesc: MaterialDesc;
   sceneMaterialMeta: Map<number, SceneMaterialMeta>;
   playSfx: (freq: number, dur?: number, type?: OscillatorType, vol?: number) => void;
+  audio?: AudioSystem;
 }
 
 export interface ArenaController {
@@ -118,7 +120,7 @@ function quatFromUpToNormal(normal: Vec3Tuple): QuatTuple {
 }
 
 export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
-  const { scene, assets, bridge, crystalDesc, propsDesc, sceneMaterialMeta, playSfx } = ctx;
+  const { scene, assets, bridge, crystalDesc, propsDesc, sceneMaterialMeta, playSfx, audio } = ctx;
 
   scene.camera.mode = '3d';
   scene.camera.pixelSnap = false;
@@ -915,7 +917,8 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
         if (Math.abs(ovy) > 1.2) {
           const burst = Math.min(48, Math.max(18, Math.round(Math.abs(ovy) * 4.2)));
           scene.emitVfx('splash', [op[0], 1.98, op[2]], burst, 1.92);
-          playSfx(260, 0.11, 'sine', 0.08);
+          if (audio) audio.playSplash3D([op[0], 1.98, op[2]], Math.min(1.4, Math.abs(ovy) * 0.2));
+          else playSfx(260, 0.11, 'sine', 0.08);
         }
       }
     }
@@ -1103,7 +1106,8 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
       }
       if (entity === waterSurface || entity === waterSplashSensor || entity === frontGlass) {
         scene.emitVfx('splash', point, 34, 1.92);
-        playSfx(320, 0.12, 'sine', 0.1);
+        if (audio) audio.playSplash3D(point, 1.0);
+        else playSfx(320, 0.12, 'sine', 0.1);
         return;
       }
       if (entity === jumpPadTrigger) {

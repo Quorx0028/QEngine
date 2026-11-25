@@ -13,6 +13,7 @@ import {
   type MaterialDesc,
   type OrbitKeyframe,
   type PostProcessPresetName,
+  type QualityPreset,
   type ShaderBlockId,
   type ShaderPresetName,
   type Vec3Tuple,
@@ -229,6 +230,7 @@ async function bootstrap() {
       propsDesc,
       sceneMaterialMeta,
       playSfx,
+      audio,
     });
     player = arena.player;
     crystalEntity = arena.crystalEntity;
@@ -676,12 +678,60 @@ async function bootstrap() {
     document.getElementById('val-zoom')!.textContent = slZoom.value;
   };
 
-  (document.getElementById('chk-shadows') as HTMLInputElement).onchange = (e) => {
+  const chkShadows = document.getElementById('chk-shadows') as HTMLInputElement;
+  chkShadows.onchange = (e) => {
     scene.shadowsEnabled = (e.target as HTMLInputElement).checked;
   };
   (document.getElementById('chk-sfx') as HTMLInputElement).onchange = (e) => {
     sfxEnabled = (e.target as HTMLInputElement).checked;
+    audio.setBusVolume('sfx', sfxEnabled ? 0.9 : 0);
+    audio.setBusVolume('ambient', sfxEnabled ? 0.7 : 0);
   };
+
+  const slVolume = document.getElementById('sl-volume') as HTMLInputElement;
+  const valVolumeEl = document.getElementById('val-volume')!;
+  slVolume.oninput = () => {
+    const v = Number(slVolume.value);
+    audio.setBusVolume('master', v);
+    valVolumeEl.textContent = `${Math.round(v * 100)}%`;
+  };
+
+  const QUALITY_LEVELS: QualityPreset[] = ['eco', 'low', 'medium', 'high', 'ultra'];
+  const QUALITY_LABELS: Record<QualityPreset, string> = {
+    eco: 'Eco · 0.75x · Fastest',
+    low: 'Low · 1.0x · Basic Shadows',
+    medium: 'Med · 1.25x · Balanced',
+    high: 'High · 1.5x · Shadows + SSAO',
+    ultra: 'Ultra · 2.0x · Max Fidelity',
+  };
+  const slQuality = document.getElementById('sl-quality') as HTMLInputElement;
+  const valQualityEl = document.getElementById('val-quality')!;
+  const qualityButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#quality-segs button'));
+  const applyQualityIndex = (idx: number) => {
+    const clamped = Math.max(0, Math.min(QUALITY_LEVELS.length - 1, Math.round(idx)));
+    const preset = QUALITY_LEVELS[clamped];
+    engine.setQuality(preset);
+    slQuality.value = String(clamped);
+    valQualityEl.textContent = QUALITY_LABELS[preset];
+    chkShadows.checked = scene.shadowsEnabled;
+    qualityButtons.forEach((b, i) => b.classList.toggle('active', i === clamped));
+  };
+  slQuality.oninput = () => applyQualityIndex(Number(slQuality.value));
+  qualityButtons.forEach((btn) => {
+    btn.onclick = () => applyQualityIndex(Number(btn.dataset.q ?? 3));
+  });
+
+  // Throttled 3D spatial collision impact SFX across dynamic props
+  let lastImpactAudioMs = 0;
+  scene.onPhysicsEvent((ev) => {
+    if (!sfxEnabled || ev.kind !== 1) return;
+    if (mode !== '3d' && mode !== 'gmod') return;
+    if (ev.impulse < 0.8) return;
+    const now = performance.now();
+    if (now - lastImpactAudioMs < 55) return;
+    lastImpactAudioMs = now;
+    audio.playImpact3D(ev.contactPoint, Math.min(1.4, ev.impulse * 0.16), 'wood');
+  });
   (document.getElementById('sel-mood') as HTMLSelectElement).onchange = (e) => {
     applyMood((e.target as HTMLSelectElement).value as MoodName);
   };
@@ -1162,7 +1212,8 @@ async function bootstrap() {
         if (weatherAcc >= stepInterval) {
           weatherAcc = 0;
           const [cx, , cz] = scene.camera.target;
-          const count = weatherMode === 'downpour' ? 56 : weatherMode === 'rain' ? 28 : 22;
+          const baseCount = weatherMode === 'downpour' ? 56 : weatherMode === 'rain' ? 28 : 22;
+          const count = Math.max(4, Math.round(baseCount * scene.renderQuality.particleScale));
           scene.emitVfx(weatherMode, [cx, 12.5, cz], count, 0.03);
         }
       }

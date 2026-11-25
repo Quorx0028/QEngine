@@ -239,6 +239,13 @@ export class Scene {
   };
   postProcess: PostProcessConfig = createPostProcessPreset('none');
   shadowsEnabled = true;
+  renderQuality = {
+    spotShadows: true,
+    shadowResolution: 2048,
+    ssaoScale: 1.0,
+    bloomScale: 1.0,
+    particleScale: 1.0,
+  };
   debugPhysics = false;
   skyTopColor: Vec3Tuple = [0.08, 0.16, 0.32];
   skyHorizonColor: Vec3Tuple = [0.22, 0.32, 0.48];
@@ -768,6 +775,11 @@ export class Scene {
         this.richEventListeners.forEach((cb) => cb(ev));
       });
     }
+  }
+
+  /** Proportionally scales an existing 3D physics collider by `[rx, ry, rz]`. */
+  scaleCollider3D(entity: EntityId, rx: number, ry: number, rz: number): void {
+    this.bridge.scaleCollider3D(entity, rx, ry, rz);
   }
 
   setCollider3D(entity: EntityId, opts: Collider3DOptions): void {

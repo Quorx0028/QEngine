@@ -704,6 +704,18 @@ pub unsafe extern "C" fn core_set_collider_3d(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn core_scale_collider_3d(
+    ptr: *mut EngineCore,
+    entity: EntityHandle,
+    rx: f32,
+    ry: f32,
+    rz: f32,
+) {
+    let core = &mut *ptr;
+    core.physics.scale_collider_3d(&mut core.world, entity, rx, ry, rz);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn core_set_collider_convex_hull(
     ptr: *mut EngineCore,
     entity: EntityHandle,

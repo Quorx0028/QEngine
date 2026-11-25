@@ -555,6 +555,7 @@ export class WebGL2Backend implements IRenderBackend {
   private nextMaterialId = 1;
   private nextTextureId = 1;
 
+  private shadowRes = SHADOW_RES;
   private shadowFbo: WebGLFramebuffer;
   private shadowDepthTex: WebGLTexture;
   private spotShadowFbo: WebGLFramebuffer;
@@ -1107,14 +1108,24 @@ export class WebGL2Backend implements IRenderBackend {
 
     if (scene.camera.mode === '3d' && scene.shadowsEnabled) {
       drawCalls += this.renderShadowPass(bridge, scene);
-      drawCalls += this.renderSpotShadowPass(bridge, scene, viewProj);
+      if (scene.renderQuality.spotShadows) {
+        drawCalls += this.renderSpotShadowPass(bridge, scene, viewProj);
+      } else {
+        this.spotShadowActive = false;
+      }
     } else {
       this.spotShadowActive = false;
     }
 
     const uwDepth = scene.camera.mode === '3d' ? scene.getUnderwaterDepth(scene.camera.position) : 0;
     const underwaterFactor = uwDepth > 0 ? Math.min(1, 0.55 + uwDepth * 0.45) : 0;
-    const usePp = isPostProcessActive(scene.postProcess) || underwaterFactor > 0.001;
+    const rq = scene.renderQuality;
+    const effectivePp: PostProcessConfig = {
+      ...scene.postProcess,
+      bloomIntensity: scene.postProcess.bloomIntensity * rq.bloomScale,
+      ssao: scene.postProcess.ssao * rq.ssaoScale,
+    };
+    const usePp = isPostProcessActive(effectivePp) || underwaterFactor > 0.001;
     this.hdrActive = usePp && this.supportsFloatFbo;
     if (usePp) {
       this.ensurePostProcessFbos(canvas.width, canvas.height);
@@ -1147,7 +1158,7 @@ export class WebGL2Backend implements IRenderBackend {
     }
 
     if (usePp) {
-      drawCalls += this.renderPostProcess(canvas.width, canvas.height, scene.postProcess, timeSec, underwaterFactor);
+      drawCalls += this.renderPostProcess(canvas.width, canvas.height, effectivePp, timeSec, underwaterFactor);
     }
     return drawCalls;
   }
@@ -1375,7 +1386,7 @@ export class WebGL2Backend implements IRenderBackend {
 
     // Snap shadow center to texel grid around camera target to eliminate shimmer
     const halfSize = 26;
-    const texelWorld = (halfSize * 2) / SHADOW_RES;
+    const texelWorld = (halfSize * 2) / this.shadowRes;
     const cx = Math.round(scene.camera.target[0] / texelWorld) * texelWorld;
     const cz = Math.round(scene.camera.target[2] / texelWorld) * texelWorld;
     const center: Vec3Tuple = [cx, 0, cz];
@@ -1388,7 +1399,20 @@ export class WebGL2Backend implements IRenderBackend {
     // Ensure shadowDepthTex is not bound to any texture unit before attaching shadowFbo
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    return this.renderDepthPass(this.shadowFbo, SHADOW_RES, this.lightVpMat, bridge);
+    return this.renderDepthPass(this.shadowFbo, this.shadowRes, this.lightVpMat, bridge);
+  }
+
+  setQuality(cfg: { shadowResolution?: number; spotShadows?: boolean }): void {
+    const nextRes = cfg.shadowResolution ? Math.max(256, Math.min(4096, Math.round(cfg.shadowResolution))) : this.shadowRes;
+    if (nextRes !== this.shadowRes) {
+      const gl = this.gl;
+      gl.deleteFramebuffer(this.shadowFbo);
+      gl.deleteTexture(this.shadowDepthTex);
+      const nextDepth = this.createDepthFbo(nextRes);
+      this.shadowFbo = nextDepth.fbo;
+      this.shadowDepthTex = nextDepth.tex;
+      this.shadowRes = nextRes;
+    }
   }
 
   private renderSpotShadowPass(bridge: WasmBridge, scene: Scene, camViewProj: Float32Array): number {

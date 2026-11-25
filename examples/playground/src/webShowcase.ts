@@ -425,7 +425,8 @@ export function startWebShowcaseMode(
         const interval = activeWeather === 'downpour' ? 0.02 : activeWeather === 'rain' ? 0.032 : 0.04;
         if (weatherAcc >= interval) {
           weatherAcc = 0;
-          const count = activeWeather === 'downpour' ? 54 : activeWeather === 'rain' ? 28 : 22;
+          const baseCount = activeWeather === 'downpour' ? 54 : activeWeather === 'rain' ? 28 : 22;
+          const count = Math.max(4, Math.round(baseCount * scene.renderQuality.particleScale));
           scene.emitVfx(activeWeather, [-1.5, 11.5, -0.5], count, 0.02);
         }
       }

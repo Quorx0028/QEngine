@@ -29,9 +29,50 @@ export class AudioSystem {
     ambient: 0.7,
   };
   private bgmSource: AudioBufferSourceNode | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+  private rainSource: AudioBufferSourceNode | null = null;
+  private rainGain: GainNode | null = null;
   private readonly buffers = new Map<string, AudioBuffer>();
   private activeVoices = 0;
   private readonly maxVoices = 24;
+
+  private getNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (this.noiseBuffer && this.noiseBuffer.sampleRate === ctx.sampleRate) {
+      return this.noiseBuffer;
+    }
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    let b0 = 0;
+    let b1 = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.992 * b0 + white * 0.08;
+      b1 = 0.92 * b1 + white * 0.25;
+      data[i] = Math.max(-1, Math.min(1, b0 + b1 + white * 0.45));
+    }
+    this.noiseBuffer = buf;
+    return buf;
+  }
+
+  private createPanner(
+    ctx: AudioContext,
+    position: Vec3Tuple,
+    refDistance = 2.5,
+    maxDistance = 42.0,
+    rolloff = 1.2
+  ): PannerNode {
+    const panner = ctx.createPanner();
+    panner.panningModel = 'HRTF';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = refDistance;
+    panner.maxDistance = maxDistance;
+    panner.rolloffFactor = rolloff;
+    panner.positionX.value = position[0];
+    panner.positionY.value = position[1];
+    panner.positionZ.value = position[2];
+    return panner;
+  }
 
   private ensureContext(): AudioContext | null {
     if (typeof window === 'undefined' || typeof AudioContext === 'undefined') return null;
@@ -136,15 +177,13 @@ export class AudioSystem {
     src.loop = opts.loop ?? false;
     src.playbackRate.value = Math.max(0.25, opts.pitch ?? 1.0);
 
-    const panner = ctx.createPanner();
-    panner.panningModel = 'HRTF';
-    panner.distanceModel = 'inverse';
-    panner.refDistance = opts.refDistance ?? 2.0;
-    panner.maxDistance = opts.maxDistance ?? 40.0;
-    panner.rolloffFactor = opts.rolloff ?? 1.2;
-    panner.positionX.value = opts.position[0];
-    panner.positionY.value = opts.position[1];
-    panner.positionZ.value = opts.position[2];
+    const panner = this.createPanner(
+      ctx,
+      opts.position,
+      opts.refDistance ?? 2.0,
+      opts.maxDistance ?? 40.0,
+      opts.rolloff ?? 1.2
+    );
 
     const gain = ctx.createGain();
     gain.gain.value = opts.volume ?? 1.0;
@@ -176,15 +215,7 @@ export class AudioSystem {
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    const panner = ctx.createPanner();
-    panner.panningModel = 'HRTF';
-    panner.distanceModel = 'inverse';
-    panner.refDistance = refDistance;
-    panner.maxDistance = maxDistance;
-    panner.rolloffFactor = 1.25;
-    panner.positionX.value = position[0];
-    panner.positionY.value = position[1];
-    panner.positionZ.value = position[2];
+    const panner = this.createPanner(ctx, position, refDistance, maxDistance, 1.25);
 
     osc.type = type;
     osc.frequency.setValueAtTime(freq, now);
@@ -250,6 +281,167 @@ export class AudioSystem {
     osc.stop(now + durationSec + 0.01);
   }
 
+  /** Procedural 3D spatial collision impact sound routed to the `sfx` bus. */
+  playImpact3D(
+    position: Vec3Tuple,
+    intensity = 0.8,
+    material: 'wood' | 'stone' | 'metal' | 'soft' = 'stone'
+  ): void {
+    const level = Math.max(0, Math.min(1.5, intensity));
+    if (level < 0.12) return;
+    const ctx = this.ensureContext();
+    const sfxBus = this.busGains.sfx ?? this.masterGain;
+    if (!ctx || !sfxBus || this.activeVoices >= this.maxVoices - 1) return;
+
+    const now = ctx.currentTime;
+    const panner = this.createPanner(ctx, position, 2.5, 45.0, 1.25);
+    panner.connect(sfxBus);
+
+    // Filtered noise transient
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.getNoiseBuffer(ctx);
+    noise.playbackRate.value = 0.8 + Math.random() * 0.4;
+    const filter = ctx.createBiquadFilter();
+    filter.type = material === 'metal' ? 'bandpass' : 'lowpass';
+    filter.frequency.setValueAtTime(
+      material === 'metal' ? 1650 : material === 'wood' ? 780 : material === 'soft' ? 420 : 620,
+      now
+    );
+    filter.Q.value = material === 'metal' ? 4.5 : 1.2;
+
+    const nGain = ctx.createGain();
+    const vol = Math.min(0.45, 0.07 + level * 0.24);
+    const dur = material === 'metal' ? 0.24 : 0.14;
+    nGain.gain.setValueAtTime(vol, now);
+    nGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(panner);
+    this.activeVoices++;
+    noise.onended = () => {
+      this.activeVoices = Math.max(0, this.activeVoices - 1);
+    };
+    noise.start(now, Math.random() * 1.2, dur + 0.02);
+
+    // Low-end resonant body thump / metallic ring
+    const osc = ctx.createOscillator();
+    const oGain = ctx.createGain();
+    osc.type = material === 'metal' ? 'triangle' : 'sine';
+    const baseHz = material === 'metal' ? 480 + Math.random() * 180 : material === 'wood' ? 175 : 115;
+    osc.frequency.setValueAtTime(baseHz, now);
+    osc.frequency.exponentialRampToValueAtTime(material === 'metal' ? baseHz * 0.72 : 38, now + dur);
+    oGain.gain.setValueAtTime(vol * 0.65, now);
+    oGain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.connect(oGain);
+    oGain.connect(panner);
+    osc.start(now);
+    osc.stop(now + dur + 0.01);
+  }
+
+  /** Procedural 3D spatial explosion boom routed to the `sfx` bus. */
+  playExplosion3D(position: Vec3Tuple, intensity = 1.0): void {
+    const ctx = this.ensureContext();
+    const sfxBus = this.busGains.sfx ?? this.masterGain;
+    if (!ctx || !sfxBus || this.activeVoices >= this.maxVoices - 1) return;
+
+    const now = ctx.currentTime;
+    const scale = Math.max(0.3, Math.min(1.6, intensity));
+    const panner = this.createPanner(ctx, position, 5.0, 75.0, 1.0);
+    panner.connect(sfxBus);
+
+    const roar = ctx.createBufferSource();
+    roar.buffer = this.getNoiseBuffer(ctx);
+    const lpf = ctx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.setValueAtTime(1600, now);
+    lpf.frequency.exponentialRampToValueAtTime(95, now + 0.9);
+    const rGain = ctx.createGain();
+    rGain.gain.setValueAtTime(0.42 * scale, now);
+    rGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.95);
+    roar.connect(lpf);
+    lpf.connect(rGain);
+    rGain.connect(panner);
+    this.activeVoices++;
+    roar.onended = () => {
+      this.activeVoices = Math.max(0, this.activeVoices - 1);
+    };
+    roar.start(now, 0, 1.0);
+
+    const sub = ctx.createOscillator();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(115, now);
+    sub.frequency.exponentialRampToValueAtTime(24, now + 0.55);
+    const sGain = ctx.createGain();
+    sGain.gain.setValueAtTime(0.5 * scale, now);
+    sGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
+    sub.connect(sGain);
+    sGain.connect(panner);
+    sub.start(now);
+    sub.stop(now + 0.62);
+  }
+
+  /** Procedural 3D water splash SFX routed to the `sfx` bus. */
+  playSplash3D(position: Vec3Tuple, intensity = 1.0): void {
+    const ctx = this.ensureContext();
+    const sfxBus = this.busGains.sfx ?? this.masterGain;
+    if (!ctx || !sfxBus || this.activeVoices >= this.maxVoices) return;
+
+    const now = ctx.currentTime;
+    const panner = this.createPanner(ctx, position, 3.0, 48.0, 1.15);
+    panner.connect(sfxBus);
+
+    const splash = ctx.createBufferSource();
+    splash.buffer = this.getNoiseBuffer(ctx);
+    const bpf = ctx.createBiquadFilter();
+    bpf.type = 'bandpass';
+    bpf.Q.value = 1.1;
+    bpf.frequency.setValueAtTime(1750, now);
+    bpf.frequency.exponentialRampToValueAtTime(420, now + 0.42);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(Math.min(0.4, 0.18 * intensity), now);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.44);
+    splash.connect(bpf);
+    bpf.connect(g);
+    g.connect(panner);
+    this.activeVoices++;
+    splash.onended = () => {
+      this.activeVoices = Math.max(0, this.activeVoices - 1);
+    };
+    splash.start(now, Math.random() * 0.8, 0.46);
+  }
+
+  /** Continuous procedural rain loop on `ambient` bus; ramps gain smoothly from `0..1+`. */
+  setRainAmbience(intensity: number): void {
+    const target = Math.max(0, Math.min(1, intensity)) * 0.22;
+    if (!this.ctx) {
+      // Avoid waking AudioContext solely because rainIntensity == 0 before user gesture
+      return;
+    }
+    const ctx = this.ctx;
+    const ambientBus = this.busGains.ambient ?? this.masterGain;
+    if (!ambientBus) return;
+    if (!this.rainGain || !this.rainSource) {
+      if (target <= 0.002) return;
+      const src = ctx.createBufferSource();
+      src.buffer = this.getNoiseBuffer(ctx);
+      src.loop = true;
+      const bpf = ctx.createBiquadFilter();
+      bpf.type = 'bandpass';
+      bpf.frequency.value = 1150;
+      bpf.Q.value = 0.65;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      src.connect(bpf);
+      bpf.connect(gain);
+      gain.connect(ambientBus);
+      src.start();
+      this.rainSource = src;
+      this.rainGain = gain;
+    }
+    this.rainGain.gain.setTargetAtTime(Math.max(0.0001, target), ctx.currentTime, 0.25);
+  }
+
   unloadSound(key: string): void {
     this.buffers.delete(key);
   }
@@ -263,6 +455,16 @@ export class AudioSystem {
       }
       this.bgmSource = null;
     }
+    if (this.rainSource) {
+      try {
+        this.rainSource.stop();
+      } catch {
+        // ignore
+      }
+      this.rainSource = null;
+      this.rainGain = null;
+    }
+    this.noiseBuffer = null;
     this.buffers.clear();
     if (this.ctx) {
       void this.ctx.close();

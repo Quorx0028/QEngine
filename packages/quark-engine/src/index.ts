@@ -6,6 +6,8 @@ export {
   type EngineFrameTimings,
   type EngineOptions,
   type EngineStats,
+  type QualityPreset,
+  type QualityProfile,
 } from './Engine';
 export { Input, type ActionBinding, type AxisBinding } from './Input';
 export {

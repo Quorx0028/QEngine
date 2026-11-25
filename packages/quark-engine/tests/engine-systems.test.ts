@@ -168,4 +168,31 @@ describe('Core Engine Systems (Nav, Terrain, SphereCast, Sockets, Behavior, FSM,
     expect(vertexSource).toContain('v_uv = a_uv * u_uvScale;');
     expect(fragmentSource).toContain('evalTerrainSplat');
   });
+
+  it('Engine.setQuality configures shadow/DPR profiles and Scene.scaleCollider3D updates raycast bounds', async () => {
+    const engine = await Engine.init({ wasmBytes });
+    const { scene } = engine;
+
+    expect(engine.getQuality()).toBe('high');
+    engine.setQuality('eco');
+    expect(engine.getQuality()).toBe('eco');
+    expect(scene.shadowsEnabled).toBe(false);
+    expect(scene.renderQuality.ssaoScale).toBe(0);
+    expect(scene.renderQuality.particleScale).toBe(0.25);
+
+    engine.setQuality('ultra');
+    expect(engine.getQuality()).toBe('ultra');
+    expect(scene.shadowsEnabled).toBe(true);
+    expect(scene.renderQuality.spotShadows).toBe(true);
+
+    const box = scene.createEntity();
+    scene.setTransform(box, { position: [0, 0, -4], immediate: true });
+    scene.setCollider3D(box, { kind: 'aabb', halfExtents: [0.5, 0.5, 0.5] });
+    expect(scene.raycast3D([1.1, 0, 0], [0, 0, -1], 20)).toBeNull();
+    scene.scaleCollider3D(box, 3.0, 1.0, 1.0);
+    const hit = scene.raycast3D([1.1, 0, 0], [0, 0, -1], 20);
+    expect(hit?.entity).toBe(box);
+
+    engine.dispose();
+  });
 });

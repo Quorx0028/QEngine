@@ -49,6 +49,7 @@ export class TransformGizmo {
   private dragStartPos: Vec3Tuple = [0, 0, 0];
   private dragStartRot: QuatTuple = [0, 0, 0, 1];
   private dragStartScale: Vec3Tuple = [1, 1, 1];
+  private dragCurrentScale: Vec3Tuple = [1, 1, 1];
   private dragStartX = 0;
   private dragStartY = 0;
   private prevOrbitEnabled = true;
@@ -289,6 +290,7 @@ export class TransformGizmo {
     this.dragStartPos = [...xf.position];
     this.dragStartRot = [...xf.rotation];
     this.dragStartScale = [...xf.scale];
+    this.dragCurrentScale = [...xf.scale];
     if (this.orbit) {
       this.prevOrbitEnabled = this.orbit.enabled;
       this.orbit.enabled = false;
@@ -341,12 +343,17 @@ export class TransformGizmo {
       const delta = (e.clientX - this.dragStartX - (e.clientY - this.dragStartY)) * 0.008;
       const nextScale: Vec3Tuple = [...this.dragStartScale];
       nextScale[axisIdx] = Math.max(0.15, Math.min(24, this.dragStartScale[axisIdx] * (1 + delta)));
+      const rx = nextScale[0] / Math.max(1e-4, this.dragCurrentScale[0]);
+      const ry = nextScale[1] / Math.max(1e-4, this.dragCurrentScale[1]);
+      const rz = nextScale[2] / Math.max(1e-4, this.dragCurrentScale[2]);
+      this.dragCurrentScale = [...nextScale];
       this.scene.setTransform(eid, {
         position: this.dragStartPos,
         rotation: this.dragStartRot,
         scale: nextScale,
         immediate: true,
       });
+      this.scene.scaleCollider3D(eid, rx, ry, rz);
       this.scene.setVelocity(eid, 0, 0, 0);
       this.update();
       this.onChangeCb?.(eid, this.mode);

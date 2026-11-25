@@ -754,6 +754,100 @@ impl PhysicsWorld {
         true
     }
 
+    pub fn scale_collider_3d(
+        &mut self,
+        world: &mut World,
+        entity: EntityHandle,
+        rx: f32,
+        ry: f32,
+        rz: f32,
+    ) -> bool {
+        if !world.is_alive(entity) {
+            return false;
+        }
+        let idx = entity_index(entity);
+        let s = Vec3::new(
+            rx.abs().clamp(0.01, 100.0),
+            ry.abs().clamp(0.01, 100.0),
+            rz.abs().clamp(0.01, 100.0),
+        );
+        let Some(col) = world.colliders_3d[idx].as_mut() else {
+            return false;
+        };
+        Self::scale_collider_variant(col, s, &mut self.convex_hulls, &mut self.compound_shapes);
+        if let Some(rb) = world.rigid_bodies[idx].as_mut() {
+            rb.sleeping = false;
+            rb.sleep_timer = 0.0;
+        }
+        true
+    }
+
+    fn scale_collider_variant(
+        col: &mut Collider3D,
+        s: Vec3,
+        hulls: &mut [ConvexHullShape],
+        compounds: &mut [CompoundShape],
+    ) {
+        let iso = s.x.max(s.y).max(s.z);
+        let xz = s.x.max(s.z);
+        match col {
+            Collider3D::Aabb { half_extents } => {
+                *half_extents = Vec3::new(
+                    (half_extents.x * s.x).max(0.01),
+                    (half_extents.y * s.y).max(0.01),
+                    (half_extents.z * s.z).max(0.01),
+                );
+            }
+            Collider3D::Sphere { radius } => {
+                *radius = (*radius * iso).max(0.01);
+            }
+            Collider3D::Capsule { radius, half_height }
+            | Collider3D::Cylinder { radius, half_height } => {
+                *radius = (*radius * xz).max(0.01);
+                *half_height = (*half_height * s.y).max(0.01);
+            }
+            Collider3D::ConvexHull {
+                hull_id,
+                bounding_radius,
+            } => {
+                if let Some(hull) = hulls.get_mut(*hull_id as usize) {
+                    let mut r2 = 0.0f32;
+                    for v in &mut hull.vertices {
+                        *v *= s;
+                        r2 = r2.max(v.length_squared());
+                    }
+                    hull.bounding_radius = r2.sqrt().max(0.02);
+                    hull.volume = (hull.volume * s.x * s.y * s.z).max(0.001);
+                    *bounding_radius = hull.bounding_radius;
+                }
+            }
+            Collider3D::Compound {
+                compound_id,
+                bounding_radius,
+            } => {
+                if let Some(comp) = compounds.get_mut(*compound_id as usize) {
+                    let mut r = 0.02f32;
+                    for ch in &mut comp.children {
+                        ch.local_pos *= s;
+                        Self::scale_collider_variant(&mut ch.collider, s, hulls, &mut []);
+                        let cr = match ch.collider {
+                            Collider3D::Aabb { half_extents } => half_extents.length(),
+                            Collider3D::Sphere { radius } => radius,
+                            Collider3D::Capsule { radius, half_height }
+                            | Collider3D::Cylinder { radius, half_height } => radius + half_height,
+                            Collider3D::ConvexHull { bounding_radius, .. }
+                            | Collider3D::Compound { bounding_radius, .. } => bounding_radius,
+                        };
+                        r = r.max(ch.local_pos.length() + cr);
+                    }
+                    comp.bounding_radius = r;
+                    comp.volume = (comp.volume * s.x * s.y * s.z).max(0.001);
+                    *bounding_radius = r;
+                }
+            }
+        }
+    }
+
     pub fn step(&mut self, world: &mut World, frame_dt: f32) -> StepResult {
         let clamped_dt = frame_dt.clamp(0.0, self.config.max_frame_dt);
         self.accumulator += clamped_dt;
@@ -992,10 +1086,7 @@ impl PhysicsWorld {
     }
 
     fn step_fixed(&mut self, world: &mut World, dt: f32) {
-        self.dynamic_indices.clear();
-        self.awake_indices.clear();
-        self.static_indices_3d.clear();
-        self.static_indices_2d.clear();
+        const INTERNAL_SUBSTEPS: u32 = 2;
         self.curr_overlaps.clear();
         self.pair_impulses.clear();
 
@@ -1010,12 +1101,6 @@ impl PhysicsWorld {
             self.pre_step_pos.resize(count, Vec3::ZERO);
         }
 
-        // Apply spring joint impulses & reset substep break counters
-        self.joints.retain_alive(world);
-        self.joints.begin_substep();
-        self.joints.apply_springs(world, dt);
-
-        // Wake riders whose supporting platform moved/rotated or disappeared
         for i in 0..count {
             if !world.alive[i] {
                 self.ground_support[i] = None;
@@ -1042,6 +1127,46 @@ impl PhysicsWorld {
                 }
             }
         }
+
+        self.joints.retain_alive(world);
+        self.static_meshes
+            .retain(|m| m.entity == INVALID_ENTITY || world.is_alive(m.entity));
+
+        // 2x internal TGS sub-stepping (120Hz effective solver when fixed_dt = 1/60s)
+        let sub_dt = dt / INTERNAL_SUBSTEPS as f32;
+        let sub_iters = (self.config.solver_iterations / INTERNAL_SUBSTEPS).max(6);
+        for _ in 0..INTERNAL_SUBSTEPS {
+            self.step_substep(world, sub_dt, sub_iters);
+        }
+
+        // Snapshot updated platform transforms for next tick's rider carry
+        for i in 0..self.ground_support.len() {
+            if let Some((plat_idx, _, _)) = self.ground_support[i] {
+                if plat_idx < count && world.alive[plat_idx] {
+                    self.ground_support[i] =
+                        Some((plat_idx, world.curr_pos[plat_idx], world.curr_rot[plat_idx]));
+                } else {
+                    self.ground_support[i] = None;
+                }
+            }
+        }
+
+        // Connected-island sleeping so stacked piles rest quietly together
+        self.update_sleeping_islands(world, dt);
+
+        self.emit_overlap_events();
+    }
+
+    fn step_substep(&mut self, world: &mut World, dt: f32, sub_iters: u32) {
+        let count = world.alive.len();
+        self.dynamic_indices.clear();
+        self.awake_indices.clear();
+        self.static_indices_3d.clear();
+        self.static_indices_2d.clear();
+
+        // Apply spring joint impulses & reset substep break counters
+        self.joints.begin_substep();
+        self.joints.apply_springs(world, dt);
 
         for i in 0..count {
             if !world.alive[i] {
@@ -1120,9 +1245,6 @@ impl PhysicsWorld {
             }
         }
 
-        self.static_meshes
-            .retain(|m| m.entity == INVALID_ENTITY || world.is_alive(m.entity));
-
         // 1. Continuous Collision Detection pass for fast or ccd-enabled bodies
         self.run_ccd_pass(world);
 
@@ -1132,8 +1254,8 @@ impl PhysicsWorld {
         self.warm_start_manifolds(world);
 
         // 3. Sequential Impulse (Symmetric PGS) velocity solver + circular Coulomb static/dynamic cone + joints
-        for iter in 0..self.config.solver_iterations {
-            self.solve_3d_velocity_constraints(world, iter);
+        for iter in 0..sub_iters {
+            self.solve_3d_velocity_constraints(world, iter, sub_iters);
             for idx_pos in 0..self.awake_indices.len() {
                 let dyn_idx = self.awake_indices[idx_pos];
                 if world.colliders_2d[dyn_idx].is_some() {
@@ -1153,23 +1275,6 @@ impl PhysicsWorld {
 
         // 5. Optional ground snap for CharacterController stepping cleanly down ramps/stairs
         self.ground_snap_controllers(world);
-
-        // Snapshot updated platform transforms for next tick's rider carry
-        for i in 0..self.ground_support.len() {
-            if let Some((plat_idx, _, _)) = self.ground_support[i] {
-                if plat_idx < count && world.alive[plat_idx] {
-                    self.ground_support[i] =
-                        Some((plat_idx, world.curr_pos[plat_idx], world.curr_rot[plat_idx]));
-                } else {
-                    self.ground_support[i] = None;
-                }
-            }
-        }
-
-        // 6. Connected-island sleeping so stacked piles rest quietly together
-        self.update_sleeping_islands(world, dt);
-
-        self.emit_overlap_events();
     }
 
     fn build_dynamic_pairs(&mut self, world: &World) {
@@ -2002,7 +2107,7 @@ impl PhysicsWorld {
         self.pair_impulses.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
     }
 
-    fn solve_3d_velocity_constraints(&mut self, world: &mut World, iter: u32) {
+    fn solve_3d_velocity_constraints(&mut self, world: &mut World, iter: u32, max_iters: u32) {
         let len = self.manifolds.len();
         if len == 0 {
             return;
@@ -2022,7 +2127,7 @@ impl PhysicsWorld {
                 Vec3::ZERO
             };
             let vn = (va - vb).dot(c.normal);
-            let omega = if iter + 2 < self.config.solver_iterations { 0.72 } else { 1.0 };
+            let omega = if iter + 2 < max_iters { 0.72 } else { 1.0 };
             let djn_raw = -(vn - c.vel_bias) * c.eff_mass_n * omega;
             let old_n = c.acc_n;
             c.acc_n = (old_n + djn_raw).max(0.0);
@@ -2103,7 +2208,7 @@ impl PhysicsWorld {
             }
         }
 
-        if iter + 2 == self.config.solver_iterations {
+        if iter + 2 == max_iters {
             for c in &self.manifolds {
                 if !c.allow_friction || c.acc_n <= 0.0 {
                     continue;
@@ -5336,5 +5441,55 @@ mod tests {
             sleeping >= 28,
             "mixed cube+sphere pile should settle to sleep cleanly, got {sleeping}/30 sleeping"
         );
+    }
+
+    #[test]
+    fn test_scale_collider_3d_and_substep_stack_stability() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let floor = world.spawn();
+        world.set_transform_immediate(floor, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(floor)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(12.0, 0.5, 12.0),
+        });
+
+        let scaled_box = world.spawn();
+        world.colliders_3d[entity_index(scaled_box)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::splat(0.5),
+        });
+        assert!(phys.scale_collider_3d(&mut world, scaled_box, 2.0, 0.5, 3.0));
+        match world.colliders_3d[entity_index(scaled_box)].unwrap() {
+            Collider3D::Aabb { half_extents } => {
+                assert!((half_extents - Vec3::new(1.0, 0.25, 1.5)).length() < 1e-4);
+            }
+            _ => panic!("expected Aabb collider"),
+        }
+
+        // Tall 7-box tower should settle cleanly under 2x internal TGS sub-stepping
+        let mut boxes = Vec::new();
+        for i in 0..7 {
+            let e = world.spawn();
+            world.set_transform_immediate(e, Vec3::new(0.0, 0.5 + i as f32 * 1.01, 0.0), Quat::IDENTITY, Vec3::ONE);
+            world.colliders_3d[entity_index(e)] = Some(Collider3D::Aabb {
+                half_extents: Vec3::splat(0.5),
+            });
+            world.rigid_bodies[entity_index(e)] = Some(RigidBody {
+                dynamic: true,
+                mass: 1.0,
+                friction: 0.72,
+                restitution: 0.05,
+                ..Default::default()
+            });
+            boxes.push(e);
+        }
+
+        for _ in 0..300 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+
+        let top_pos = world.curr_pos[entity_index(*boxes.last().unwrap())];
+        assert!(top_pos.y > 6.2 && top_pos.y < 6.75, "tower top collapsed: y={}", top_pos.y);
+        assert!(top_pos.x.abs() < 0.2 && top_pos.z.abs() < 0.2, "tower drifted laterally: {:?}", top_pos);
     }
 }

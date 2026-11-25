@@ -99,6 +99,11 @@ export interface RenderFrameMetrics {
   uboBound: boolean;
 }
 
+export interface RenderQualityConfig {
+  shadowResolution?: number;
+  spotShadows?: boolean;
+}
+
 export interface IRenderBackend {
   createMesh(geom: MeshGeometry): number;
   updateMeshVertices?(meshId: number, vertices: Float32Array): void;
@@ -109,6 +114,7 @@ export interface IRenderBackend {
   createTexture(width: number, height: number, pixels: Uint8Array, pixelated?: boolean): number;
   disposeTexture(textureId: number): void;
   renderFrame(bridge: WasmBridge, scene: Scene, aspect: number, timeSec: number): number;
+  setQuality?(cfg: RenderQualityConfig): void;
   warmupMaterials?(descs: MaterialDesc[]): number;
   getRenderMetrics?(): RenderFrameMetrics;
   dispose(): void;
