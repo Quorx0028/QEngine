@@ -20,7 +20,53 @@ interface GpuMesh {
   ibo: WebGLBuffer;
   indexCount: number;
   hasSkinning: boolean;
+  boundsRadius: number;
   submeshes?: MeshSubmesh[];
+}
+
+function computeLocalBoundsRadius(vertices: Float32Array): number {
+  let maxSq = 0;
+  for (let i = 0; i + 2 < vertices.length; i += 8) {
+    const x = vertices[i];
+    const y = vertices[i + 1];
+    const z = vertices[i + 2];
+    const dSq = x * x + y * y + z * z;
+    if (dSq > maxSq) maxSq = dSq;
+  }
+  return maxSq > 0 ? Math.sqrt(maxSq) : 1;
+}
+
+function extractFrustumPlanes(m: Float32Array, out: Float32Array): void {
+  const specs: Array<[number, number]> = [
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [1, -1],
+    [2, 1],
+    [2, -1],
+  ];
+  for (let p = 0; p < 6; p++) {
+    const [row, sign] = specs[p];
+    const px = m[3] + sign * m[row];
+    const py = m[7] + sign * m[4 + row];
+    const pz = m[11] + sign * m[8 + row];
+    const pw = m[15] + sign * m[12 + row];
+    const len = Math.hypot(px, py, pz);
+    const inv = len > 1e-6 ? 1 / len : 1;
+    const base = p * 4;
+    out[base] = px * inv;
+    out[base + 1] = py * inv;
+    out[base + 2] = pz * inv;
+    out[base + 3] = pw * inv;
+  }
+}
+
+function sphereInFrustum(planes: Float32Array, cx: number, cy: number, cz: number, r: number): boolean {
+  for (let p = 0; p < 24; p += 4) {
+    const dist = planes[p] * cx + planes[p + 1] * cy + planes[p + 2] * cz + planes[p + 3];
+    if (dist < -r) return false;
+  }
+  return true;
 }
 
 /** Averages face normals at shared positions so inverted-hull outlines never split at hard edges. */
@@ -500,6 +546,9 @@ export class WebGL2Backend implements IRenderBackend {
   private frameSkippedMatBinds = 0;
   private instVbo: WebGLBuffer;
   private instScratch = new Float32Array(16 * 512);
+  private readonly shadowPlanesScratch = new Float32Array(24);
+  private readonly camPlanesScratch = new Float32Array(24);
+  private readonly shadowBuckets = new Map<number, { count: number; data: Float32Array }>();
   private readonly bonePaletteScratch = new Float32Array(16 * 64);
 
   private nextMeshId = 1;
@@ -870,6 +919,7 @@ export class WebGL2Backend implements IRenderBackend {
       ibo,
       indexCount: geom.indices.length,
       hasSkinning,
+      boundsRadius: computeLocalBoundsRadius(geom.vertices),
       submeshes: geom.submeshes,
     });
     return id;
@@ -878,6 +928,7 @@ export class WebGL2Backend implements IRenderBackend {
   updateMeshVertices(meshId: number, vertices: Float32Array): void {
     const mesh = this.meshes.get(meshId);
     if (!mesh) return;
+    mesh.boundsRadius = computeLocalBoundsRadius(vertices);
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.DYNAMIC_DRAW);
@@ -887,6 +938,7 @@ export class WebGL2Backend implements IRenderBackend {
   disposeMesh(meshId: number): void {
     const mesh = this.meshes.get(meshId);
     if (!mesh) return;
+    this.shadowBuckets.delete(meshId);
     this.gl.deleteVertexArray(mesh.vao);
     this.gl.deleteBuffer(mesh.vbo);
     this.gl.deleteBuffer(mesh.smoothVbo);
@@ -1051,9 +1103,11 @@ export class WebGL2Backend implements IRenderBackend {
     this.frameSkippedMatBinds = 0;
     let drawCalls = 0;
 
+    const { viewProj } = scene.computeCameraMatrices(aspect);
+
     if (scene.camera.mode === '3d' && scene.shadowsEnabled) {
       drawCalls += this.renderShadowPass(bridge, scene);
-      drawCalls += this.renderSpotShadowPass(bridge, scene);
+      drawCalls += this.renderSpotShadowPass(bridge, scene, viewProj);
     } else {
       this.spotShadowActive = false;
     }
@@ -1081,8 +1135,6 @@ export class WebGL2Backend implements IRenderBackend {
       gl.clearColor(scene.fogColor[0], scene.fogColor[1], scene.fogColor[2], 1.0);
     }
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-    const { viewProj } = scene.computeCameraMatrices(aspect);
 
     if (scene.camera.mode === '3d') {
       drawCalls += this.renderSkyPass(scene, aspect, timeSec);
@@ -1339,12 +1391,17 @@ export class WebGL2Backend implements IRenderBackend {
     return this.renderDepthPass(this.shadowFbo, SHADOW_RES, this.lightVpMat, bridge);
   }
 
-  private renderSpotShadowPass(bridge: WasmBridge, scene: Scene): number {
+  private renderSpotShadowPass(bridge: WasmBridge, scene: Scene, camViewProj: Float32Array): number {
     const gl = this.gl;
     this.spotShadowActive = false;
     if (scene.spotLights.length === 0) return 0;
     const spot = scene.spotLights[0];
-    if (spot.castsShadow === false) return 0;
+    if (spot.castsShadow === false || spot.intensity <= 0.001) return 0;
+
+    extractFrustumPlanes(camViewProj, this.camPlanesScratch);
+    if (!sphereInFrustum(this.camPlanesScratch, spot.position[0], spot.position[1], spot.position[2], spot.range)) {
+      return 0;
+    }
 
     const dl = spot.direction;
     const dLen = Math.hypot(dl[0], dl[1], dl[2]) || 1;
@@ -1363,7 +1420,14 @@ export class WebGL2Backend implements IRenderBackend {
 
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, null);
-    return this.renderDepthPass(this.spotShadowFbo, SPOT_SHADOW_RES, this.spotVpMat, bridge);
+    return this.renderDepthPass(
+      this.spotShadowFbo,
+      SPOT_SHADOW_RES,
+      this.spotVpMat,
+      bridge,
+      spot.position,
+      spot.range
+    );
   }
 
   private collectInstanceRun(
@@ -1390,11 +1454,11 @@ export class WebGL2Backend implements IRenderBackend {
     return run;
   }
 
-  private setInstancingEnabled(enabled: boolean, runCount: number): void {
+  private setInstancingEnabled(enabled: boolean, runCount: number, src: Float32Array = this.instScratch): void {
     const gl = this.gl;
     if (enabled) {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.instVbo);
-      gl.bufferData(gl.ARRAY_BUFFER, this.instScratch.subarray(0, runCount * 16), gl.DYNAMIC_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, src.subarray(0, runCount * 16), gl.DYNAMIC_DRAW);
       for (let loc = 6; loc <= 9; loc++) gl.enableVertexAttribArray(loc);
     } else {
       for (let loc = 6; loc <= 9; loc++) gl.disableVertexAttribArray(loc);
@@ -1405,7 +1469,9 @@ export class WebGL2Backend implements IRenderBackend {
     fbo: WebGLFramebuffer,
     res: number,
     vpMat: Float32Array,
-    bridge: WasmBridge
+    bridge: WasmBridge,
+    cullSpherePos?: Vec3Tuple,
+    cullSphereRange?: number
   ): number {
     const gl = this.gl;
     const cmds = bridge.getRender3DView();
@@ -1424,6 +1490,9 @@ export class WebGL2Backend implements IRenderBackend {
     gl.useProgram(this.shadowProgram.program);
     gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_lightViewProj'), false, vpMat);
 
+    extractFrustumPlanes(vpMat, this.shadowPlanesScratch);
+    const hasSphereCull = cullSpherePos !== undefined && cullSphereRange !== undefined;
+
     let drawCalls = 0;
     for (let i = 0; i < cmds.length; i += 4) {
       const meshId = cmds[i];
@@ -1436,27 +1505,69 @@ export class WebGL2Backend implements IRenderBackend {
       const matOffset = slot * 16;
       if (matOffset + 16 > matrices.length) continue;
 
-      gl.bindVertexArray(mesh.vao);
+      const cx = matrices[matOffset + 12];
+      const cy = matrices[matOffset + 13];
+      const cz = matrices[matOffset + 14];
+      const sx = Math.hypot(matrices[matOffset], matrices[matOffset + 1], matrices[matOffset + 2]);
+      const sy = Math.hypot(matrices[matOffset + 4], matrices[matOffset + 5], matrices[matOffset + 6]);
+      const sz = Math.hypot(matrices[matOffset + 8], matrices[matOffset + 9], matrices[matOffset + 10]);
+      const worldR = mesh.boundsRadius * Math.max(sx, sy, sz);
+
+      if (hasSphereCull) {
+        const dx = cx - cullSpherePos![0];
+        const dy = cy - cullSpherePos![1];
+        const dz = cz - cullSpherePos![2];
+        const maxD = cullSphereRange! + worldR;
+        if (dx * dx + dy * dy + dz * dz > maxD * maxD) continue;
+      }
+      if (!sphereInFrustum(this.shadowPlanesScratch, cx, cy, cz, worldR)) continue;
+
       if (!mesh.hasSkinning) {
-        const run = this.collectInstanceRun(cmds, i, meshId, matId, matrices);
-        if (run >= 2) {
-          gl.uniform1i(this.uLoc(this.shadowProgram, 'u_skinned'), 0);
-          gl.uniform1i(this.uLoc(this.shadowProgram, 'u_instanced'), 1);
-          this.setInstancingEnabled(true, run);
-          gl.drawElementsInstanced(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0, run);
-          this.setInstancingEnabled(false, 0);
-          drawCalls++;
-          i += (run - 1) * 4;
-          continue;
+        let bucket = this.shadowBuckets.get(meshId);
+        if (!bucket) {
+          bucket = { count: 0, data: new Float32Array(16 * 32) };
+          this.shadowBuckets.set(meshId, bucket);
         }
+        const dst = bucket.count * 16;
+        if (dst + 16 > bucket.data.length) {
+          const grown = new Float32Array(bucket.data.length * 2);
+          grown.set(bucket.data);
+          bucket.data = grown;
+        }
+        bucket.data.set(matrices.subarray(matOffset, matOffset + 16), dst);
+        bucket.count++;
+        continue;
       }
 
+      gl.bindVertexArray(mesh.vao);
       gl.uniform1i(this.uLoc(this.shadowProgram, 'u_instanced'), 0);
       this.modelScratch.set(matrices.subarray(matOffset, matOffset + 16));
       gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_model'), false, this.modelScratch);
       this.uploadSkinningUniforms(this.shadowProgram, mesh, slot, paletteOffsets, bonePalettes);
       gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
       drawCalls++;
+    }
+
+    for (const [meshId, bucket] of this.shadowBuckets) {
+      if (bucket.count === 0) continue;
+      const mesh = this.meshes.get(meshId);
+      if (mesh) {
+        gl.bindVertexArray(mesh.vao);
+        gl.uniform1i(this.uLoc(this.shadowProgram, 'u_skinned'), 0);
+        if (bucket.count >= 2) {
+          gl.uniform1i(this.uLoc(this.shadowProgram, 'u_instanced'), 1);
+          this.setInstancingEnabled(true, bucket.count, bucket.data);
+          gl.drawElementsInstanced(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0, bucket.count);
+          this.setInstancingEnabled(false, 0);
+        } else {
+          gl.uniform1i(this.uLoc(this.shadowProgram, 'u_instanced'), 0);
+          this.modelScratch.set(bucket.data.subarray(0, 16));
+          gl.uniformMatrix4fv(this.uLoc(this.shadowProgram, 'u_model'), false, this.modelScratch);
+          gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0);
+        }
+        drawCalls++;
+      }
+      bucket.count = 0;
     }
 
     gl.bindVertexArray(null);

@@ -124,7 +124,9 @@ export class HoloSignFactory {
     private readonly assets: AssetManager,
     tag = 'scene-holo'
   ) {
-    this.boxMeshId = this.assets.registerMesh('holo-post-box', createBoxGeometry(0.5, 0.5, 0.5), tag).meshId;
+    this.boxMeshId = (
+      this.assets.getMesh('box') ?? this.assets.registerMesh('holo-post-box', createBoxGeometry(0.5, 0.5, 0.5), tag)
+    ).meshId;
     this.postMatId = this.assets.createPreset(
       'holo-post-mat',
       'ultraRealism',
@@ -179,7 +181,7 @@ export class HoloSignFactory {
       meshId: planeMesh.meshId,
       materialId: matId,
       transparent: true,
-      boundsRadius: Math.max(w, h),
+      boundsRadius: Math.hypot(w, h) * 0.55,
     });
 
     if (opts.withPost !== false && opts.position[1] > 0.7) {
@@ -199,7 +201,7 @@ export class HoloSignFactory {
         this.scene.setMesh3D(post, {
           meshId: this.boxMeshId,
           materialId: this.postMatId,
-          boundsRadius: postHeight,
+          boundsRadius: 0.9,
         });
       }
     }

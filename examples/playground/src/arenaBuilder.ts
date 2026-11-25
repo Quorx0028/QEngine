@@ -246,7 +246,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
 
   const floorVis = scene.createEntity();
   scene.setTransform(floorVis, { position: [0, 0, 8], immediate: true });
-  scene.setMesh3D(floorVis, { meshId: floorMesh.meshId, materialId: floorMat, boundsRadius: 58 });
+  scene.setMesh3D(floorVis, { meshId: floorMesh.meshId, materialId: floorMat, boundsRadius: 46 });
 
   const addStaticBox = (pos: Vec3Tuple, scale: Vec3Tuple, matId = wallMat) => {
     const e = scene.createEntity();
@@ -258,7 +258,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     scene.setMesh3D(e, {
       meshId: boxMesh.meshId,
       materialId: matId,
-      boundsRadius: Math.hypot(scale[0], scale[1], scale[2]) * 0.6,
+      boundsRadius: 0.9,
     });
     return e;
   };
@@ -301,7 +301,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const movingPlat = scene.createEntity();
   scene.setTransform(movingPlat, { position: [0, 0.35, -10.5], scale: [3.4, 0.4, 3.4], immediate: true });
   scene.setCollider3D(movingPlat, { kind: 'aabb', halfExtents: [1.7, 0.2, 1.7] });
-  scene.setMesh3D(movingPlat, { meshId: boxMesh.meshId, materialId: platMat, boundsRadius: 3.0 });
+  scene.setMesh3D(movingPlat, { meshId: boxMesh.meshId, materialId: platMat, boundsRadius: 0.9 });
 
   // Central faceted GLB gemstone crystal
   const crystalBytes = buildSampleCrystalGlb();
@@ -410,7 +410,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   const frontGlass = scene.createEntity();
   scene.setTransform(frontGlass, { position: [waterCenter[0], 1.06, waterCenter[2] + 3.24], scale: [6.5, 2.08, 0.14], immediate: true });
   scene.setCollider3D(frontGlass, { kind: 'aabb', halfExtents: [3.25, 1.04, 0.07] });
-  scene.setMesh3D(frontGlass, { meshId: boxMesh.meshId, materialId: tankGlassMat, transparent: true, boundsRadius: 4.5 });
+  scene.setMesh3D(frontGlass, { meshId: boxMesh.meshId, materialId: tankGlassMat, transparent: true, boundsRadius: 0.9 });
 
   const waterDesc: MaterialDesc = createPresetMaterial('waterRealistic');
   const waterSurfaceMat = assets.createMaterial('water-surface-mat', waterDesc, 'scene-fx');
@@ -552,7 +552,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     });
   };
   scene.setCollider3D(doorEntity, { kind: 'aabb', halfExtents: [0.08, 1.35, doorWidth * 0.5] });
-  scene.setMesh3D(doorEntity, { meshId: boxMesh.meshId, materialId: doorMat, boundsRadius: 2.0 });
+  scene.setMesh3D(doorEntity, { meshId: boxMesh.meshId, materialId: doorMat, boundsRadius: 0.9 });
   updateDoorTransform(0);
   scene.setTransform(doorEntity, {
     position: [hingePos[0], hingePos[1], hingePos[2] + doorWidth * 0.5],
@@ -610,7 +610,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
     meshId: boxMesh.meshId,
     materialId: padTriggerMat,
     transparent: true,
-    boundsRadius: 2,
+    boundsRadius: 0.9,
   });
 
   // ======================== ZONE: CAMPFIRE + GPU PARTICLE SYSTEM 2.0 ========================
@@ -683,7 +683,7 @@ export function buildShowcaseArena(ctx: ArenaBuildContext): ArenaController {
   sceneMaterialMeta.set(clothMat, { baseColor: [0.9, 0.22, 0.34, 1] });
   const clothEntity = scene.createEntity();
   scene.setTransform(clothEntity, { position: [0, 0, 0], immediate: true });
-  scene.setMesh3D(clothEntity, { meshId: clothMesh.meshId, materialId: clothMat, boundsRadius: 36 });
+  scene.setMesh3D(clothEntity, { meshId: clothMesh.meshId, materialId: clothMat, boundsRadius: 2.6 });
 
   // ======================== ZONE: SHATTER TARGETS + SURFACE DECALS + GRAPPLE ========================
   const shatterTargets = new Set<EntityId>();

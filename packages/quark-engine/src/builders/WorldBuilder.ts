@@ -240,7 +240,7 @@ export class WorldBuilder {
   private ensureUnitBox(): number {
     if (!this.assets.hasBackend) return 0;
     const key = '__wb_unit_box__';
-    let h = this.meshCache.get(key) ?? this.assets.getMesh(key);
+    let h = this.meshCache.get(key) ?? this.assets.getMesh('box') ?? this.assets.getMesh(key);
     if (!h) {
       h = this.assets.registerMesh(key, createBoxGeometry(0.5, 0.5, 0.5), this.defaultTag);
     }
@@ -274,10 +274,21 @@ export class WorldBuilder {
     if (!this.assets.hasBackend) return 0;
     if (typeof input === 'number') return input;
     if (input instanceof MaterialBuilder) {
-      return input.create(this.assets, `wb-mat-${++this.matCounter}`, this.defaultTag);
+      const built = input.build();
+      const cacheKey = `__mb__:${JSON.stringify(built)}`;
+      const cached = this.matCache.get(cacheKey);
+      if (cached !== undefined) return cached;
+      const id = this.assets.createMaterial(`wb-mat-${++this.matCounter}`, built, this.defaultTag);
+      this.matCache.set(cacheKey, id);
+      return id;
     }
     if (input && typeof input === 'object' && 'blocks' in input) {
-      return this.assets.createMaterial(`wb-mat-${++this.matCounter}`, input, this.defaultTag);
+      const cacheKey = `__desc__:${JSON.stringify(input)}`;
+      const cached = this.matCache.get(cacheKey);
+      if (cached !== undefined) return cached;
+      const id = this.assets.createMaterial(`wb-mat-${++this.matCounter}`, input, this.defaultTag);
+      this.matCache.set(cacheKey, id);
+      return id;
     }
     const cacheKey = JSON.stringify(input ?? fallback);
     const cached = this.matCache.get(cacheKey);
@@ -338,12 +349,11 @@ export class WorldBuilder {
     }
     if (this.assets.hasBackend) {
       const matId = this.resolveMaterial(opts.material);
-      const radius = Math.hypot(size[0], size[1], size[2]) * 0.55;
       this.scene.setMesh3D(e, {
         meshId: this.ensureUnitBox(),
         materialId: matId,
         transparent: opts.transparent,
-        boundsRadius: radius,
+        boundsRadius: 0.9,
       });
     }
     return e;
@@ -375,7 +385,7 @@ export class WorldBuilder {
       this.scene.setMesh3D(e, {
         meshId: this.ensureUnitSphere(),
         materialId: this.resolveMaterial(opts.material),
-        boundsRadius: r * 1.15,
+        boundsRadius: 0.55,
       });
     }
     return e;
@@ -402,7 +412,7 @@ export class WorldBuilder {
       this.scene.setMesh3D(e, {
         meshId: this.ensureUnitCylinder(),
         materialId: this.resolveMaterial(opts.material),
-        boundsRadius: Math.hypot(r, h * 0.5) * 1.15,
+        boundsRadius: 0.75,
       });
     }
     return e;
@@ -455,7 +465,7 @@ export class WorldBuilder {
         meshId: this.ensureUnitBox(),
         materialId: this.resolveMaterial(opts.material, 'hologram'),
         transparent: true,
-        boundsRadius: Math.hypot(opts.size[0], opts.size[1], opts.size[2]) * 0.6,
+        boundsRadius: 0.9,
       });
     }
     if (opts.onEnter) {
@@ -546,7 +556,7 @@ export class WorldBuilder {
       this.scene.setMesh3D(entity, {
         meshId: this.ensureUnitBox(),
         materialId: this.resolveMaterial(mat, 'ultraRealism'),
-        boundsRadius: Math.hypot(width, height, thickness) * 0.65,
+        boundsRadius: 0.9,
       });
     }
 

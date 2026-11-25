@@ -174,7 +174,7 @@ export function startForestEscapeGame(
     const e = scene.createEntity();
     scene.setTransform(e, { position: b.pos, scale: b.scale, immediate: true });
     scene.setCollider3D(e, { kind: 'aabb', halfExtents: [b.scale[0] * 0.5, b.scale[1] * 0.5, b.scale[2] * 0.5] });
-    scene.setMesh3D(e, { meshId: boxMesh.meshId, materialId: fenceMat, boundsRadius: 32 });
+    scene.setMesh3D(e, { meshId: boxMesh.meshId, materialId: fenceMat, boundsRadius: 0.9 });
   }
 
   // Deterministic scattered pine forest (leaving spawn [0, 20] and exit [0, -25] clear)
@@ -196,15 +196,15 @@ export function startForestEscapeGame(
     const trunk = scene.createEntity();
     scene.setTransform(trunk, { position: [x, 1.3 * scale, z], scale: [0.65 * scale, 2.6 * scale, 0.65 * scale], immediate: true });
     scene.setCollider3D(trunk, { kind: 'aabb', halfExtents: [0.35 * scale, 1.4 * scale, 0.35 * scale] });
-    scene.setMesh3D(trunk, { meshId: boxMesh.meshId, materialId: trunkMat, boundsRadius: 2.5 });
+    scene.setMesh3D(trunk, { meshId: boxMesh.meshId, materialId: trunkMat, boundsRadius: 0.9 });
 
     const crown1 = scene.createEntity();
     scene.setTransform(crown1, { position: [x, 2.0 * scale, z], scale: [2.1 * scale, 1.5 * scale, 2.1 * scale], immediate: true });
-    scene.setMesh3D(crown1, { meshId: coneMesh.meshId, materialId: pineMat, boundsRadius: 4.0 });
+    scene.setMesh3D(crown1, { meshId: coneMesh.meshId, materialId: pineMat, boundsRadius: 0.9 });
 
     const crown2 = scene.createEntity();
     scene.setTransform(crown2, { position: [x, 3.3 * scale, z], scale: [1.55 * scale, 1.4 * scale, 1.55 * scale], immediate: true });
-    scene.setMesh3D(crown2, { meshId: coneMesh.meshId, materialId: pineMat, boundsRadius: 3.5 });
+    scene.setMesh3D(crown2, { meshId: coneMesh.meshId, materialId: pineMat, boundsRadius: 0.9 });
   }
 
   // Player
