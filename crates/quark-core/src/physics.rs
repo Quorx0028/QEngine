@@ -458,6 +458,7 @@ pub struct PhysicsWorld {
 
     island_parent: Vec<usize>,
     island_all_calm: Vec<bool>,
+    island_has_contact: Vec<bool>,
 
     prev_overlaps: Vec<OverlapPair>,
     curr_overlaps: Vec<OverlapPair>,
@@ -498,6 +499,7 @@ impl PhysicsWorld {
             prev_impulses: Vec::new(),
             island_parent: Vec::new(),
             island_all_calm: Vec::new(),
+            island_has_contact: Vec::new(),
             prev_overlaps: Vec::new(),
             curr_overlaps: Vec::new(),
             pair_impulses: Vec::new(),
@@ -1651,9 +1653,9 @@ impl PhysicsWorld {
                 max_depth = max_depth.max(c.depth);
             }
 
-            // Wake sleeping partner on genuine dynamic impact or intrusion > 1.2 cm
+            // Wake sleeping partner on genuine dynamic impact or intrusion > 2.2 cm
             let rel_speed_sq = (world.velocities[a] - world.velocities[b]).length_squared();
-            if rel_speed_sq > 0.005 || max_depth > 0.012 {
+            if rel_speed_sq > 0.02 || max_depth > 0.022 {
                 for &target in &[a, b] {
                     let mut woke_idx = None;
                     if let Some(rb) = &mut world.rigid_bodies[target] {
@@ -1690,7 +1692,7 @@ impl PhysicsWorld {
                 if let Some(rb) = &mut world.rigid_bodies[a] {
                     rb.grounded = true;
                 }
-                if a < self.ground_support.len() {
+                if a < self.ground_support.len() && (cc_a.is_some() || !rb_b.dynamic) {
                     self.ground_support[a] = Some((b, world.curr_pos[b], world.curr_rot[b]));
                 }
             }
@@ -1698,7 +1700,7 @@ impl PhysicsWorld {
                 if let Some(rb) = &mut world.rigid_bodies[b] {
                     rb.grounded = true;
                 }
-                if b < self.ground_support.len() {
+                if b < self.ground_support.len() && (cc_b.is_some() || !rb_a.dynamic) {
                     self.ground_support[b] = Some((a, world.curr_pos[a], world.curr_rot[a]));
                 }
             }
@@ -2100,12 +2102,62 @@ impl PhysicsWorld {
                 }
             }
         }
+
+        if iter + 2 == self.config.solver_iterations {
+            for c in &self.manifolds {
+                if !c.allow_friction || c.acc_n <= 0.0 {
+                    continue;
+                }
+                let a = c.a;
+                let b = c.b;
+                let w_a = if c.lock_rot_a { Vec3::ZERO } else { world.angular_velocities[a] };
+                let w_b = if c.is_dynamic_b && !c.lock_rot_b {
+                    world.angular_velocities[b]
+                } else {
+                    Vec3::ZERO
+                };
+                let w_rel = w_a - w_b;
+                let w_len = w_rel.length();
+                if w_len <= 1e-5 {
+                    continue;
+                }
+                let is_curved = matches!(
+                    world.colliders_3d[a],
+                    Some(Collider3D::Sphere { .. } | Collider3D::Capsule { .. } | Collider3D::Cylinder { .. })
+                ) || (c.is_dynamic_b
+                    && matches!(
+                        world.colliders_3d[b],
+                        Some(Collider3D::Sphere { .. } | Collider3D::Capsule { .. } | Collider3D::Cylinder { .. })
+                    ));
+                let roll_coeff = if is_curved { 0.032 } else { 0.014 };
+                let r_eff = c.ra.length().max(0.25);
+                let max_tau_imp = roll_coeff * c.friction.max(0.15) * c.acc_n * r_eff;
+                let max_inv_i = (c.inv_i_a.x_axis.x.abs()
+                    .max(c.inv_i_a.y_axis.y.abs())
+                    .max(c.inv_i_a.z_axis.z.abs()))
+                    + (c.inv_i_b.x_axis.x.abs()
+                        .max(c.inv_i_b.y_axis.y.abs())
+                        .max(c.inv_i_b.z_axis.z.abs()));
+                if max_inv_i <= 1e-8 {
+                    continue;
+                }
+                let eff_ang_mass = 1.0 / max_inv_i;
+                let imp_mag = max_tau_imp.min(w_len * eff_ang_mass);
+                let ang_imp = (w_rel / w_len) * imp_mag;
+                if !c.lock_rot_a {
+                    world.angular_velocities[a] -= c.inv_i_a * ang_imp;
+                }
+                if c.is_dynamic_b && !c.lock_rot_b {
+                    world.angular_velocities[b] += c.inv_i_b * ang_imp;
+                }
+            }
+        }
     }
 
     fn solve_3d_position_constraints(&self, world: &mut World) {
-        const POS_SLOP: f32 = 0.0015;
-        const DYN_ERP: f32 = 0.72;
-        const STAT_ERP: f32 = 0.88;
+        const POS_SLOP: f32 = 0.0022;
+        const DYN_ERP: f32 = 0.45;
+        const STAT_ERP: f32 = 0.85;
         const MAX_CORR: f32 = 0.14;
 
         for _ in 0..4 {
@@ -2246,10 +2298,12 @@ impl PhysicsWorld {
         if self.island_parent.len() < count {
             self.island_parent.resize(count, 0);
             self.island_all_calm.resize(count, true);
+            self.island_has_contact.resize(count, false);
         }
         for i in 0..count {
             self.island_parent[i] = i;
             self.island_all_calm[i] = true;
+            self.island_has_contact[i] = false;
         }
         let find_root = |parent: &mut [usize], mut x: usize| -> usize {
             while parent[x] != x {
@@ -2279,17 +2333,27 @@ impl PhysicsWorld {
         };
 
         for c in &self.manifolds {
+            self.island_has_contact[c.a] = true;
             if c.is_dynamic_b {
+                self.island_has_contact[c.b] = true;
                 unite(&mut self.island_parent, c.a, c.b);
             }
         }
 
         // Mark calm status per awake body, and aggregate onto island roots
         for &i in &self.awake_indices {
-            let v_sq = world.velocities[i].length_squared();
-            let w_sq = world.angular_velocities[i].length_squared();
+            let mut v_sq = world.velocities[i].length_squared();
+            let mut w_sq = world.angular_velocities[i].length_squared();
+            let supported = self.island_has_contact[i]
+                || world.rigid_bodies[i].map_or(false, |rb| rb.grounded);
+            if supported && v_sq < 0.004 && w_sq < 0.006 {
+                world.velocities[i] *= 0.72;
+                world.angular_velocities[i] *= 0.68;
+                v_sq = world.velocities[i].length_squared();
+                w_sq = world.angular_velocities[i].length_squared();
+            }
             let calm = world.rigid_bodies[i].map_or(false, |rb| {
-                rb.can_sleep && !rb.is_trigger && rb.grounded && v_sq < 0.015 && w_sq < 0.02
+                rb.can_sleep && !rb.is_trigger && supported && v_sq < 0.025 && w_sq < 0.035
             });
             if !calm {
                 let root = find_root(&mut self.island_parent, i);
@@ -2300,10 +2364,12 @@ impl PhysicsWorld {
         for &i in &self.awake_indices {
             let root = find_root(&mut self.island_parent, i);
             let island_calm = self.island_all_calm[root];
+            let supported = self.island_has_contact[i]
+                || world.rigid_bodies[i].map_or(false, |rb| rb.grounded);
             if let Some(rb) = &mut world.rigid_bodies[i] {
-                if island_calm && rb.can_sleep && !rb.is_trigger && rb.grounded {
+                if island_calm && rb.can_sleep && !rb.is_trigger && supported {
                     rb.sleep_timer += dt;
-                    if rb.sleep_timer >= 0.45 {
+                    if rb.sleep_timer >= 0.40 {
                         rb.sleeping = true;
                         world.velocities[i] = Vec3::ZERO;
                         world.angular_velocities[i] = Vec3::ZERO;
@@ -5206,5 +5272,63 @@ mod tests {
             phys.step(&mut world, 1.0 / 60.0);
         }
         assert!(world.curr_pos[entity_index(tall_crate)].z < -3.2, "player should push tall crate smoothly");
+    }
+
+    #[test]
+    fn test_mixed_sphere_and_cube_pile_settles_to_sleep() {
+        let mut world = World::new();
+        let mut phys = PhysicsWorld::new(PhysicsConfig::default());
+
+        let floor = world.spawn();
+        world.set_transform_immediate(floor, Vec3::new(0.0, -0.5, 0.0), Quat::IDENTITY, Vec3::ONE);
+        world.colliders_3d[entity_index(floor)] = Some(Collider3D::Aabb {
+            half_extents: Vec3::new(15.0, 0.5, 15.0),
+        });
+
+        let mut bodies = Vec::new();
+        for i in 0..30 {
+            let e = world.spawn();
+            let row = i / 6;
+            let col = i % 6;
+            let x = (col as f32 - 2.5) * 1.15 + if i % 2 == 0 { 0.1 } else { -0.1 };
+            let y = 0.6 + row as f32 * 1.15;
+            let z = ((i * 7 % 5) as f32 - 2.0) * 0.45;
+            world.set_transform_immediate(e, Vec3::new(x, y, z), Quat::IDENTITY, Vec3::ONE);
+            if i % 3 == 0 {
+                world.colliders_3d[entity_index(e)] = Some(Collider3D::Sphere { radius: 0.52 });
+                world.rigid_bodies[entity_index(e)] = Some(RigidBody {
+                    dynamic: true,
+                    mass: 1.0,
+                    friction: 0.78,
+                    restitution: 0.42,
+                    ..Default::default()
+                });
+            } else {
+                world.colliders_3d[entity_index(e)] = Some(Collider3D::Aabb {
+                    half_extents: Vec3::splat(0.5),
+                });
+                world.rigid_bodies[entity_index(e)] = Some(RigidBody {
+                    dynamic: true,
+                    mass: 1.0,
+                    friction: 0.78,
+                    restitution: 0.12,
+                    ..Default::default()
+                });
+            }
+            bodies.push(e);
+        }
+
+        for _ in 0..360 {
+            phys.step(&mut world, 1.0 / 60.0);
+        }
+
+        let sleeping = bodies
+            .iter()
+            .filter(|&&e| world.rigid_bodies[entity_index(e)].map_or(false, |r| r.sleeping))
+            .count();
+        assert!(
+            sleeping >= 28,
+            "mixed cube+sphere pile should settle to sleep cleanly, got {sleeping}/30 sleeping"
+        );
     }
 }

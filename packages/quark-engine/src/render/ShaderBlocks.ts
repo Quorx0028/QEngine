@@ -320,20 +320,12 @@ vec3 evalGlassRefract(vec3 n, vec3 v, vec3 l, vec3 glowColor) {
   if (has('voronoiCaustics')) {
     blockSnippets.push(`
 float evalVoronoiCaustics(vec3 wp, float t) {
-  vec2 p = wp.xz * 1.3 + wp.y * 0.45;
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  float minD = 8.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int x = -1; x <= 1; x++) {
-      vec2 g = vec2(float(x), float(y));
-      vec2 h = fract(sin(vec2(dot(i + g, vec2(127.1, 311.7)), dot(i + g, vec2(269.5, 183.3)))) * 43758.5453);
-      vec2 o = 0.5 + 0.45 * sin(t * 1.8 + 6.2831 * h);
-      float d = length(g + o - f);
-      minD = min(minD, d);
-    }
-  }
-  return pow(clamp(1.0 - minD, 0.0, 1.0), 3.0);
+  vec2 p = wp.xz * 1.45 + wp.y * 0.4;
+  vec2 p1 = p + vec2(t * 0.42, -t * 0.31);
+  vec2 p2 = vec2(p.x * 0.82 - p.y * 0.57, p.x * 0.57 + p.y * 0.82) * 1.18 + vec2(-t * 0.36, t * 0.47);
+  float c1 = 1.0 - abs(sin(p1.x + 0.55 * cos(p1.y * 1.35)) * cos(p1.y + 0.55 * sin(p1.x * 1.25)));
+  float c2 = 1.0 - abs(sin(p2.x + 0.50 * sin(p2.y * 1.30)) * cos(p2.y - 0.50 * cos(p2.x * 1.30)));
+  return pow(clamp(min(c1, c2) * 0.65 + (c1 * c2) * 0.45, 0.0, 1.0), 3.2);
 }
 `);
   }
@@ -513,7 +505,7 @@ void evalWaterSurface(
   // Side & bottom volumetric tank walls (coupled seamlessly to wave perimeter)
   if (waterFace < 0.5) {
     float wallY = clamp(uv.y, 0.0, 1.0);
-    float causticBand = valueNoise3(vec3(wp.xz * 2.2 + vec2(u_time * 0.35, -u_time * 0.25), wp.y * 1.8 - u_time * 0.5));
+    float causticBand = 0.5 + 0.5 * sin(wp.x * 3.1 + wp.z * 2.4 + u_time * 1.4) * cos(wp.y * 4.2 - u_time * 1.1);
     vec3 volCol = mix(deepLin * 0.9, shallowLin * 0.85, wallY);
     volCol += glowLin * (smoothstep(0.55, 0.92, causticBand) * 0.24 * wallY);
     float sideFresnel = pow(1.0 - max(dot(n, v), 0.05), 3.0);
@@ -817,6 +809,16 @@ float evalShadow(vec4 sc, vec3 n, vec3 l) {
   return evalShadowMap(u_shadowMap, sc, n, l);
 }
 
+float evalShadowFast(vec4 sc, vec3 n, vec3 l) {
+  if (u_shadowsEnabled == 0) return 1.0;
+  vec3 proj = sc.xyz / max(sc.w, 0.0001) * 0.5 + 0.5;
+  if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0 || proj.z < 0.0) {
+    return 1.0;
+  }
+  float bias = max(0.0022 * (1.0 - max(dot(n, l), 0.0)), 0.0005);
+  return (proj.z - bias <= texture(u_shadowMap, proj.xy).r) ? 1.0 : 0.0;
+}
+
 vec3 perturbNormal(vec3 n, vec3 wp, vec2 uv, vec3 mapN) {
   vec3 dp1 = dFdx(wp);
   vec3 dp2 = dFdy(wp);
@@ -892,6 +894,7 @@ vec3 evalSpotLights(vec3 albedoLin, vec3 wp, vec3 n, vec3 v, float metallic, flo
 ${blockSnippets.join('\n')}
 
 void main() {
+  ${has('waterSurface') ? 'if (v_waterFace < 0.5 && !gl_FrontFacing && u_cameraPos.y > v_worldPos.y) discard;' : ''}
   vec4 texSample = u_hasTexture == 1 ? texture(u_tex, v_uv) : vec4(1.0);
   vec3 albedo = u_baseColor.rgb * texSample.rgb;
   float alpha = u_baseColor.a * texSample.a;
@@ -961,7 +964,13 @@ void main() {
       : ''
   }
 
-  float shadowFactor = ${has('volumetricBeam') || has('surfaceDecal') ? '1.0' : 'evalShadow(v_shadowCoord, n, l)'};
+  float shadowFactor = ${
+    has('volumetricBeam') || has('surfaceDecal')
+      ? '1.0'
+      : has('waterSurface')
+        ? '(v_waterFace < 0.5 ? 1.0 : evalShadowFast(v_shadowCoord, n, l))'
+        : 'evalShadow(v_shadowCoord, n, l)'
+  };
 
   vec3 color;
   ${lightingBody}

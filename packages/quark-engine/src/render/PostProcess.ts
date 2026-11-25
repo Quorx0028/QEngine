@@ -344,12 +344,11 @@ void main() {
     col = texture(u_sceneTex, uv).rgb;
   }
 
-  // Contact-aware SSAO in Linear HDR (rotated 6-tap Poisson kernel + slope bias prevents flat-plane striping)
+  // Contact-aware SSAO in Linear HDR (rotated 4-tap Poisson kernel + slope bias prevents flat-plane striping)
   if (u_ssao > 0.001) {
     float dC = linearDepth(uv);
-    if (dC < 36.0) {
+    if (dC < 28.0) {
       float aspect = u_resolution.x / max(u_resolution.y, 1.0);
-      vec2 px = 1.0 / u_resolution;
       vec2 nStep = px * 2.0;
       float dR = linearDepth(uv + vec2(nStep.x, 0.0));
       float dU = linearDepth(uv + vec2(0.0, nStep.y));
@@ -364,13 +363,14 @@ void main() {
       float sa = sin(ang);
       mat2 rot = mat2(ca, -sa, sa, ca);
 
-      vec2 taps[6];
-      taps[0] = vec2( 0.89,  0.22); taps[1] = vec2(-0.74,  0.58);
-      taps[2] = vec2(-0.31, -0.91); taps[3] = vec2( 0.56, -0.78);
-      taps[4] = vec2( 0.34,  0.42); taps[5] = vec2(-0.46, -0.18);
+      vec2 taps[4];
+      taps[0] = vec2( 0.89,  0.22);
+      taps[1] = vec2(-0.74,  0.58);
+      taps[2] = vec2(-0.31, -0.91);
+      taps[3] = vec2( 0.42, -0.52);
 
       float occ = 0.0;
-      for (int i = 0; i < 6; i++) {
+      for (int i = 0; i < 4; i++) {
         vec2 sUv = clamp(uv + (rot * taps[i]) * px * radPx, 0.002, 0.998);
         float dS = linearDepth(sUv);
         vec3 pS = viewPosFromUv(sUv, dS, aspect);
@@ -383,8 +383,8 @@ void main() {
           occ += smoothstep(0.04, 0.24, planeDist) * smoothstep(0.18, 0.55, abs(nDot)) * range;
         }
       }
-      float distFade = smoothstep(36.0, 18.0, dC);
-      float ao = 1.0 - (occ / 6.0) * u_ssao * 0.85 * distFade;
+      float distFade = smoothstep(28.0, 14.0, dC);
+      float ao = 1.0 - (occ * 0.25) * u_ssao * 0.85 * distFade;
       col *= clamp(ao, 0.40, 1.0);
     }
   }
