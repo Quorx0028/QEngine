@@ -103,7 +103,7 @@ async function bootstrap() {
           : 'Включи Gizmo и кликни объект в Orbit 3D';
     },
   });
-  let weatherMode: 'clear' | 'rain' | 'snow' = 'clear';
+  let weatherMode: 'clear' | 'snow' | 'rain' | 'downpour' = 'clear';
   let weatherAcc = 0;
   let forestGame: ForestGameController | null = null;
   let arena: ArenaController | null = null;
@@ -855,17 +855,21 @@ async function bootstrap() {
   };
 
   const btnWClear = document.getElementById('btn-weather-clear')!;
-  const btnWRain = document.getElementById('btn-weather-rain')!;
   const btnWSnow = document.getElementById('btn-weather-snow')!;
-  const setWeather = (w: 'clear' | 'rain' | 'snow') => {
+  const btnWRain = document.getElementById('btn-weather-rain')!;
+  const btnWDownpour = document.getElementById('btn-weather-downpour')!;
+  const setWeather = (w: 'clear' | 'snow' | 'rain' | 'downpour') => {
     weatherMode = w;
+    scene.setWeather(w);
     btnWClear.classList.toggle('active', w === 'clear');
-    btnWRain.classList.toggle('active', w === 'rain');
     btnWSnow.classList.toggle('active', w === 'snow');
+    btnWRain.classList.toggle('active', w === 'rain');
+    btnWDownpour.classList.toggle('active', w === 'downpour');
   };
   btnWClear.onclick = () => setWeather('clear');
-  btnWRain.onclick = () => setWeather('rain');
   btnWSnow.onclick = () => setWeather('snow');
+  btnWRain.onclick = () => setWeather('rain');
+  btnWDownpour.onclick = () => setWeather('downpour');
 
   // Water 2.0 customization controls
   const btnWReal = document.getElementById('btn-water-realistic')!;
@@ -1081,11 +1085,12 @@ async function bootstrap() {
 
       if (weatherMode !== 'clear') {
         weatherAcc += dt;
-        const stepInterval = weatherMode === 'rain' ? 0.03 : 0.05;
+        const stepInterval = weatherMode === 'downpour' ? 0.02 : weatherMode === 'rain' ? 0.03 : 0.04;
         if (weatherAcc >= stepInterval) {
           weatherAcc = 0;
           const [cx, , cz] = scene.camera.target;
-          scene.emitVfx(weatherMode, [cx, 12.5, cz], weatherMode === 'rain' ? 28 : 16, 0.04);
+          const count = weatherMode === 'downpour' ? 56 : weatherMode === 'rain' ? 28 : 22;
+          scene.emitVfx(weatherMode, [cx, 12.5, cz], count, 0.03);
         }
       }
 

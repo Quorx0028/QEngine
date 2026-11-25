@@ -120,6 +120,8 @@ export {
   type TransformOptions,
   type TriggerEvent,
   type VfxPresetName,
+  type WeatherState,
+  type WeatherType,
 } from './Scene';
 export { WasmBridge, type ParsedGlbResult } from './wasm/WasmBridge';
 export {

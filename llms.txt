@@ -68,8 +68,9 @@ const mat = material('cyberNeon')
 
 ## 4. GPU VFX, Cloth, Weather, Viewers & 3D Websites
 
-- **GPU Particles & Weather (up to 8192 instanced):** `scene.emitVfx(preset, origin, count?, floorY?)`
-  - Presets: `'fire' | 'smoke' | 'sparks' | 'splash' | 'magic' | 'confetti' | 'bubbles' | 'rain' | 'snow'`
+- **GPU Particles & Weather (up to 8192 instanced):** `scene.emitVfx(preset, origin, count?, floorY?)`, `scene.setWeather('clear' | 'snow' | 'rain' | 'downpour')`
+  - Presets: `'fire' | 'smoke' | 'sparks' | 'splash' | 'magic' | 'confetti' | 'bubbles' | 'rain' | 'downpour' | 'snow'`
+  - Rain/downpour automatically darken sky clouds, form glossy floor puddles, and draw concentric raindrop ripples on puddles & water.
 - **Verlet Cloth (WASM):** `scene.createCloth({ origin, rightStep, downStep, cols, rows, pinTop?, pinLeft? })`, `scene.setClothWind(id, wind)`, `scene.pushClothSphere(id, center, radius)`, sync mesh via `assets.updateMeshVertices(meshId, scene.getClothVerticesView(id))`.
 - **3D Showcase Camera & Scroll Timeline:** `new OrbitControls({ target, radius, autoRotate })` (`orbit.attach(canvas)`, `orbit.setView(...)`, `orbit.applyTimeline(keyframes, progress01)`, `orbit.bindScrollTimeline(keyframes)`).
 - **3D Hotspots & Projection:** `new HotspotOverlay(scene, canvas, orbit)` (`hotspots.add({ id, position, label, description, focusRadius, occlude })`, `hotspots.update()`), `scene.worldToScreen(pos, w, h)`, `scene.screenToRay(clientX, clientY, rect)`.

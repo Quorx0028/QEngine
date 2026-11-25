@@ -130,8 +130,41 @@ uniform vec3 u_skyTop;
 uniform vec3 u_skyHorizon;
 uniform vec3 u_lightDir;
 uniform vec3 u_lightColor;
+uniform float u_time;
+uniform float u_cloudCoverage;
+uniform float u_rainIntensity;
 uniform int u_hdrOutput;
 out vec4 fragColor;
+
+float skyHash(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+float skyNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(skyHash(i), skyHash(i + vec2(1.0, 0.0)), u.x),
+    mix(skyHash(i + vec2(0.0, 1.0)), skyHash(i + vec2(1.0, 1.0)), u.x),
+    u.y
+  );
+}
+
+float skyFbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.52;
+  mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+  for (int i = 0; i < 4; i++) {
+    v += a * skyNoise(p);
+    p = rot * p * 2.05;
+    a *= 0.5;
+  }
+  return v;
+}
+
 void main() {
   vec3 dir = normalize(
     u_camForward +
@@ -139,15 +172,54 @@ void main() {
     u_camUp * (v_ndc.y * u_tanHalfFov)
   );
   float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-  float skyT = smoothstep(0.45, 0.95, h);
+  float skyT = smoothstep(0.45, 0.96, h);
   vec3 topLin = pow(max(u_skyTop, vec3(0.0)), vec3(2.2));
   vec3 horLin = pow(max(u_skyHorizon, vec3(0.0)), vec3(2.2));
+
+  // Storm overcast darkening during rain & downpour
+  float storm = clamp(u_rainIntensity * 0.72, 0.0, 0.88);
+  vec3 stormTop = vec3(0.055, 0.075, 0.11);
+  vec3 stormHor = vec3(0.16, 0.19, 0.24);
+  topLin = mix(topLin, stormTop, storm);
+  horLin = mix(horLin, stormHor, storm);
+
   vec3 col = mix(horLin, topLin, skyT);
-  float sunAmt = max(dot(dir, normalize(u_lightDir)), 0.0);
+  vec3 lDir = normalize(u_lightDir);
+  float sunAmt = max(dot(dir, lDir), 0.0);
   vec3 lLin = pow(max(u_lightColor, vec3(0.0)), vec3(2.2));
-  float sunDisc = smoothstep(0.9992, 0.9997, sunAmt) * 4.2;
-  float mieGlow = pow(sunAmt, 48.0) * 0.85 + pow(sunAmt, 7.0) * 0.22;
+  float sunVis = 1.0 - storm * 0.85;
+  float sunDisc = smoothstep(0.9992, 0.9997, sunAmt) * 4.2 * sunVis;
+  float mieGlow = (pow(sunAmt, 48.0) * 0.85 + pow(sunAmt, 7.0) * 0.22) * (1.0 - storm * 0.68);
   col += lLin * (sunDisc + mieGlow);
+
+  // Twinkling stars only in dark night / dusk sky (linear luminance < 0.055)
+  float nightMask = smoothstep(0.055, 0.012, dot(topLin, vec3(0.299, 0.587, 0.114))) * smoothstep(0.02, 0.3, dir.y);
+  if (nightMask > 0.01) {
+    vec2 starUv = floor(dir.xz / max(dir.y + 0.25, 0.1) * 95.0);
+    float sh = skyHash(starUv);
+    float star = step(0.9945, sh) * (0.55 + 0.45 * sin(u_time * 3.0 + sh * 62.0));
+    col += vec3(0.85, 0.92, 1.0) * star * nightMask * (1.0 - storm);
+  }
+
+  // Layered drifting FBM clouds across sky dome (visible from horizon up to zenith)
+  if (dir.y > -0.04) {
+    vec2 cloudUv = dir.xz / (max(dir.y, 0.0) + 0.14);
+    float windSpeed = 0.036 * (1.0 + u_rainIntensity * 1.4);
+    float nBase = skyFbm(cloudUv * 0.62 + vec2(u_time * windSpeed, u_time * windSpeed * 0.45));
+    float nDetail = skyFbm(cloudUv * 1.45 - vec2(u_time * windSpeed * 0.65, -u_time * windSpeed * 0.3));
+    float density = nBase * 0.7 + nDetail * 0.3;
+    float thresh = mix(0.64, 0.28, clamp(u_cloudCoverage, 0.0, 1.0));
+    float cloudMask = smoothstep(thresh, thresh + 0.16, density) * smoothstep(-0.02, 0.09, dir.y);
+
+    // Crisp sunlit white/silver cumulus tops vs cool atmospheric cloud bellies
+    float edgeLight = smoothstep(thresh, thresh + 0.28, nBase);
+    float silver = pow(sunAmt, 8.0) * 0.65 * (1.0 - storm * 0.75);
+    vec3 cloudBright = mix(vec3(0.95, 0.97, 1.0) * 0.7 + lLin * 0.85, vec3(0.32, 0.36, 0.42), storm);
+    vec3 cloudDark = mix(horLin * 0.58 + topLin * 0.38, vec3(0.065, 0.08, 0.11), storm);
+    vec3 cloudCol = mix(cloudDark, cloudBright, 0.32 + 0.68 * edgeLight) + lLin * silver;
+    col = mix(col, cloudCol, cloudMask * mix(0.9, 0.97, storm));
+  }
+
   if (u_hdrOutput == 0) {
     col = (col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14);
     col = pow(clamp(col, 0.0, 1.0), vec3(1.0 / 2.2));
@@ -974,7 +1046,7 @@ export class WebGL2Backend implements IRenderBackend {
     const { viewProj } = scene.computeCameraMatrices(aspect);
 
     if (scene.camera.mode === '3d') {
-      drawCalls += this.renderSkyPass(scene, aspect);
+      drawCalls += this.renderSkyPass(scene, aspect, timeSec);
       drawCalls += this.render3DPass(bridge, scene, viewProj, timeSec);
     }
     drawCalls += this.render2DPass(bridge, scene, viewProj, aspect);
@@ -1137,7 +1209,7 @@ export class WebGL2Backend implements IRenderBackend {
     return calls;
   }
 
-  private renderSkyPass(scene: Scene, aspect: number): number {
+  private renderSkyPass(scene: Scene, aspect: number, timeSec: number): number {
     const gl = this.gl;
     const camPos = scene.camera.position;
     const camTgt = scene.camera.target;
@@ -1180,6 +1252,9 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform3fv(this.uLoc(this.skyProgram, 'u_skyHorizon'), scene.skyHorizonColor);
     gl.uniform3fv(this.uLoc(this.skyProgram, 'u_lightDir'), scene.light.direction);
     gl.uniform3fv(this.uLoc(this.skyProgram, 'u_lightColor'), scene.light.color);
+    gl.uniform1f(this.uLoc(this.skyProgram, 'u_time'), timeSec);
+    gl.uniform1f(this.uLoc(this.skyProgram, 'u_cloudCoverage'), scene.weather.cloudCoverage);
+    gl.uniform1f(this.uLoc(this.skyProgram, 'u_rainIntensity'), scene.weather.rainIntensity);
     gl.uniform1i(this.uLoc(this.skyProgram, 'u_hdrOutput'), this.hdrActive ? 1 : 0);
     gl.bindVertexArray(this.skyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1420,12 +1495,12 @@ export class WebGL2Backend implements IRenderBackend {
     u[72] = sh[0];
     u[73] = sh[1];
     u[74] = sh[2];
-    u[75] = 0;
+    u[75] = scene.weather.rainIntensity;
 
     u[76] = ptCount;
     u[77] = spotCount;
-    u[78] = 0;
-    u[79] = 0;
+    u[78] = scene.weather.wetness;
+    u[79] = scene.weather.cloudCoverage;
 
     for (let i = 0; i < ptCount; i++) {
       const pl = scene.pointLights[i];

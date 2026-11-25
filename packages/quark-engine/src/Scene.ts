@@ -153,6 +153,16 @@ export interface TriggerEvent {
   entityB: EntityId;
 }
 
+export type WeatherType = 'clear' | 'snow' | 'rain' | 'downpour';
+
+export interface WeatherState {
+  type: WeatherType;
+  rainIntensity: number;
+  wetness: number;
+  cloudCoverage: number;
+  cloudSpeed: number;
+}
+
 export type VfxPresetName =
   | 'fire'
   | 'smoke'
@@ -162,6 +172,7 @@ export type VfxPresetName =
   | 'confetti'
   | 'bubbles'
   | 'rain'
+  | 'downpour'
   | 'snow';
 
 export interface ParticleSpawnOptions {
@@ -222,6 +233,13 @@ export class Scene {
   skyHorizonColor: Vec3Tuple = [0.22, 0.32, 0.48];
   fogColor: Vec3Tuple = [0.16, 0.22, 0.34];
   fogDensity = 0.008;
+  readonly weather: WeatherState = {
+    type: 'clear',
+    rainIntensity: 0,
+    wetness: 0,
+    cloudCoverage: 0.48,
+    cloudSpeed: 1.0,
+  };
 
   private shakeTime = 0;
   private shakeDuration = 0;
@@ -382,10 +400,34 @@ export class Scene {
     this.shakeTime = this.shakeDuration;
   }
 
+  setWeather(type: WeatherType): void {
+    this.weather.type = type;
+    if (type === 'rain') {
+      this.weather.rainIntensity = Math.max(this.weather.rainIntensity, 0.45);
+      this.weather.wetness = Math.max(this.weather.wetness, 0.42);
+    } else if (type === 'downpour') {
+      this.weather.rainIntensity = Math.max(this.weather.rainIntensity, 0.95);
+      this.weather.wetness = Math.max(this.weather.wetness, 0.78);
+    }
+  }
+
   advanceEffects(dt: number): void {
     if (this.shakeTime > 0) {
       this.shakeTime = Math.max(0, this.shakeTime - dt);
     }
+    const w = this.weather;
+    const targetRain = w.type === 'downpour' ? 1.35 : w.type === 'rain' ? 0.72 : 0.0;
+    const targetWet = w.type === 'downpour' ? 1.0 : w.type === 'rain' ? 0.85 : 0.0;
+    const targetClouds =
+      w.type === 'downpour' ? 0.94 : w.type === 'rain' ? 0.8 : w.type === 'snow' ? 0.68 : 0.48;
+    const targetSpeed = w.type === 'downpour' ? 2.4 : w.type === 'rain' ? 1.65 : 1.0;
+
+    const rate = Math.min(1, dt * 1.4);
+    w.rainIntensity += (targetRain - w.rainIntensity) * rate;
+    const wetRate = targetWet > w.wetness ? Math.min(1, dt * 0.55) : Math.min(1, dt * 0.16);
+    w.wetness += (targetWet - w.wetness) * wetRate;
+    w.cloudCoverage += (targetClouds - w.cloudCoverage) * rate;
+    w.cloudSpeed += (targetSpeed - w.cloudSpeed) * rate;
   }
 
   isGrounded(entity: EntityId): boolean {
@@ -1277,33 +1319,58 @@ export class Scene {
           drag: 1.2,
           additive: false,
         });
-      } else if (preset === 'rain') {
+      } else if (preset === 'rain' || preset === 'downpour') {
+        const heavy = preset === 'downpour';
+        const span = heavy ? 32 : 28;
+        const px = origin[0] + (Math.random() - 0.5) * span;
+        const py = Math.max(floorY + 0.6, origin[1] - 8.5 + Math.random() * 11.5);
+        const pz = origin[2] + (Math.random() - 0.5) * span;
+        const speedY = heavy ? -24 - Math.random() * 7 : -18 - Math.random() * 5;
         this.emitParticle({
-          position: [origin[0] + (Math.random() - 0.5) * 28, origin[1] + Math.random() * 3, origin[2] + (Math.random() - 0.5) * 28],
-          velocity: [-1.4 + (Math.random() - 0.5) * 0.6, -18 - Math.random() * 6, -0.9 + (Math.random() - 0.5) * 0.6],
-          sizeStart: 0.09,
+          position: [px, py, pz],
+          velocity: [heavy ? -3.4 : -1.5, speedY, heavy ? -2.2 : -1.0],
+          sizeStart: heavy ? 0.11 : 0.085,
           sizeEnd: 0.06,
-          colorStart: [0.74, 0.88, 1.0, 0.68],
+          colorStart: heavy ? [0.78, 0.9, 1.0, 0.78] : [0.74, 0.88, 1.0, 0.65],
           colorEnd: [0.65, 0.82, 1.0, 0.0],
-          lifetime: 0.72 + Math.random() * 0.25,
-          gravity: -26,
-          drag: 0.05,
-          bounce: 0.22,
+          lifetime: heavy ? 0.68 : 0.72,
+          gravity: -28,
+          drag: 0.04,
+          bounce: 0.28,
           floorY,
           additive: false,
-          stretch: 2.2,
+          stretch: heavy ? 2.8 : 2.2,
         });
+        if (Math.random() < (heavy ? 0.35 : 0.16)) {
+          // Tiny ground droplet pop right at impact height so rain visibly hits puddles & floor
+          this.emitParticle({
+            position: [px, floorY + 0.05, pz],
+            velocity: [(Math.random() - 0.5) * 1.6, 1.4 + Math.random() * 1.4, (Math.random() - 0.5) * 1.6],
+            sizeStart: 0.075,
+            sizeEnd: 0.02,
+            colorStart: [0.85, 0.94, 1.0, 0.72],
+            colorEnd: [0.75, 0.9, 1.0, 0.0],
+            lifetime: 0.24,
+            gravity: -16,
+            floorY,
+            additive: false,
+          });
+        }
       } else if (preset === 'snow') {
+        const px = origin[0] + (Math.random() - 0.5) * 30;
+        const py = Math.max(floorY + 0.4, origin[1] - 10.5 + Math.random() * 13.0);
+        const pz = origin[2] + (Math.random() - 0.5) * 30;
         this.emitParticle({
-          position: [origin[0] + (Math.random() - 0.5) * 28, origin[1] + Math.random() * 2.5, origin[2] + (Math.random() - 0.5) * 28],
-          velocity: [(Math.random() - 0.5) * 1.4, -1.6 - Math.random() * 0.9, (Math.random() - 0.5) * 1.4],
+          position: [px, py, pz],
+          velocity: [(Math.random() - 0.5) * 1.5, -2.0 - Math.random() * 1.2, (Math.random() - 0.5) * 1.5],
           sizeStart: 0.11 + Math.random() * 0.08,
-          sizeEnd: 0.06,
-          colorStart: [0.95, 0.98, 1.0, 0.88],
+          sizeEnd: 0.07,
+          colorStart: [0.96, 0.98, 1.0, 0.9],
           colorEnd: [0.95, 0.98, 1.0, 0.0],
-          lifetime: 3.1 + Math.random() * 0.8,
-          gravity: -0.35,
-          drag: 0.65,
+          lifetime: 5.8 + Math.random() * 2.2,
+          gravity: -0.25,
+          drag: 0.12,
+          bounce: 0.04,
           floorY,
           additive: false,
         });
@@ -1386,6 +1453,11 @@ export class Scene {
     this.lights2d.ambientColor = [1, 1, 1];
     this.lights2d.lights.length = 0;
     this.waterZoneBoxes.length = 0;
+    this.weather.type = 'clear';
+    this.weather.rainIntensity = 0;
+    this.weather.wetness = 0;
+    this.weather.cloudCoverage = 0.48;
+    this.weather.cloudSpeed = 1.0;
     this.bridge.clear();
   }
 }

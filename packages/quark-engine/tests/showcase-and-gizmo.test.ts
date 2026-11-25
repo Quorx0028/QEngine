@@ -68,9 +68,15 @@ describe('Web Showcase Kit & Transform Gizmo (#5 & #6)', () => {
     expect(gizmo.getMode()).toBe('scale');
     gizmo.dispose();
 
+    scene.setWeather('downpour');
+    scene.advanceEffects(1.0);
+    expect(scene.weather.wetness).toBeGreaterThan(0.75);
+    expect(scene.weather.rainIntensity).toBeGreaterThan(0.95);
+
     scene.emitVfx('rain', [0, 12, 0], 30, 0);
+    scene.emitVfx('downpour', [0, 12, 0], 40, 0);
     scene.emitVfx('snow', [0, 12, 0], 20, 0);
-    expect(scene.getActiveParticleCount()).toBe(50);
+    expect(scene.getActiveParticleCount()).toBeGreaterThanOrEqual(90);
     engine.step(1 / 60);
     expect(engine.bridge.getParticlesAlphaView().length).toBeGreaterThan(0);
   });

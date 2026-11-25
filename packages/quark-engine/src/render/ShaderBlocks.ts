@@ -71,8 +71,11 @@ layout(std140) uniform FrameGlobals {
 #define u_skyTop (u_skyTopSpotShad.xyz)
 #define u_spotShadowEnabled (int(u_skyTopSpotShad.w + 0.5))
 #define u_skyHorizon (u_skyHorPad.xyz)
+#define u_rainIntensity (u_skyHorPad.w)
 #define u_pointLightCount (int(u_lightCounts.x + 0.5))
 #define u_spotLightCount (int(u_lightCounts.y + 0.5))
+#define u_wetness (u_lightCounts.z)
+#define u_cloudCoverage (u_lightCounts.w)
 `;
 
 export function composeShader(config: ComposeShaderConfig): ComposedShaderSource {
@@ -531,6 +534,12 @@ void evalWaterSurface(
               valueNoise3(vec3((wp.xz - vec2(0.0, eps * 0.5)) * 10.5 + vec2(0.15, u_time * 0.65), 2.9));
   float rippleStrength = mix(1.0, 0.30, style) * (0.28 + choppiness * 0.72);
   n = normalize(n + vec3(-(gx1 + gx2 * 0.55), 0.0, -(gz1 + gz2 * 0.55)) * (1.15 * rippleStrength));
+  float rainRingGlow = 0.0;
+  if (u_rainIntensity > 0.01) {
+    vec2 rGrad = vec2(0.0);
+    evalRainRipples(wp.xz * 0.85, u_time, u_rainIntensity, rGrad, rainRingGlow);
+    n = normalize(n + vec3(rGrad.x, 0.0, rGrad.y) * 0.65);
+  }
 
   float ndotv = max(dot(n, v), 0.02);
   float fresnelReal = clamp(0.02 + 0.98 * pow(1.0 - ndotv, max(fresnelPow, 2.0)), 0.0, 1.0);
@@ -552,9 +561,9 @@ void evalWaterSurface(
   waterBody *= (0.42 + 0.58 * clamp(dot(n, l) * 0.5 + 0.5, 0.0, 1.0) * mix(0.65, 1.0, shadow));
   waterBody += glowLin * (0.09 * waveCrest + 0.03 * n1) * (1.0 - style * 0.5);
 
-  vec3 realMix = mix(waterBody, reflCol, fresnel * 0.88) + specCol;
+  vec3 realMix = mix(waterBody, reflCol, fresnel * 0.88) + specCol + lColLin * (rainRingGlow * 0.42);
   vec3 animeBand = mix(shallowLin * 1.12, deepLin * 1.15, smoothstep(0.38, 0.46, fresnel * 0.6 + (1.0 - waveCrest) * 0.5));
-  vec3 animeMix = mix(animeBand, reflCol * 0.9 + glowLin * 0.25, fresnel * 0.45) + specCol;
+  vec3 animeMix = mix(animeBand, reflCol * 0.9 + glowLin * 0.25, fresnel * 0.45) + specCol + vec3(0.85, 0.95, 1.0) * (rainRingGlow * 0.55);
   vec3 litWater = mix(realMix, animeMix, style);
 
   // Crisp realistic peak foam & anime Ghibli shoreline foam (zero muddy clouds on calm water!)
@@ -656,6 +665,57 @@ out vec4 fragColor;
 
 float ignNoise(vec2 px) {
   return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
+vec2 hash22R(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.xx + p3.yz) * p3.zy);
+}
+
+float puddleNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
+  float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+  float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+  float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float evalPuddleFbm(vec2 p) {
+  return puddleNoise2(p) * 0.65 + puddleNoise2(p * 2.15 + 3.7) * 0.35;
+}
+
+void evalRainRipples(vec2 wpXZ, float t, float intensity, out vec2 grad, out float ringGlow) {
+  grad = vec2(0.0);
+  ringGlow = 0.0;
+  float k = clamp(intensity, 0.0, 1.5);
+  for (int layer = 0; layer < 2; layer++) {
+    float scale = layer == 0 ? 1.05 : 1.75;
+    float speed = layer == 0 ? 1.55 : 2.15;
+    vec2 uv = wpXZ * scale + vec2(float(layer) * 11.3, float(layer) * 7.1);
+    vec2 cell = floor(uv);
+    vec2 local = fract(uv);
+    for (int oy = -1; oy <= 1; oy++) {
+      for (int ox = -1; ox <= 1; ox++) {
+        vec2 cId = cell + vec2(float(ox), float(oy));
+        vec2 rnd = hash22R(cId);
+        float phase = fract(t * speed + rnd.x * 6.283 + rnd.y * 1.7);
+        vec2 center = vec2(float(ox), float(oy)) + 0.15 + rnd * 0.7;
+        vec2 delta = local - center;
+        float dist = length(delta);
+        float rad = phase * 0.62;
+        float diff = dist - rad;
+        float env = exp(-diff * diff * 180.0) * (1.0 - phase) * smoothstep(0.02, 0.1, dist);
+        float wave = sin(diff * 46.0);
+        vec2 dir = dist > 0.001 ? delta / dist : vec2(0.0);
+        grad += dir * (wave * env * k * 0.72);
+        ringGlow += env * clamp(wave * 0.5 + 0.5, 0.0, 1.0) * k * 0.18;
+      }
+    }
+  }
 }
 
 vec3 srgbToLin(vec3 c) {
@@ -868,6 +928,31 @@ void main() {
   float matClearcoat = ${has('clearcoat') ? 'u_clearcoat' : '0.0'};
   float matClearcoatRoughness = u_clearcoatRoughness;
   float matSubsurface = ${has('subsurfaceWrap') ? 'u_subsurface' : '0.0'};
+
+  // Weather wetness: dark wet sheen, glossy FBM puddles & subtle normal-driven raindrop ripples on flat upward surfaces (skipping submerged caustic floors)
+  float puddleRingGlow = 0.0;
+  ${
+    !has('waterSurface') && !has('volumetricBeam') && !has('surfaceDecal') && !has('voronoiCaustics')
+      ? `
+  if (u_wetness > 0.01 && n.y > 0.94) {
+    float slopeMask = smoothstep(0.94, 0.99, n.y);
+    float pf = evalPuddleFbm(v_worldPos.xz * 0.24);
+    float puddle = smoothstep(0.56 - u_wetness * 0.24, 0.72 - u_wetness * 0.14, pf) * u_wetness * slopeMask;
+    albedoLin *= mix(1.0, 0.52, u_wetness * 0.45 * slopeMask + puddle * 0.42);
+    matRoughness = mix(matRoughness, 0.03, puddle * 0.94);
+    matClearcoat = max(matClearcoat, puddle * 0.96);
+    matClearcoatRoughness = mix(matClearcoatRoughness, 0.03, puddle);
+    if (u_rainIntensity > 0.01 && puddle > 0.05) {
+      vec2 pGrad = vec2(0.0);
+      evalRainRipples(v_worldPos.xz * 0.95, u_time, u_rainIntensity, pGrad, puddleRingGlow);
+      n = normalize(n + vec3(pGrad.x, 0.0, pGrad.y) * (puddle * 0.95));
+      puddleRingGlow *= puddle;
+    }
+  }
+  `
+      : ''
+  }
+
   float shadowFactor = evalShadow(v_shadowCoord, n, l);
 
   vec3 color;
@@ -875,6 +960,7 @@ void main() {
   ${has('envIBL') ? 'color += evalEnvIBL(albedoLin, n, v, l, lColLin * max(u_lightIntensity, 0.25), skyTopLin, skyHorizLin, matMetallic, matRoughness, matClearcoat, matClearcoatRoughness);' : ''}
   color += evalPointLights(albedoLin, v_worldPos, n, v, matMetallic, matRoughness, matClearcoat, matClearcoatRoughness, matSubsurface, ${has('celLighting') ? '1.0' : '0.0'});
   color += evalSpotLights(albedoLin, v_worldPos, n, v, matMetallic, matRoughness, matClearcoat, matClearcoatRoughness, matSubsurface, ${has('celLighting') ? '1.0' : '0.0'}, v_spotShadowCoord);
+  color += mix(skyHorizLin, vec3(0.85, 0.94, 1.0), 0.5) * (puddleRingGlow * 0.28);
   color += srgbToLin(u_emissiveColor) + (u_hasEmissiveMap == 1 ? srgbToLin(texture(u_emissiveMap, v_uv).rgb) : vec3(0.0));
 
   ${has('rimLight') ? 'color += srgbToLin(evalRimLight(n, v, u_rimColor, u_rimPower)) * 0.55;' : ''}
