@@ -64,7 +64,7 @@ async function bootstrapEditor() {
   const wsOverlayEl = document.getElementById('ws-overlay')!;
   projNameEl.value = doc.name;
 
-  const orbit = new OrbitControls({ target: [0, 1.5, 0], radius: 15, theta: 0.45, phi: 1.05 });
+  const orbit = new OrbitControls({ target: [0, 1.5, 0], radius: 15, theta: 0.45, phi: 1.05, rightClickLook: true });
   orbit.attach(canvas);
 
   const pickSmart3DEntity = (origin: Vec3Tuple, dir: Vec3Tuple): EntityId | null => {
@@ -972,9 +972,11 @@ async function bootstrapEditor() {
     }
 
     if (activeWorkspace === 'scene') {
-      if (e.code === 'KeyW') setTool('translate');
-      else if (e.code === 'KeyE') setTool('rotate');
-      else if (e.code === 'KeyR') setTool('scale');
+      if (e.code === 'Space') {
+        e.preventDefault();
+      } else if (e.code === 'Digit1') setTool('translate');
+      else if (e.code === 'Digit2') setTool('rotate');
+      else if (e.code === 'Digit3' || e.code === 'KeyR') setTool('scale');
       else if (e.code === 'KeyF') focusSelected();
       else if ((e.metaKey || e.ctrlKey) && e.code === 'KeyD') {
         e.preventDefault();
@@ -998,6 +1000,30 @@ async function bootstrapEditor() {
   let statAcc = 0;
   engine.onUpdate((dt) => {
     if (mode === 'edit' && activeWorkspace === 'scene') {
+      const typing = Boolean(document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName));
+      const mod =
+        input.isKeyDown('ControlLeft') ||
+        input.isKeyDown('ControlRight') ||
+        input.isKeyDown('MetaLeft') ||
+        input.isKeyDown('MetaRight') ||
+        input.isKeyDown('AltLeft') ||
+        input.isKeyDown('AltRight');
+      if (!typing && !mod) {
+        let fwd = 0;
+        let right = 0;
+        let up = 0;
+        if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp')) fwd += 1;
+        if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown')) fwd -= 1;
+        if (input.isKeyDown('KeyD') || input.isKeyDown('ArrowRight')) right += 1;
+        if (input.isKeyDown('KeyA') || input.isKeyDown('ArrowLeft')) right -= 1;
+        if (input.isKeyDown('KeyE') || input.isKeyDown('Space')) up += 1;
+        if (input.isKeyDown('KeyQ') || input.isKeyDown('KeyC')) up -= 1;
+        if (fwd !== 0 || right !== 0 || up !== 0) {
+          const boost = input.isKeyDown('ShiftLeft') || input.isKeyDown('ShiftRight') ? 2.5 : 1;
+          const speed = 10 * boost * Math.min(dt, 0.05);
+          orbit.fly(fwd * speed, right * speed, up * speed);
+        }
+      }
       orbit.update(dt, engine.scene.camera);
       gizmo.update();
     }

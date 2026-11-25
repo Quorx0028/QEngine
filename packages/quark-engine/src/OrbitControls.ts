@@ -15,6 +15,9 @@ export interface OrbitControlsOptions {
   zoomSpeed?: number;
   autoRotate?: boolean;
   autoRotateSpeed?: number;
+  /** Right mouse button rotates camera around its own position (FPS freelook) instead of panning. */
+  rightClickLook?: boolean;
+  lookSpeed?: number;
 }
 
 export interface OrbitCameraTarget {
@@ -46,6 +49,8 @@ export class OrbitControls {
   zoomSpeed: number;
   autoRotate: boolean;
   autoRotateSpeed: number;
+  rightClickLook: boolean;
+  lookSpeed: number;
   enabled = true;
 
   private theta: number;
@@ -59,15 +64,17 @@ export class OrbitControls {
   private readonly desiredTarget: Vec3Tuple;
 
   private attachedEl: HTMLElement | null = null;
-  private dragMode: 'none' | 'orbit' | 'pan' = 'none';
+  private dragMode: 'none' | 'orbit' | 'pan' | 'look' = 'none';
   private lastX = 0;
   private lastY = 0;
 
   constructor(opts: OrbitControlsOptions = {}) {
+    this.rightClickLook = opts.rightClickLook ?? false;
+    this.lookSpeed = opts.lookSpeed ?? 0.0045;
     this.minRadius = opts.minRadius ?? 1.5;
     this.maxRadius = opts.maxRadius ?? 60;
     this.minPhi = opts.minPhi ?? 0.08;
-    this.maxPhi = opts.maxPhi ?? Math.PI * 0.49;
+    this.maxPhi = opts.maxPhi ?? (this.rightClickLook ? Math.PI - 0.08 : Math.PI * 0.49);
     this.damping = Math.max(0.1, opts.damping ?? 10);
     this.rotateSpeed = opts.rotateSpeed ?? 0.006;
     this.panSpeed = opts.panSpeed ?? 0.0022;
@@ -123,6 +130,58 @@ export class OrbitControls {
       this.minRadius,
       this.maxRadius
     );
+  }
+
+  /** Moves camera and orbit target together along view/right/up axes (WASD free-fly). */
+  fly(forwardDist: number, rightDist: number, upDist = 0): void {
+    const sinPhi = Math.sin(this.targetPhi);
+    const cosPhi = Math.cos(this.targetPhi);
+    const sinTheta = Math.sin(this.targetTheta);
+    const cosTheta = Math.cos(this.targetTheta);
+
+    const fx = -sinPhi * sinTheta;
+    const fy = -cosPhi;
+    const fz = -sinPhi * cosTheta;
+
+    const rx = cosTheta;
+    const rz = -sinTheta;
+
+    const dx = fx * forwardDist + rx * rightDist;
+    const dy = fy * forwardDist + upDist;
+    const dz = fz * forwardDist + rz * rightDist;
+
+    this.desiredTarget[0] += dx;
+    this.desiredTarget[1] += dy;
+    this.desiredTarget[2] += dz;
+    this.target[0] += dx;
+    this.target[1] += dy;
+    this.target[2] += dz;
+  }
+
+  /** Rotates gaze in-place around current camera eye position (FPS freelook). */
+  freelook(deltaYaw: number, deltaPitch: number): void {
+    const curSinPhi = Math.sin(this.phi);
+    const curCosPhi = Math.cos(this.phi);
+    const curSinTheta = Math.sin(this.theta);
+    const curCosTheta = Math.cos(this.theta);
+    const eyeX = this.target[0] + this.radius * curSinPhi * curSinTheta;
+    const eyeY = this.target[1] + this.radius * curCosPhi;
+    const eyeZ = this.target[2] + this.radius * curSinPhi * curCosTheta;
+
+    this.theta = this.targetTheta = this.theta + deltaYaw;
+    this.phi = this.targetPhi = clamp(this.phi + deltaPitch, this.minPhi, this.maxPhi);
+
+    const nextSinPhi = Math.sin(this.phi);
+    const nextCosPhi = Math.cos(this.phi);
+    const nextSinTheta = Math.sin(this.theta);
+    const nextCosTheta = Math.cos(this.theta);
+    const tx = eyeX - this.radius * nextSinPhi * nextSinTheta;
+    const ty = eyeY - this.radius * nextCosPhi;
+    const tz = eyeZ - this.radius * nextSinPhi * nextCosTheta;
+
+    this.target[0] = this.desiredTarget[0] = tx;
+    this.target[1] = this.desiredTarget[1] = ty;
+    this.target[2] = this.desiredTarget[2] = tz;
   }
 
   update(dt: number, camera: OrbitCameraTarget): void {
@@ -186,7 +245,13 @@ export class OrbitControls {
     if (!this.enabled) return;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
-    this.dragMode = e.button === 2 || e.button === 1 || e.shiftKey ? 'pan' : 'orbit';
+    if (e.button === 2 && this.rightClickLook) {
+      this.dragMode = 'look';
+    } else if (e.button === 2 || e.button === 1 || e.shiftKey) {
+      this.dragMode = 'pan';
+    } else {
+      this.dragMode = 'orbit';
+    }
   };
 
   private readonly onPointerMove = (e: PointerEvent): void => {
@@ -195,7 +260,9 @@ export class OrbitControls {
     const dy = e.clientY - this.lastY;
     this.lastX = e.clientX;
     this.lastY = e.clientY;
-    if (this.dragMode === 'orbit') {
+    if (this.dragMode === 'look') {
+      this.freelook(-dx * this.lookSpeed, -dy * this.lookSpeed);
+    } else if (this.dragMode === 'orbit') {
       this.orbit(-dx * this.rotateSpeed, -dy * this.rotateSpeed);
     } else {
       this.pan(-dx * this.panSpeed * 4, dy * this.panSpeed * 4);

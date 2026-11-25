@@ -77,6 +77,38 @@ describe('OrbitControls', () => {
     for (let i = 0; i < 20; i++) controls.update(1 / 60, cam);
     expect(cam.position[0]).not.toBeCloseTo(x0, 3);
   });
+
+  it('fly() moves camera and target along gaze vectors, and freelook() keeps camera position fixed', () => {
+    const cam = {
+      position: [0, 2, 10] as [number, number, number],
+      target: [0, 2, 0] as [number, number, number],
+    };
+    const controls = new OrbitControls({
+      target: [0, 2, 0],
+      radius: 10,
+      theta: 0,
+      phi: Math.PI * 0.5,
+      rightClickLook: true,
+    });
+    controls.update(1, cam);
+    const eyeBefore: [number, number, number] = [...cam.position];
+
+    // Fly forward (+3 toward -Z), right (+2 toward +X), up (+1 toward +Y)
+    controls.fly(3, 2, 1);
+    controls.update(0.016, cam);
+    expect(cam.position[0]).toBeCloseTo(eyeBefore[0] + 2, 1);
+    expect(cam.position[1]).toBeCloseTo(eyeBefore[1] + 1, 1);
+    expect(cam.position[2]).toBeCloseTo(eyeBefore[2] - 3, 1);
+
+    // Freelook pivots target around current camera eye without teleporting camera position
+    const eyeLock: [number, number, number] = [...cam.position];
+    controls.freelook(0.6, -0.3);
+    controls.update(0.016, cam);
+    expect(cam.position[0]).toBeCloseTo(eyeLock[0], 2);
+    expect(cam.position[1]).toBeCloseTo(eyeLock[1], 2);
+    expect(cam.position[2]).toBeCloseTo(eyeLock[2], 2);
+    expect(cam.target[0]).toBeLessThan(eyeLock[0]);
+  });
 });
 
 describe('Water 2.0 Gerstner Shader & Presets', () => {
