@@ -7,6 +7,7 @@ import {
   Engine,
   generateProceduralTexturePixels,
   ProjectRunner,
+  TransformGizmo,
   type IRenderBackend,
 } from '../src/index';
 
@@ -139,6 +140,38 @@ describe('QuarkStudio Editor Runtime (Schema, Textures, Blueprints, Edit/Play Ru
     expect(engine.scene.getPosition(box)[1]).toBeLessThan(4.5);
 
     bp.dispose();
+    engine.dispose();
+  });
+
+  it('TransformGizmo selects recycled entity IDs after resetHandles and ProjectRunner picks triggers & rooms cleanly', async () => {
+    const engine = await Engine.init({ wasmBytes, backend: createMockBackend() });
+    const gizmo = new TransformGizmo(engine.scene, engine.assets, null, {});
+    gizmo.setEnabled(true); // creates handle entities 1..7 BEFORE scene.clear()
+    gizmo.resetHandles();
+
+    const doc = createStarterProject('escapeRoom');
+    const runner = await ProjectRunner.mount(engine, doc, 'edit', { showTriggersInEdit: true });
+
+    // Every doc entity (including floor_main e1 and room_main e2) must be selectable via gizmo.select
+    for (const ent of doc.entities) {
+      const eid = runner.docToEid.get(ent.id)!;
+      gizmo.select(eid);
+      expect(gizmo.getSelected()).toBe(eid);
+    }
+
+    // Ray aimed straight at gold key [-3.0, 1.15, -2.5] picks key_gold first (even though isTrigger: true)
+    const keyHits = runner.pickEntitiesAlongRay([-3.0, 4.0, 1.0], [0, -2.85 / Math.hypot(2.85, 3.5), -3.5 / Math.hypot(2.85, 3.5)]);
+    expect(keyHits.length).toBeGreaterThanOrEqual(1);
+    expect(runner.eidToDoc.get(keyHits[0])).toBe('key_gold');
+
+    // Ray aimed straight at trig_door [0, 1.1, -3.7] picks trig_door when triggers shown, and skips it when hidden
+    const trigHitsShown = runner.pickEntitiesAlongRay([0, 2.0, 1.0], [0, -0.9 / Math.hypot(0.9, 4.7), -4.7 / Math.hypot(0.9, 4.7)], { includeTriggers: true });
+    expect(runner.eidToDoc.get(trigHitsShown[0])).toBe('trig_door');
+    const trigHitsHidden = runner.pickEntitiesAlongRay([0, 2.0, 1.0], [0, -0.9 / Math.hypot(0.9, 4.7), -4.7 / Math.hypot(0.9, 4.7)], { includeTriggers: false });
+    expect(runner.eidToDoc.get(trigHitsHidden[0])).not.toBe('trig_door');
+
+    gizmo.dispose();
+    runner.dispose();
     engine.dispose();
   });
 });

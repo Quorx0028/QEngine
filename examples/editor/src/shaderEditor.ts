@@ -199,7 +199,7 @@ export class ShaderEditorPanel {
     cbTransp.onchange = () => {
       mat.transparent = cbTransp.checked;
       if (cbTransp.checked && mat.uniforms.baseColor[3] >= 0.99) {
-        mat.uniforms.baseColor[3] = 0.45;
+        mat.uniforms.baseColor[3] = 0;
       } else if (!cbTransp.checked) {
         mat.uniforms.baseColor[3] = 1.0;
       }
@@ -208,11 +208,11 @@ export class ShaderEditorPanel {
     };
     chkTransp.append(cbTransp, document.createTextNode('Прозрачный материал'));
 
-    const makeRange = (label: string, min: number, max: number, step: number, val: number, set: (v: number) => void) => {
+    const makeRange = (label: string, min: number, max: number, step: number, val: number, set: (v: number) => void, fmt?: (v: number) => string) => {
       const wrap = document.createElement('label');
       wrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:11px;';
       const sp = document.createElement('span');
-      sp.textContent = `${label} ${val.toFixed(2)}`;
+      sp.textContent = fmt ? fmt(val) : `${label} ${val.toFixed(2)}`;
       const rng = document.createElement('input');
       rng.type = 'range';
       rng.min = String(min);
@@ -221,7 +221,7 @@ export class ShaderEditorPanel {
       rng.value = String(val);
       rng.oninput = () => {
         const nv = Number(rng.value);
-        sp.textContent = `${label} ${nv.toFixed(2)}`;
+        sp.textContent = fmt ? fmt(nv) : `${label} ${nv.toFixed(2)}`;
         set(nv);
       };
       rng.onchange = () => this.onMutate(true);
@@ -247,10 +247,18 @@ export class ShaderEditorPanel {
       uploadLbl,
       colorRow,
       chkTransp,
-      makeRange('Непрозрачность', 0.05, 1, 0.05, mat.uniforms.baseColor[3], (v) => {
-        mat.uniforms.baseColor[3] = v;
-        mat.transparent = v < 0.99;
-      }),
+      makeRange(
+        'Видимость',
+        0,
+        1,
+        0.05,
+        mat.uniforms.baseColor[3],
+        (v) => {
+          mat.uniforms.baseColor[3] = v;
+          mat.transparent = v < 0.99;
+        },
+        (v) => `Видимость ${Math.round(v * 100)}%`
+      ),
       makeRange('Металл', 0, 1, 0.05, mat.uniforms.metallic, (v) => (mat.uniforms.metallic = v)),
       makeRange('Шероховатость', 0.05, 1, 0.05, mat.uniforms.roughness, (v) => (mat.uniforms.roughness = v)),
       makeRange('Волны', 0, 0.4, 0.02, mat.uniforms.waveAmp, (v) => (mat.uniforms.waveAmp = v)),

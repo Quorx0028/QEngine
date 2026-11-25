@@ -18,7 +18,7 @@ const PARAM_LABELS: Record<string, string> = {
   durationSec: 'Время, с',
   seconds: 'Пауза, с',
   chance: 'Шанс 0..1',
-  opacity: 'Прозрачн.',
+  opacity: 'Видимость',
   intensity: 'Сила',
   color: 'Цвет',
   glow: 'Свечение',
@@ -46,22 +46,27 @@ export class NodeGraphEditor {
   private readonly root: HTMLElement;
   private readonly getDoc: () => QuarkProjectDoc;
   private readonly onMutate: (rebuildRequired?: boolean) => void;
+  private readonly onBackToScene?: () => void;
   private activeGraphId: string | null = null;
+  private selectedNodeId: string | null = null;
   private pendingLink: { nodeId: string; port: string } | null = null;
-  private panX = 0;
-  private panY = 0;
+  private panX = 24;
+  private panY = 24;
   private zoom = 1;
   private nodeFilter = '';
   private readonly nodeEls = new Map<string, HTMLElement>();
+  private readonly outBtns = new Map<string, HTMLButtonElement>();
 
   constructor(
     root: HTMLElement,
     getDoc: () => QuarkProjectDoc,
-    onMutate: (rebuildRequired?: boolean) => void
+    onMutate: (rebuildRequired?: boolean) => void,
+    onBackToScene?: () => void
   ) {
     this.root = root;
     this.getDoc = getDoc;
     this.onMutate = onMutate;
+    this.onBackToScene = onBackToScene;
   }
 
   ensureDefaultGraph(): BlueprintGraph {
@@ -83,7 +88,7 @@ export class NodeGraphEditor {
 
   addQuickTriggerRule(targetEntityId: string, eventType: 'onTriggerEnter' | 'onRaycastClick'): void {
     const g = this.ensureDefaultGraph();
-    const y = 40 + g.nodes.length * 56;
+    const y = 40 + g.nodes.length * 60;
     const n1Id = `n_${Date.now()}_a`;
     const n2Id = `n_${Date.now()}_b`;
     g.nodes.push(
@@ -117,15 +122,59 @@ export class NodeGraphEditor {
     window.setTimeout(() => el.classList.remove('pulse'), 300);
   }
 
+  private syncArmedPortClasses(): void {
+    for (const [k, btn] of this.outBtns) {
+      const armed = this.pendingLink ? `${this.pendingLink.nodeId}:${this.pendingLink.port}` === k : false;
+      btn.classList.toggle('armed', armed);
+    }
+  }
+
+  private syncSelectedNodeClasses(): void {
+    for (const [nid, el] of this.nodeEls) {
+      el.classList.toggle('selected', nid === this.selectedNodeId);
+    }
+  }
+
+  /** Deletes the currently selected node (for Delete/Backspace hotkeys). */
+  deleteSelected(): boolean {
+    if (!this.selectedNodeId) return false;
+    const graph = this.ensureDefaultGraph();
+    const before = graph.nodes.length;
+    graph.nodes = graph.nodes.filter((n) => n.id !== this.selectedNodeId);
+    if (graph.nodes.length === before) return false;
+    graph.edges = graph.edges.filter((e) => e.fromNode !== this.selectedNodeId && e.toNode !== this.selectedNodeId);
+    this.selectedNodeId = null;
+    this.onMutate(false);
+    this.render();
+    return true;
+  }
+
+  /** Clears pending wire link or selection; returns true if anything was cleared. */
+  clearPendingOrSelection(): boolean {
+    if (this.pendingLink) {
+      this.pendingLink = null;
+      this.syncArmedPortClasses();
+      return true;
+    }
+    if (this.selectedNodeId) {
+      this.selectedNodeId = null;
+      this.syncSelectedNodeClasses();
+      return true;
+    }
+    return false;
+  }
+
   render(): void {
     const doc = this.getDoc();
     const graph = this.ensureDefaultGraph();
     this.nodeEls.clear();
+    this.outBtns.clear();
     this.root.innerHTML = '';
 
     const shell = document.createElement('div');
     shell.className = 'bp-shell';
 
+    // Top bar
     const bar = document.createElement('div');
     bar.className = 'bp-bar';
 
@@ -148,7 +197,7 @@ export class NodeGraphEditor {
     };
 
     const btnNewGraph = document.createElement('button');
-    btnNewGraph.textContent = '+ Граф';
+    btnNewGraph.textContent = '+ Новый граф';
     btnNewGraph.onclick = () => {
       const ng: BlueprintGraph = {
         id: `bp_${Date.now()}`,
@@ -172,75 +221,99 @@ export class NodeGraphEditor {
       graph.enabled = cb.checked;
       this.onMutate(false);
     };
-    chkEnabled.append(cb, document.createTextNode('Вкл'));
+    chkEnabled.append(cb, document.createTextNode('Активен'));
 
     leftBar.append(selGraph, btnNewGraph, chkEnabled);
 
     const rightBar = document.createElement('div');
     rightBar.className = 'row-gap';
 
-    const searchInp = document.createElement('input');
-    searchInp.type = 'text';
-    searchInp.className = 'search';
-    searchInp.placeholder = 'Найти ноду';
-    searchInp.value = this.nodeFilter;
-    searchInp.setAttribute('aria-label', 'Поиск ноды для добавления');
-
-    const selQuickAdd = document.createElement('select');
-    selQuickAdd.setAttribute('aria-label', 'Добавить ноду');
-    const populateQuickAdd = () => {
-      selQuickAdd.innerHTML = '';
-      const def = document.createElement('option');
-      def.value = '';
-      def.textContent = this.nodeFilter ? '+ Выбрать найденную...' : '+ Добавить ноду';
-      selQuickAdd.appendChild(def);
-      const q = this.nodeFilter.trim().toLowerCase();
-      for (const spec of BLUEPRINT_NODE_CATALOG) {
-        if (q && !spec.label.toLowerCase().includes(q) && !spec.type.toLowerCase().includes(q)) continue;
-        const opt = document.createElement('option');
-        opt.value = spec.type;
-        const cat = spec.category === 'event' ? 'Событие' : spec.category === 'logic' ? 'Логика' : 'Действие';
-        opt.textContent = `${cat}: ${spec.label}`;
-        selQuickAdd.appendChild(opt);
-      }
-    };
-    populateQuickAdd();
-    searchInp.oninput = () => {
-      this.nodeFilter = searchInp.value;
-      populateQuickAdd();
-    };
-    selQuickAdd.onchange = () => {
-      if (!selQuickAdd.value) return;
-      const t = selQuickAdd.value as BlueprintNodeType;
-      const spec = NODE_SPEC_BY_TYPE.get(t)!;
-      const idx = graph.nodes.length;
-      graph.nodes.push({
-        id: `n_${Date.now()}_${idx}`,
-        type: t,
-        x: Math.round((80 - this.panX) / this.zoom + ((idx * 240) % 720)),
-        y: Math.round((40 - this.panY) / this.zoom + Math.floor(idx / 3) * 180),
-        params: { ...spec.defaultParams },
-      });
-      selQuickAdd.value = '';
-      this.onMutate(false);
-      this.render();
-    };
-
     const btnResetView = document.createElement('button');
     btnResetView.textContent = `${Math.round(this.zoom * 100)}%`;
-    btnResetView.title = 'Сбросить масштаб и центр';
+    btnResetView.title = 'Сбросить масштаб и позицию холста';
     btnResetView.onclick = () => {
-      this.panX = 0;
-      this.panY = 0;
+      this.panX = 24;
+      this.panY = 24;
       this.zoom = 1;
       applyStageTransform();
       btnResetView.textContent = '100%';
     };
 
-    rightBar.append(searchInp, selQuickAdd, btnResetView);
+    rightBar.append(btnResetView);
+    if (this.onBackToScene) {
+      const btnScene = document.createElement('button');
+      btnScene.className = 'active';
+      btnScene.textContent = 'Вернуться в 3D сцену';
+      btnScene.onclick = this.onBackToScene;
+      rightBar.append(btnScene);
+    }
+
     bar.append(leftBar, rightBar);
     shell.appendChild(bar);
 
+    // Left Sidebar Palette (click any node button to spawn immediately)
+    const palette = document.createElement('aside');
+    palette.className = 'bp-palette';
+
+    const searchInp = document.createElement('input');
+    searchInp.type = 'text';
+    searchInp.placeholder = 'Найти ноду';
+    searchInp.value = this.nodeFilter;
+    searchInp.setAttribute('aria-label', 'Фильтр нод');
+
+    const palList = document.createElement('div');
+    palList.style.cssText = 'display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1;';
+
+    const renderPaletteItems = () => {
+      palList.innerHTML = '';
+      const q = this.nodeFilter.trim().toLowerCase();
+      const cats: Array<{ id: 'event' | 'logic' | 'action'; title: string; cls: string }> = [
+        { id: 'event', title: 'События', cls: 'ev' },
+        { id: 'logic', title: 'Логика', cls: 'lg' },
+        { id: 'action', title: 'Действия', cls: 'ac' },
+      ];
+      for (const c of cats) {
+        const items = BLUEPRINT_NODE_CATALOG.filter(
+          (s) => s.category === c.id && (!q || s.label.toLowerCase().includes(q) || s.type.toLowerCase().includes(q))
+        );
+        if (items.length === 0) continue;
+        const grp = document.createElement('div');
+        grp.className = 'bp-palette-group';
+        const ttl = document.createElement('div');
+        ttl.className = 'bp-palette-title';
+        ttl.textContent = c.title;
+        grp.appendChild(ttl);
+
+        for (const spec of items) {
+          const btn = document.createElement('button');
+          btn.className = c.cls;
+          btn.textContent = `+ ${spec.label}`;
+          btn.onclick = () => {
+            const idx = graph.nodes.length;
+            graph.nodes.push({
+              id: `n_${Date.now()}_${idx}`,
+              type: spec.type,
+              x: Math.round((80 - this.panX) / this.zoom + ((idx * 250) % 750)),
+              y: Math.round((40 - this.panY) / this.zoom + Math.floor(idx / 3) * 190),
+              params: { ...spec.defaultParams },
+            });
+            this.onMutate(false);
+            this.render();
+          };
+          grp.appendChild(btn);
+        }
+        palList.appendChild(grp);
+      }
+    };
+    searchInp.oninput = () => {
+      this.nodeFilter = searchInp.value;
+      renderPaletteItems();
+    };
+    renderPaletteItems();
+    palette.append(searchInp, palList);
+    shell.appendChild(palette);
+
+    // Node Canvas Stage
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'bp-canvas';
     const stage = document.createElement('div');
@@ -292,9 +365,17 @@ export class NodeGraphEditor {
       }
     };
 
-    // Pan empty stage & zoom wheel
+    // Pan empty background
     canvasWrap.onpointerdown = (ev) => {
       if (ev.target !== canvasWrap && ev.target !== stage) return;
+      if (this.pendingLink) {
+        this.pendingLink = null;
+        this.syncArmedPortClasses();
+      }
+      if (this.selectedNodeId) {
+        this.selectedNodeId = null;
+        this.syncSelectedNodeClasses();
+      }
       canvasWrap.classList.add('panning');
       const sx = ev.clientX;
       const sy = ev.clientY;
@@ -326,9 +407,15 @@ export class NodeGraphEditor {
       const spec = NODE_SPEC_BY_TYPE.get(node.type);
       if (!spec) continue;
       const card = document.createElement('div');
-      card.className = 'bp-node';
+      card.className = 'bp-node' + (node.id === this.selectedNodeId ? ' selected' : '');
       card.style.left = `${node.x}px`;
       card.style.top = `${node.y}px`;
+      card.onpointerdown = () => {
+        if (this.selectedNodeId !== node.id) {
+          this.selectedNodeId = node.id;
+          this.syncSelectedNodeClasses();
+        }
+      };
       this.nodeEls.set(node.id, card);
 
       const head = document.createElement('div');
@@ -370,6 +457,11 @@ export class NodeGraphEditor {
 
       head.onpointerdown = (ev) => {
         if ((ev.target as HTMLElement).tagName === 'BUTTON') return;
+        ev.stopPropagation();
+        if (this.selectedNodeId !== node.id) {
+          this.selectedNodeId = node.id;
+          this.syncSelectedNodeClasses();
+        }
         const sx = ev.clientX;
         const sy = ev.clientY;
         const ox = node.x;
@@ -403,7 +495,8 @@ export class NodeGraphEditor {
         const dot = document.createElement('span');
         dot.className = 'port-dot';
         b.append(dot, document.createTextNode(ip));
-        b.onclick = () => {
+        b.onclick = (ev) => {
+          ev.stopPropagation();
           if (this.pendingLink && this.pendingLink.nodeId !== node.id) {
             graph.edges.push({
               id: `e_${Date.now()}`,
@@ -426,15 +519,12 @@ export class NodeGraphEditor {
       for (const op of spec.outputs) {
         const b = document.createElement('button');
         b.className = 'port-btn';
-        if (this.pendingLink?.nodeId === node.id && this.pendingLink.port === op) {
-          b.classList.add('armed');
-        }
         b.dataset.out = `${node.id}:${op}`;
+        this.outBtns.set(`${node.id}:${op}`, b);
         const dot = document.createElement('span');
         dot.className = op === 'false' || op === 'b' ? 'port-dot alt' : 'port-dot';
         b.append(document.createTextNode(op), dot);
 
-        // Support BOTH drag-to-connect Bezier preview AND click-to-link
         b.onpointerdown = (ev) => {
           ev.stopPropagation();
           const start = portCenter(b);
@@ -469,21 +559,19 @@ export class NodeGraphEditor {
                   this.pendingLink = null;
                   this.onMutate(false);
                   this.render();
-                  return;
                 }
               }
+            } else {
+              // Clean click toggle without destroying DOM mid-click!
+              this.pendingLink =
+                this.pendingLink?.nodeId === node.id && this.pendingLink.port === op
+                  ? null
+                  : { nodeId: node.id, port: op };
+              this.syncArmedPortClasses();
             }
           };
           window.addEventListener('pointermove', onMove);
           window.addEventListener('pointerup', onUp);
-        };
-
-        b.onclick = () => {
-          this.pendingLink =
-            this.pendingLink?.nodeId === node.id && this.pendingLink.port === op
-              ? null
-              : { nodeId: node.id, port: op };
-          this.render();
         };
         outCol.appendChild(b);
       }
@@ -493,6 +581,7 @@ export class NodeGraphEditor {
       stage.appendChild(card);
     }
 
+    this.syncArmedPortClasses();
     canvasWrap.appendChild(stage);
     shell.appendChild(canvasWrap);
     this.root.appendChild(shell);

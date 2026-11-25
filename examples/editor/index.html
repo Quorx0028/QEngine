@@ -19,28 +19,37 @@
         </div>
 
         <div class="tb-group">
+          <div class="seg-group" role="tablist" aria-label="Режим рабочей области">
+            <button class="ws-tab active" data-ws="scene">Сцена 3D</button>
+            <button class="ws-tab" data-ws="blueprints">Ноды</button>
+            <button class="ws-tab" data-ws="shaders">Шейдеры</button>
+            <button class="ws-tab" data-ws="world">Мир</button>
+          </div>
+        </div>
+
+        <div class="tb-group">
           <button id="btn-undo" class="icon-btn" title="Отменить (Ctrl+Z)" aria-label="Отменить">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
           </button>
           <button id="btn-redo" class="icon-btn" title="Повторить (Ctrl+Y)" aria-label="Повторить">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"/></svg>
           </button>
-        </div>
-
-        <div class="tb-group">
           <div class="seg-group">
             <button id="btn-tool-translate" class="active" title="Перемещение (W)">Move</button>
             <button id="btn-tool-rotate" title="Вращение (E)">Rotate</button>
             <button id="btn-tool-scale" title="Масштаб (R)">Scale</button>
           </div>
           <label class="tb-chk">
-            <input type="checkbox" id="chk-snap" checked /> Snap 0.5м
+            <input type="checkbox" id="chk-snap" checked /> Snap
+          </label>
+          <label class="tb-chk" title="Показывать триггеры в редакторе">
+            <input type="checkbox" id="chk-show-triggers" checked /> Зоны
           </label>
         </div>
 
         <div class="tb-group">
           <select id="sel-add-kind" aria-label="Добавить объект">
-            <option value="">+ Добавить объект</option>
+            <option value="">+ Добавить</option>
             <option value="box">Куб или стена</option>
             <option value="crate">Ящик с физикой</option>
             <option value="room">Комната с дверью</option>
@@ -60,9 +69,9 @@
         </div>
 
         <div class="tb-group tb-right">
-          <label class="tb-chk" title="Прозрачность панелей редактора">
+          <label class="tb-chk" title="Прозрачность боковых панелей">
             <span>Стекло</span>
-            <input id="sl-glass" type="range" min="0.45" max="0.96" step="0.05" value="0.78" class="compact-range" />
+            <input id="sl-glass" type="range" min="0.25" max="0.96" step="0.05" value="0.78" class="compact-range" />
           </label>
           <button id="btn-zen" title="Скрыть панели (Tab)">Обзор</button>
           <button id="btn-play" class="btn-play">Play</button>
@@ -123,19 +132,10 @@
           </div>
         </aside>
 
-        <section class="bottom-drawer" id="bottom-drawer">
-          <div class="drawer-resizer" id="drawer-resizer" title="Потяните для изменения высоты"></div>
-          <div class="drawer-tabs">
-            <div class="tabs-left">
-              <button class="tab-btn active" data-tab="blueprints">Ноды логики</button>
-              <button class="tab-btn" data-tab="shaders">Текстуры и шейдеры</button>
-              <button class="tab-btn" data-tab="world">Мир и качество</button>
-            </div>
-            <button id="btn-toggle-drawer" title="Свернуть или развернуть панель" aria-label="Свернуть панель">▾</button>
-          </div>
-          <div id="tab-blueprints" class="drawer-body active"></div>
-          <div id="tab-shaders" class="drawer-body"></div>
-          <div id="tab-world" class="drawer-body"></div>
+        <section class="studio-workspace-overlay" id="ws-overlay">
+          <div id="ws-blueprints" class="ws-body active"></div>
+          <div id="ws-shaders" class="ws-body"></div>
+          <div id="ws-world" class="ws-body"></div>
         </section>
       </main>
     </div>

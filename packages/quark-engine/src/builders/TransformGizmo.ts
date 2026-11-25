@@ -12,6 +12,7 @@ export interface TransformGizmoOptions {
   ignoreEntities?: Iterable<EntityId>;
   isSelectable?: (entity: EntityId) => boolean;
   canDrag?: (entity: EntityId) => boolean;
+  customPick?: (origin: Vec3Tuple, dir: Vec3Tuple) => EntityId | null;
   snapStep?: number;
   rotSnapDeg?: number;
   onSelect?: (entity: EntityId | null) => void;
@@ -28,8 +29,10 @@ export class TransformGizmo {
   private readonly assets: AssetManager;
   private readonly orbit: OrbitControls | null;
   private readonly ignoreEntities: Set<EntityId>;
+  private readonly handleIgnoreEntities = new Set<EntityId>();
   private readonly customSelectable?: (entity: EntityId) => boolean;
   private readonly customCanDrag?: (entity: EntityId) => boolean;
+  private readonly customPickCb?: (origin: Vec3Tuple, dir: Vec3Tuple) => EntityId | null;
   private readonly onSelectCb?: (entity: EntityId | null) => void;
   private readonly onChangeCb?: (entity: EntityId, mode: GizmoMode) => void;
   private readonly onDragEndCb?: (entity: EntityId, mode: GizmoMode) => void;
@@ -74,6 +77,7 @@ export class TransformGizmo {
     this.ignoreEntities = new Set(opts.ignoreEntities ?? []);
     this.customSelectable = opts.isSelectable;
     this.customCanDrag = opts.canDrag;
+    this.customPickCb = opts.customPick;
     this.snapStep = Math.max(0, opts.snapStep ?? 0);
     this.rotSnapDeg = Math.max(0, opts.rotSnapDeg ?? 0);
     this.onSelectCb = opts.onSelect;
@@ -103,7 +107,7 @@ export class TransformGizmo {
       this.scene.setTransform(e, { position: [0, -999, 0], scale: [0.001, 0.001, 0.001], immediate: true });
       this.scene.setMesh3D(e, { meshId, materialId, boundsRadius: 2.0 });
       this.handleEntities.push(e);
-      this.ignoreEntities.add(e);
+      this.handleIgnoreEntities.add(e);
       return e;
     };
 
@@ -120,8 +124,13 @@ export class TransformGizmo {
   resetHandles(): void {
     this.handlesBuilt = false;
     this.handleEntities.length = 0;
+    this.handleIgnoreEntities.clear();
     this.selected = null;
     this.dragAxis = null;
+  }
+
+  private isIgnoredEntity(entity: EntityId): boolean {
+    return this.ignoreEntities.has(entity) || this.handleIgnoreEntities.has(entity);
   }
 
   ignore(entity: EntityId): void {
@@ -152,7 +161,7 @@ export class TransformGizmo {
   }
 
   select(entity: EntityId | null): void {
-    if (entity !== null && (!this.scene.isAlive(entity) || this.ignoreEntities.has(entity))) {
+    if (entity !== null && (!this.scene.isAlive(entity) || this.isIgnoredEntity(entity))) {
       entity = null;
     }
     this.selected = entity;
@@ -403,8 +412,17 @@ export class TransformGizmo {
 
     const rect = this.attachedEl.getBoundingClientRect();
     const ray = this.scene.screenToRay(e.clientX, e.clientY, rect);
+    if (this.customPickCb) {
+      const picked = this.customPickCb(ray.origin, ray.dir);
+      if (picked !== null && !this.isIgnoredEntity(picked) && (!this.customSelectable || this.customSelectable(picked))) {
+        this.select(picked);
+      } else {
+        this.select(null);
+      }
+      return;
+    }
     const hit = this.scene.raycast3D(ray.origin, ray.dir, 95);
-    if (hit && !this.ignoreEntities.has(hit.entity) && (!this.customSelectable || this.customSelectable(hit.entity))) {
+    if (hit && !this.isIgnoredEntity(hit.entity) && (!this.customSelectable || this.customSelectable(hit.entity))) {
       this.select(hit.entity);
     } else {
       this.select(null);

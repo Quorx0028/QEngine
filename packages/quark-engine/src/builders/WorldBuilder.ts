@@ -120,6 +120,8 @@ export interface RoomOptions {
   windows?: Array<RoomSide | WindowConfig>;
   roof?: boolean;
   floor?: boolean;
+  /** Whether window panes generate solid physics colliders (default `true`). */
+  glassCollider?: boolean;
   wallMaterial?: MaterialInput;
   floorMaterial?: MaterialInput;
   doorMaterial?: MaterialInput;
@@ -146,6 +148,7 @@ export interface DoorHandle {
 export interface RoomHandle {
   entities: EntityId[];
   doors: DoorHandle[];
+  beamEntity?: EntityId | null;
   setLight: (on: boolean) => void;
   toggleLight: () => boolean;
 }
@@ -738,6 +741,7 @@ export class WorldBuilder {
             size: alongX ? [ww, wh, 0.08] : [0.08, wh, ww],
             material: glassMat,
             transparent: true,
+            collider: opts.glassCollider ?? true,
           })
         );
         return;
@@ -842,6 +846,7 @@ export class WorldBuilder {
     return {
       entities,
       doors,
+      beamEntity,
       setLight,
       toggleLight: () => {
         setLight(!lightOn);

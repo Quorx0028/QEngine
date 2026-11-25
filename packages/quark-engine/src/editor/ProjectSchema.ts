@@ -88,6 +88,8 @@ export interface EditorEntityDef {
   height?: number;
   materialId: string;
   physics: EditorPhysicsDef;
+  /** Hide mesh completely when Play mode starts (ideal for trigger zones). */
+  hiddenInPlay?: boolean;
   roomConfig?: EditorRoomConfig;
   lightConfig?: EditorLightConfig;
   glbDataBase64?: string;
@@ -331,6 +333,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
           scale: [1, 1, 1],
           size: [2.6, 0.5, 2.6],
           materialId: 'mat_neon',
+          hiddenInPlay: false,
           physics: { mode: 'static', mass: 0, friction: 0.5, restitution: 0, isTrigger: true },
         },
         {
@@ -353,6 +356,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
           scale: [1, 1, 1],
           size: [2.4, 2.2, 2.4],
           materialId: 'mat_trigger',
+          hiddenInPlay: false,
           physics: { mode: 'static', mass: 0, friction: 0.5, restitution: 0, isTrigger: true },
         },
         {
@@ -455,6 +459,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
         scale: [1, 1, 1],
         size: [2.4, 2.2, 1.6],
         materialId: 'mat_trigger',
+        hiddenInPlay: true,
         physics: { mode: 'static', mass: 0, friction: 0.5, restitution: 0, isTrigger: true },
       },
       {
@@ -477,6 +482,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
         scale: [1, 1, 1],
         size: [3.2, 1.8, 2.4],
         materialId: 'mat_neon',
+        hiddenInPlay: true,
         physics: { mode: 'static', mass: 0, friction: 0.5, restitution: 0, isTrigger: true },
       },
     ],
@@ -487,22 +493,22 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
         name: 'Ключ и Дверь',
         enabled: true,
         nodes: [
-          { id: 'n_start', type: 'onStart', x: 40, y: 40, params: {} },
-          { id: 'n_hud0', type: 'setHudCounter', x: 290, y: 40, params: { label: 'Ключи', varName: 'keys' } },
-          { id: 'n_hint', type: 'showBanner', x: 550, y: 40, params: { title: 'Найди золотой ключ', subtitle: 'Подойди к двери после того как заберёшь ключ', color: '#fbbf24' } },
-          { id: 'n_key_trig', type: 'onTriggerEnter', x: 40, y: 190, params: { triggerEntityId: 'key_gold', onlyPlayer: true } },
-          { id: 'n_key_once', type: 'gateOnce', x: 280, y: 190, params: {} },
-          { id: 'n_key_var', type: 'setVar', x: 500, y: 190, params: { name: 'keys', op: 'add', value: 1 } },
-          { id: 'n_key_fx', type: 'emitVfx', x: 730, y: 150, params: { preset: 'confetti', entityId: 'key_gold', x: 0, y: 0.4, z: 0, count: 32 } },
-          { id: 'n_key_sfx', type: 'playSound', x: 960, y: 150, params: { sound: 'pickup', freq: 780, entityId: 'key_gold' } },
-          { id: 'n_key_del', type: 'destroyObject', x: 1180, y: 150, params: { entityId: 'key_gold' } },
-          { id: 'n_door_trig', type: 'onTriggerEnter', x: 40, y: 360, params: { triggerEntityId: 'trig_door', onlyPlayer: true } },
-          { id: 'n_door_if', type: 'ifVar', x: 290, y: 360, params: { name: 'keys', cmp: '>=', value: 1 } },
-          { id: 'n_door_move', type: 'moveObject', x: 560, y: 320, params: { entityId: 'door_locked', x: 0, y: 3.1, z: 0, durationSec: 0.8, mode: 'offset' } },
-          { id: 'n_door_sfx', type: 'playSound', x: 820, y: 320, params: { sound: 'door', freq: 280, entityId: 'door_locked' } },
-          { id: 'n_door_lock', type: 'showBanner', x: 560, y: 460, params: { title: 'Дверь заперта!', subtitle: 'Сначала подбери золотой ключ слева', color: '#f87171' } },
-          { id: 'n_win_trig', type: 'onTriggerEnter', x: 40, y: 560, params: { triggerEntityId: 'exit_pad', onlyPlayer: true } },
-          { id: 'n_win_ban', type: 'showBanner', x: 310, y: 560, params: { title: 'ПОБЕДА!', subtitle: 'Ты выбрался из комнаты!', color: '#4ade80' } },
+          { id: 'n_start', type: 'onStart', x: 30, y: 30, params: {} },
+          { id: 'n_hud0', type: 'setHudCounter', x: 310, y: 30, params: { label: 'Ключи', varName: 'keys' } },
+          { id: 'n_hint', type: 'showBanner', x: 590, y: 30, params: { title: 'Найди золотой ключ', subtitle: 'Подойди к двери после того как заберёшь ключ', color: '#fbbf24' } },
+          { id: 'n_key_trig', type: 'onTriggerEnter', x: 30, y: 210, params: { triggerEntityId: 'key_gold', onlyPlayer: true } },
+          { id: 'n_key_once', type: 'gateOnce', x: 310, y: 210, params: {} },
+          { id: 'n_key_var', type: 'setVar', x: 590, y: 210, params: { name: 'keys', op: 'add', value: 1 } },
+          { id: 'n_key_fx', type: 'emitVfx', x: 870, y: 170, params: { preset: 'confetti', entityId: 'key_gold', x: 0, y: 0.4, z: 0, count: 32 } },
+          { id: 'n_key_sfx', type: 'playSound', x: 1150, y: 170, params: { sound: 'pickup', freq: 780, entityId: 'key_gold' } },
+          { id: 'n_key_del', type: 'destroyObject', x: 1430, y: 170, params: { entityId: 'key_gold' } },
+          { id: 'n_door_trig', type: 'onTriggerEnter', x: 30, y: 410, params: { triggerEntityId: 'trig_door', onlyPlayer: true } },
+          { id: 'n_door_if', type: 'ifVar', x: 310, y: 410, params: { name: 'keys', cmp: '>=', value: 1 } },
+          { id: 'n_door_move', type: 'moveObject', x: 590, y: 390, params: { entityId: 'door_locked', x: 0, y: 3.1, z: 0, durationSec: 0.8, mode: 'offset' } },
+          { id: 'n_door_sfx', type: 'playSound', x: 870, y: 390, params: { sound: 'door', freq: 280, entityId: 'door_locked' } },
+          { id: 'n_door_lock', type: 'showBanner', x: 590, y: 630, params: { title: 'Дверь заперта!', subtitle: 'Сначала подбери золотой ключ слева', color: '#f87171' } },
+          { id: 'n_win_trig', type: 'onTriggerEnter', x: 30, y: 630, params: { triggerEntityId: 'exit_pad', onlyPlayer: true } },
+          { id: 'n_win_ban', type: 'showBanner', x: 310, y: 630, params: { title: 'ПОБЕДА!', subtitle: 'Ты выбрался из комнаты!', color: '#4ade80' } },
         ],
         edges: [
           { id: 'e_s1', fromNode: 'n_start', fromPort: 'out', toNode: 'n_hud0', toPort: 'in' },

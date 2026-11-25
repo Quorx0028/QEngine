@@ -1028,6 +1028,8 @@ void main() {
       : ''
   }
 
+  ${!has('waterSurface') ? 'if (alpha <= 0.004) discard;' : ''}
+
   if (u_hdrOutput == 1) {
     ${has('pixelDither') ? 'color = srgbToLin(applyPixelDither(linToSrgb(acesToneMap(color)), gl_FragCoord.xy, u_ditherStrength));' : ''}
     fragColor = vec4(color, alpha);

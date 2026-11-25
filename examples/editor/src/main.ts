@@ -8,10 +8,12 @@ import {
   TransformGizmo,
   type EditorEntityDef,
   type EditorEntityKind,
+  type EntityId,
   type GizmoMode,
   type QuarkProjectDoc,
   type RoomSide,
   type StarterTemplateId,
+  type Vec3Tuple,
 } from 'quark-engine';
 import wasmUrl from 'quark-engine/wasm?url';
 import { NodeGraphEditor } from './nodeGraphEditor';
@@ -28,9 +30,16 @@ async function bootstrapEditor() {
 
   let doc: QuarkProjectDoc = loadInitialDoc();
   let mode: 'edit' | 'play' = 'edit';
+  let activeWorkspace: 'scene' | 'blueprints' | 'shaders' | 'world' = 'scene';
+  let showTriggersInEdit = true;
   let runner: ProjectRunner | null = null;
   let selectedDocId: string | null =
     doc.entities.find((e) => e.id === 'crate_decor')?.id ?? doc.entities[0]?.id ?? null;
+
+  // Smart depth-cycling state when clicking overlapping objects in 3D
+  let lastPickOrigin: Vec3Tuple = [0, 0, 0];
+  let lastPickDir: Vec3Tuple = [0, 0, -1];
+  let lastPickIndex = 0;
 
   const undoStack: string[] = [];
   const redoStack: string[] = [];
@@ -52,10 +61,30 @@ async function bootstrapEditor() {
   const inspectorEl = document.getElementById('inspector-body')!;
   const inspIdEl = document.getElementById('insp-id')!;
   const projNameEl = document.getElementById('inp-proj-name') as HTMLInputElement;
+  const wsOverlayEl = document.getElementById('ws-overlay')!;
   projNameEl.value = doc.name;
 
   const orbit = new OrbitControls({ target: [0, 1.5, 0], radius: 15, theta: 0.45, phi: 1.05 });
   orbit.attach(canvas);
+
+  const pickSmart3DEntity = (origin: Vec3Tuple, dir: Vec3Tuple): EntityId | null => {
+    if (!runner) return null;
+    const ordered = runner.pickEntitiesAlongRay(origin, dir, { includeTriggers: showTriggersInEdit });
+    if (ordered.length === 0) return null;
+
+    const sameRay =
+      Math.hypot(origin[0] - lastPickOrigin[0], origin[1] - lastPickOrigin[1], origin[2] - lastPickOrigin[2]) < 0.05 &&
+      Math.hypot(dir[0] - lastPickDir[0], dir[1] - lastPickDir[1], dir[2] - lastPickDir[2]) < 0.02;
+
+    if (sameRay && ordered.length > 1) {
+      lastPickIndex = (lastPickIndex + 1) % ordered.length;
+    } else {
+      lastPickIndex = 0;
+    }
+    lastPickOrigin = [...origin];
+    lastPickDir = [...dir];
+    return ordered[lastPickIndex];
+  };
 
   const gizmo = new TransformGizmo(engine.scene, engine.assets, orbit, {
     snapStep: 0.5,
@@ -66,10 +95,11 @@ async function bootstrapEditor() {
       const def = doc.entities.find((x) => x.id === did);
       return !def?.physics.editorLocked;
     },
+    customPick: pickSmart3DEntity,
     onSelect: (eid) => {
       const did = eid !== null ? (runner?.eidToDoc.get(eid) ?? null) : null;
       selectedDocId = did;
-      renderOutliner();
+      syncOutlinerSelection();
       renderInspector();
     },
     onChange: (eid, gMode) => {
@@ -77,7 +107,8 @@ async function bootstrapEditor() {
       const def = doc.entities.find((x) => x.id === did);
       if (!def) return;
       const xf = engine.scene.getTransform(eid);
-      def.position = [round2(xf.position[0]), round2(xf.position[1]), round2(xf.position[2])];
+      const yOffset = def.kind === 'room' && def.roomConfig?.floor !== false ? 0.09 : 0;
+      def.position = [round2(xf.position[0]), round2(xf.position[1] + yOffset), round2(xf.position[2])];
       if (gMode === 'scale' && (def.kind === 'box' || def.kind === 'trigger')) {
         def.size = [
           Math.max(0.2, round2(xf.scale[0])),
@@ -90,9 +121,14 @@ async function bootstrapEditor() {
       }
       renderInspector();
     },
-    onDragEnd: () => {
+    onDragEnd: (eid) => {
       pushUndoSnapshot();
       autosaveDoc();
+      const did = runner?.eidToDoc.get(eid);
+      const def = doc.entities.find((x) => x.id === did);
+      if (def && (def.kind === 'room' || def.kind === 'stairs' || def.kind === 'pool')) {
+        void remountEditScene();
+      }
     },
   });
   gizmo.setEnabled(true);
@@ -101,18 +137,38 @@ async function bootstrapEditor() {
   const countersMap = new Map<string, string | number | boolean>();
   let bannerTimer = 0;
 
+  const wsTabBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('.ws-tab'));
+  function setWorkspaceView(view: 'scene' | 'blueprints' | 'shaders' | 'world') {
+    activeWorkspace = view;
+    wsTabBtns.forEach((b) => b.classList.toggle('active', b.dataset.ws === view));
+    const showOverlay = view !== 'scene';
+    wsOverlayEl.classList.toggle('visible', showOverlay);
+    for (const key of ['blueprints', 'shaders', 'world'] as const) {
+      document.getElementById(`ws-${key}`)!.classList.toggle('active', view === key);
+    }
+    gizmo.setEnabled(mode === 'edit' && view === 'scene');
+    orbit.enabled = mode === 'edit' && view === 'scene';
+    if (view === 'blueprints') nodeEditor.render();
+    else if (view === 'shaders') shaderEditor.render();
+    else if (view === 'world') worldPanel.render();
+  }
+  wsTabBtns.forEach((b) => {
+    b.onclick = () => setWorkspaceView((b.dataset.ws as typeof activeWorkspace) ?? 'scene');
+  });
+
   const nodeEditor = new NodeGraphEditor(
-    document.getElementById('tab-blueprints')!,
+    document.getElementById('ws-blueprints')!,
     () => doc,
     (rebuild) => {
       pushUndoSnapshot();
       autosaveDoc();
       renderInspector();
       if (rebuild && mode === 'edit') void remountEditScene();
-    }
+    },
+    () => setWorkspaceView('scene')
   );
   const shaderEditor = new ShaderEditorPanel(
-    document.getElementById('tab-shaders')!,
+    document.getElementById('ws-shaders')!,
     () => doc,
     () => selectedDocId,
     (rebuild) => {
@@ -123,7 +179,7 @@ async function bootstrapEditor() {
     }
   );
   const worldPanel = new WorldSettingsPanel(
-    document.getElementById('tab-world')!,
+    document.getElementById('ws-world')!,
     () => doc,
     (rebuild) => {
       pushUndoSnapshot();
@@ -148,15 +204,18 @@ async function bootstrapEditor() {
         if (parsed && parsed.version === 1 && Array.isArray(parsed.entities)) return parsed;
       }
     } catch {
-      // fallback to starter
+      // fallback
     }
     return createStarterProject('escapeRoom');
   }
 
-  async function remountEditScene() {
+  let remountInFlight: Promise<void> | null = null;
+  let remountPending = false;
+
+  async function remountEditSceneNow() {
     gizmo.resetHandles();
     runner?.dispose();
-    runner = await ProjectRunner.mount(engine, doc, 'edit');
+    runner = await ProjectRunner.mount(engine, doc, 'edit', { showTriggersInEdit });
     if (selectedDocId) {
       const eid = runner.docToEid.get(selectedDocId) ?? null;
       gizmo.select(eid);
@@ -167,9 +226,26 @@ async function bootstrapEditor() {
     stEntsEl.textContent = `${engine.scene.getEntityCount()} obj`;
   }
 
+  function remountEditScene(): Promise<void> {
+    if (remountInFlight) {
+      remountPending = true;
+      return remountInFlight;
+    }
+    remountInFlight = (async () => {
+      do {
+        remountPending = false;
+        await remountEditSceneNow();
+      } while (remountPending);
+    })().finally(() => {
+      remountInFlight = null;
+    });
+    return remountInFlight;
+  }
+
   async function enterPlayMode() {
     if (mode === 'play') return;
     mode = 'play';
+    setWorkspaceView('scene');
     countersMap.clear();
     playCountersEl.textContent = '';
     playBannerEl.classList.remove('visible');
@@ -212,14 +288,23 @@ async function bootstrapEditor() {
 
     await remountEditScene();
     orbit.attach(canvas);
-    orbit.enabled = true;
+    orbit.enabled = activeWorkspace === 'scene';
     gizmo.attach(canvas);
-    gizmo.setEnabled(true);
+    gizmo.setEnabled(activeWorkspace === 'scene');
+  }
+
+  const outlinerItemEls = new Map<string, HTMLElement>();
+
+  function syncOutlinerSelection() {
+    for (const [did, el] of outlinerItemEls) {
+      el.classList.toggle('selected', did === selectedDocId);
+    }
   }
 
   function renderOutliner() {
     const q = searchEl.value.trim().toLowerCase();
     outlinerEl.innerHTML = '';
+    outlinerItemEls.clear();
     for (const ent of doc.entities) {
       if (q && !ent.name.toLowerCase().includes(q) && !ent.kind.toLowerCase().includes(q)) continue;
       const item = document.createElement('div');
@@ -247,10 +332,10 @@ async function bootstrapEditor() {
         selectedDocId = ent.id;
         const eid = runner?.docToEid.get(ent.id) ?? null;
         gizmo.select(eid);
-        renderOutliner();
-        renderInspector();
+        syncOutlinerSelection();
       };
       item.ondblclick = () => focusSelected();
+      outlinerItemEls.set(ent.id, item);
       outlinerEl.appendChild(item);
     }
   }
@@ -379,7 +464,19 @@ async function bootstrapEditor() {
       autosaveDoc();
       renderOutliner();
     };
-    chkPin.append(cbPin, document.createTextNode('Запретить сдвиг мышью'));
+    chkPin.append(cbPin, document.createTextNode('Закрепить от сдвига мышью'));
+
+    const chkHiddenPlay = document.createElement('label');
+    chkHiddenPlay.className = 'tb-chk';
+    const cbHiddenPlay = document.createElement('input');
+    cbHiddenPlay.type = 'checkbox';
+    cbHiddenPlay.checked = Boolean(ent.hiddenInPlay);
+    cbHiddenPlay.onchange = () => {
+      pushUndoSnapshot();
+      ent.hiddenInPlay = cbHiddenPlay.checked;
+      autosaveDoc();
+    };
+    chkHiddenPlay.append(cbHiddenPlay, document.createTextNode('Скрыть при запуске (Play)'));
 
     const presetRow = document.createElement('select');
     presetRow.setAttribute('aria-label', 'Материал физики');
@@ -426,11 +523,11 @@ async function bootstrapEditor() {
       renderInspector();
     };
 
-    cardPhys.append(modeGrid, chkPin, presetRow, weldRow);
+    cardPhys.append(modeGrid, chkPin, chkHiddenPlay, presetRow, weldRow);
 
     const cardMat = document.createElement('div');
     cardMat.className = 'card';
-    cardMat.innerHTML = `<div class="card-title">Материал и прозрачность</div>`;
+    cardMat.innerHTML = `<div class="card-title">Материал и видимость</div>`;
     const selMat = document.createElement('select');
     selMat.setAttribute('aria-label', 'Материал объекта');
     for (const m of doc.materials) {
@@ -453,17 +550,17 @@ async function bootstrapEditor() {
     alphaWrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;';
     const curAlpha = activeMatDef?.uniforms.baseColor[3] ?? 1;
     const alphaTxt = document.createElement('span');
-    alphaTxt.textContent = `Прозрачность ${Math.round((1 - curAlpha) * 100)}%`;
+    alphaTxt.textContent = `Видимость ${Math.round(curAlpha * 100)}%`;
     const alphaRng = document.createElement('input');
     alphaRng.type = 'range';
-    alphaRng.min = '0.05';
+    alphaRng.min = '0';
     alphaRng.max = '1';
     alphaRng.step = '0.05';
     alphaRng.value = String(curAlpha);
     alphaRng.oninput = () => {
       if (!activeMatDef) return;
       const nv = Number(alphaRng.value);
-      alphaTxt.textContent = `Прозрачность ${Math.round((1 - nv) * 100)}%`;
+      alphaTxt.textContent = `Видимость ${Math.round(nv * 100)}%`;
       activeMatDef.uniforms.baseColor[3] = nv;
       activeMatDef.transparent = nv < 0.99;
       const mid = runner?.docToMatId.get(activeMatDef.id);
@@ -477,20 +574,20 @@ async function bootstrapEditor() {
     alphaRng.onchange = () => {
       pushUndoSnapshot();
       autosaveDoc();
-      shaderEditor.render();
+      void remountEditScene();
     };
     alphaWrap.append(alphaTxt, alphaRng);
 
     const btnOpenShader = document.createElement('button');
     btnOpenShader.textContent = 'Настроить шейдер и текстуру';
     btnOpenShader.onclick = () => {
-      activateTab('shaders');
+      setWorkspaceView('shaders');
       shaderEditor.selectMaterial(ent.materialId);
     };
     cardMat.append(selMat, alphaWrap, btnOpenShader);
 
     if (ent.kind === 'room') {
-      const rc = (ent.roomConfig = ent.roomConfig ?? { doors: ['south'], roof: true, floor: true });
+      const rc = (ent.roomConfig = ent.roomConfig ?? { doors: ['south'], roof: false, floor: true });
       const cardRoom = document.createElement('div');
       cardRoom.className = 'card';
       cardRoom.innerHTML = `<div class="card-title">Комната</div>`;
@@ -564,7 +661,7 @@ async function bootstrapEditor() {
     const btnAddTrigger = document.createElement('button');
     btnAddTrigger.textContent = '+ Добавить событие в ноды';
     btnAddTrigger.onclick = () => {
-      activateTab('blueprints');
+      setWorkspaceView('blueprints');
       nodeEditor.addQuickTriggerRule(ent.id, ent.kind === 'trigger' || ent.physics.isTrigger ? 'onTriggerEnter' : 'onRaycastClick');
     };
     cardLogic.appendChild(btnAddTrigger);
@@ -620,6 +717,7 @@ async function bootstrapEditor() {
             : kind === 'pointLight' || kind === 'spotLight'
               ? 'mat_neon'
               : 'mat_wall',
+      hiddenInPlay: kind === 'trigger',
       physics: {
         mode: isDynamicCrate ? 'dynamic' : 'static',
         mass: isDynamicCrate ? 1.5 : 0,
@@ -678,6 +776,12 @@ async function bootstrapEditor() {
   const chkSnap = document.getElementById('chk-snap') as HTMLInputElement;
   chkSnap.onchange = () => gizmo.setSnap(chkSnap.checked ? 0.5 : 0, chkSnap.checked ? 15 : 0);
 
+  const chkShowTriggers = document.getElementById('chk-show-triggers') as HTMLInputElement;
+  chkShowTriggers.onchange = () => {
+    showTriggersInEdit = chkShowTriggers.checked;
+    if (mode === 'edit') void remountEditScene();
+  };
+
   const slGlass = document.getElementById('sl-glass') as HTMLInputElement;
   slGlass.oninput = () => {
     document.documentElement.style.setProperty('--glass-alpha', slGlass.value);
@@ -708,8 +812,7 @@ async function bootstrapEditor() {
   document.getElementById('btn-undo')!.onclick = () => void performUndoRedo('undo');
   document.getElementById('btn-redo')!.onclick = () => void performUndoRedo('redo');
 
-  document.getElementById('btn-focus')!.onclick = focusSelected;
-  document.getElementById('btn-dup')!.onclick = () => {
+  function duplicateSelectedEntity() {
     const ent = doc.entities.find((e) => e.id === selectedDocId);
     if (!ent) return;
     pushUndoSnapshot();
@@ -723,8 +826,9 @@ async function bootstrapEditor() {
     renderOutliner();
     renderInspector();
     void remountEditScene();
-  };
-  document.getElementById('btn-del')!.onclick = () => {
+  }
+
+  function deleteSelectedEntity() {
     if (!selectedDocId) return;
     pushUndoSnapshot();
     doc.entities = doc.entities.filter((e) => e.id !== selectedDocId);
@@ -734,7 +838,11 @@ async function bootstrapEditor() {
     renderOutliner();
     renderInspector();
     void remountEditScene();
-  };
+  }
+
+  document.getElementById('btn-focus')!.onclick = focusSelected;
+  document.getElementById('btn-dup')!.onclick = duplicateSelectedEntity;
+  document.getElementById('btn-del')!.onclick = deleteSelectedEntity;
   searchEl.oninput = renderOutliner;
 
   const inpGlb = document.getElementById('inp-glb') as HTMLInputElement;
@@ -809,41 +917,6 @@ async function bootstrapEditor() {
     }
   };
 
-  // Bottom drawer tabs + drag resizer
-  const drawerEl = document.getElementById('bottom-drawer')!;
-  const resizerEl = document.getElementById('drawer-resizer')!;
-  resizerEl.onpointerdown = (ev) => {
-    const startY = ev.clientY;
-    const startH = drawerEl.getBoundingClientRect().height;
-    const onMove = (mv: PointerEvent) => {
-      const nextH = Math.max(160, Math.min(540, Math.round(startH + (startY - mv.clientY))));
-      drawerEl.classList.remove('collapsed');
-      drawerEl.style.height = `${nextH}px`;
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      nodeEditor.render();
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-
-  const tabBtns = Array.from(document.querySelectorAll<HTMLButtonElement>('.tab-btn'));
-  const tabBodies = ['blueprints', 'shaders', 'world'] as const;
-  function activateTab(tab: (typeof tabBodies)[number]) {
-    drawerEl.classList.remove('collapsed');
-    tabBtns.forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-    for (const tb of tabBodies) {
-      document.getElementById(`tab-${tb}`)!.classList.toggle('active', tb === tab);
-    }
-    if (tab === 'blueprints') nodeEditor.render();
-  }
-  tabBtns.forEach((b) => {
-    b.onclick = () => activateTab((b.dataset.tab as (typeof tabBodies)[number]) || 'blueprints');
-  });
-  document.getElementById('btn-toggle-drawer')!.onclick = () => drawerEl.classList.toggle('collapsed');
-
   canvas.addEventListener('click', () => {
     if (mode === 'play') {
       if (!input.isPointerLocked()) input.requestPointerLock();
@@ -858,21 +931,57 @@ async function bootstrapEditor() {
       toggleZen();
       return;
     }
-    if (e.code === 'Escape' && mode === 'play') {
-      void exitPlayMode();
+    if (e.code === 'Escape') {
+      if (mode === 'play') {
+        void exitPlayMode();
+      } else if (activeWorkspace === 'blueprints' && nodeEditor.clearPendingOrSelection()) {
+        // cleared pending wire or node selection
+      } else if (activeWorkspace !== 'scene') {
+        setWorkspaceView('scene');
+      } else if (selectedDocId) {
+        selectedDocId = null;
+        gizmo.select(null);
+      }
       return;
     }
-    if (mode === 'edit') {
+    if (mode !== 'edit') return;
+
+    if ((e.metaKey || e.ctrlKey) && e.code === 'KeyS') {
+      e.preventDefault();
+      autosaveDoc();
+      stModeEl.textContent = 'SAVED';
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ') {
+      e.preventDefault();
+      void performUndoRedo(e.shiftKey ? 'redo' : 'undo');
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.code === 'KeyY') {
+      e.preventDefault();
+      void performUndoRedo('redo');
+      return;
+    }
+
+    if (activeWorkspace === 'blueprints') {
+      if (e.code === 'Delete' || e.code === 'Backspace') {
+        e.preventDefault();
+        nodeEditor.deleteSelected();
+      }
+      return;
+    }
+
+    if (activeWorkspace === 'scene') {
       if (e.code === 'KeyW') setTool('translate');
       else if (e.code === 'KeyE') setTool('rotate');
       else if (e.code === 'KeyR') setTool('scale');
       else if (e.code === 'KeyF') focusSelected();
-      else if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ') {
+      else if ((e.metaKey || e.ctrlKey) && e.code === 'KeyD') {
         e.preventDefault();
-        void performUndoRedo('undo');
-      } else if ((e.metaKey || e.ctrlKey) && e.code === 'KeyY') {
+        duplicateSelectedEntity();
+      } else if (e.code === 'Delete' || e.code === 'Backspace') {
         e.preventDefault();
-        void performUndoRedo('redo');
+        deleteSelectedEntity();
       }
     }
   });
@@ -888,7 +997,7 @@ async function bootstrapEditor() {
   engine.onFixedUpdate((fdt) => runner?.fixedUpdate(fdt));
   let statAcc = 0;
   engine.onUpdate((dt) => {
-    if (mode === 'edit') {
+    if (mode === 'edit' && activeWorkspace === 'scene') {
       orbit.update(dt, engine.scene.camera);
       gizmo.update();
     }

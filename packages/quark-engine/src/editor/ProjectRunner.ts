@@ -9,7 +9,18 @@ import { generateProceduralTexturePixels, loadImageDataUrlTexture } from './Proc
 import { BlueprintRuntime } from './BlueprintRuntime';
 import type { EditorEntityDef, EditorMaterialDef, QuarkProjectDoc } from './ProjectSchema';
 
+interface PickableEntry {
+  eid: EntityId;
+  docId: string;
+  shape: 'box' | 'sphere';
+  halfExtents?: Vec3Tuple;
+  radius?: number;
+  hiddenInEdit: boolean;
+  isFloorLike: boolean;
+}
+
 export interface ProjectRunnerCallbacks {
+  showTriggersInEdit?: boolean;
   onShowBanner?: (title: string, subtitle: string, color: string) => void;
   onUpdateHudCounter?: (label: string, value: string | number | boolean) => void;
   onNodeExecuted?: (nodeId: string) => void;
@@ -27,6 +38,8 @@ export class ProjectRunner {
   private readonly triggerPairs = new Map<EntityId, string>();
   private readonly lightRefs = new Map<string, { kind: 'point' | 'spot'; index: number }>();
   private readonly runtimeEuler = new Map<string, Vec3Tuple>();
+  private readonly pickables: PickableEntry[] = [];
+  private showTriggersInEdit = true;
   private playerEid: EntityId | null = null;
   private playerYaw = 0;
   private playerPitch = -0.08;
@@ -52,6 +65,7 @@ export class ProjectRunner {
     callbacks: ProjectRunnerCallbacks = {}
   ): Promise<ProjectRunner> {
     const runner = new ProjectRunner(engine, doc, mode);
+    runner.showTriggersInEdit = callbacks.showTriggersInEdit ?? true;
     await runner.build(callbacks);
     return runner;
   }
@@ -62,6 +76,48 @@ export class ProjectRunner {
 
   getSelectableIds(): Set<EntityId> {
     return new Set(this.eidToDoc.keys());
+  }
+
+  /** Analytical + transform-accurate ray picking in Edit mode (handles triggers, lights, rooms, and foreground-before-floor sorting). */
+  pickEntitiesAlongRay(
+    origin: Vec3Tuple,
+    dir: Vec3Tuple,
+    opts: { includeTriggers?: boolean } = {}
+  ): EntityId[] {
+    const { scene } = this.engine;
+    const includeTriggers = opts.includeTriggers ?? this.showTriggersInEdit;
+    const bestByDoc = new Map<string, { eid: EntityId; t: number; isFloorLike: boolean }>();
+
+    for (const p of this.pickables) {
+      if (p.hiddenInEdit && !includeTriggers) continue;
+      if (!scene.isAlive(p.eid)) continue;
+      const xf = scene.getTransform(p.eid);
+      let t: number | null = null;
+      if (p.shape === 'sphere') {
+        const r = p.radius ?? Math.max(0.24, Math.max(xf.scale[0], xf.scale[1], xf.scale[2]) * 0.5);
+        t = intersectRaySphere(origin, dir, xf.position, r);
+      } else {
+        const hx: Vec3Tuple = p.halfExtents ?? [
+          Math.max(0.05, xf.scale[0] * 0.5),
+          Math.max(0.05, xf.scale[1] * 0.5),
+          Math.max(0.05, xf.scale[2] * 0.5),
+        ];
+        t = intersectRayOBB(origin, dir, xf.position, xf.rotation, hx);
+      }
+      if (t === null || t > 140) continue;
+
+      const canonicalEid = this.docToEid.get(p.docId) ?? p.eid;
+      const prev = bestByDoc.get(p.docId);
+      if (!prev || t < prev.t) {
+        bestByDoc.set(p.docId, { eid: canonicalEid, t, isFloorLike: p.isFloorLike });
+      }
+    }
+
+    const hits = Array.from(bestByDoc.values()).sort((a, b) => {
+      if (a.isFloorLike !== b.isFloorLike) return a.isFloorLike ? 1 : -1;
+      return a.t - b.t;
+    });
+    return hits.map((h) => h.eid);
   }
 
   private async build(callbacks: ProjectRunnerCallbacks): Promise<void> {
@@ -240,12 +296,25 @@ export class ProjectRunner {
         windows: rc.windows ?? [],
         roof: rc.roof ?? true,
         floor: rc.floor ?? true,
+        glassCollider: this.mode === 'play',
         wallMaterial: matId,
         light: rc.lightColor ? { color: rc.lightColor, godRay: Boolean(rc.godRay) } : false,
       });
       if (room.entities.length > 0) {
         this.docToEid.set(def.id, room.entities[0]);
-        for (const re of room.entities) this.eidToDoc.set(re, def.id);
+        for (const re of room.entities) {
+          this.eidToDoc.set(re, def.id);
+          scene.setCollisionFilter(re, 1, 0xffffffff);
+          if (re !== room.beamEntity) {
+            this.pickables.push({
+              eid: re,
+              docId: def.id,
+              shape: 'box',
+              hiddenInEdit: false,
+              isFloorLike: false,
+            });
+          }
+        }
       }
       return;
     }
@@ -260,7 +329,10 @@ export class ProjectRunner {
       });
       if (entities.length > 0) {
         this.docToEid.set(def.id, entities[0]);
-        for (const se of entities) this.eidToDoc.set(se, def.id);
+        for (const se of entities) {
+          this.eidToDoc.set(se, def.id);
+          this.pickables.push({ eid: se, docId: def.id, shape: 'box', hiddenInEdit: false, isFloorLike: false });
+        }
       }
       return;
     }
@@ -273,7 +345,10 @@ export class ProjectRunner {
         waterPreset: 'realistic',
       });
       this.docToEid.set(def.id, pool.waterSurface);
-      for (const pe of pool.entities) this.eidToDoc.set(pe, def.id);
+      for (const pe of pool.entities) {
+        this.eidToDoc.set(pe, def.id);
+        this.pickables.push({ eid: pe, docId: def.id, shape: 'box', hiddenInEdit: false, isFloorLike: false });
+      }
       return;
     }
 
@@ -286,6 +361,7 @@ export class ProjectRunner {
       });
       this.docToEid.set(def.id, e);
       this.eidToDoc.set(e, def.id);
+      this.pickables.push({ eid: e, docId: def.id, shape: 'box', hiddenInEdit: false, isFloorLike: false });
       return;
     }
 
@@ -293,6 +369,7 @@ export class ProjectRunner {
       const br = this.world.breakable({ pos: def.position, size: def.size, material: matId });
       this.docToEid.set(def.id, br.entity);
       this.eidToDoc.set(br.entity, def.id);
+      this.pickables.push({ eid: br.entity, docId: def.id, shape: 'box', hiddenInEdit: false, isFloorLike: false });
       return;
     }
 
@@ -337,6 +414,7 @@ export class ProjectRunner {
       }
       this.docToEid.set(def.id, helper);
       this.eidToDoc.set(helper, def.id);
+      this.pickables.push({ eid: helper, docId: def.id, shape: 'sphere', radius: 0.48, hiddenInEdit: false, isFloorLike: false });
       return;
     }
 
@@ -358,11 +436,20 @@ export class ProjectRunner {
       scene.setMesh3D(e, { meshId: loaded.meshId, materialId: loaded.materialIds[0] ?? matId, boundsRadius: loaded.boundsRadius });
       this.docToEid.set(def.id, e);
       this.eidToDoc.set(e, def.id);
+      this.pickables.push({ eid: e, docId: def.id, shape: 'box', halfExtents: [hx, hy, hz], hiddenInEdit: false, isFloorLike: false });
       return;
     }
 
     // Standard primitives: box, sphere, cylinder, trigger
     const e = scene.createEntity();
+    const matDef = this.doc.materials.find((m) => m.id === def.materialId);
+    const matAlpha = matDef?.uniforms.baseColor[3] ?? 1;
+    const isTrig = def.kind === 'trigger' || Boolean(def.physics.isTrigger);
+    const isTransparentMat = isTrig || Boolean(matDef?.transparent) || matAlpha < 0.99;
+    const hideMesh =
+      (this.mode === 'play' && Boolean(def.hiddenInPlay)) ||
+      (this.mode === 'edit' && !this.showTriggersInEdit && isTrig);
+
     const effScale: Vec3Tuple = [
       def.size[0] * def.scale[0],
       def.size[1] * def.scale[1],
@@ -372,33 +459,38 @@ export class ProjectRunner {
       const r = (def.radius ?? 0.5) * Math.max(def.scale[0], def.scale[1], def.scale[2]);
       scene.setTransform(e, { position: def.position, rotation: quat, scale: [r * 2, r * 2, r * 2], immediate: true });
       scene.setCollider3D(e, { kind: 'sphere', radius: r });
-      if (assets.hasBackend) scene.setMesh3D(e, { meshId: sphereMeshId, materialId: matId, boundsRadius: r * 1.15 });
+      if (assets.hasBackend && !hideMesh) {
+        scene.setMesh3D(e, { meshId: sphereMeshId, materialId: matId, transparent: isTransparentMat, boundsRadius: r * 1.15 });
+      }
     } else if (def.kind === 'cylinder') {
       const r = (def.radius ?? 0.5) * Math.max(def.scale[0], def.scale[2]);
       const h = (def.height ?? def.size[1]) * def.scale[1];
       scene.setTransform(e, { position: def.position, rotation: quat, scale: [r * 2, h, r * 2], immediate: true });
       scene.setCollider3D(e, { kind: 'cylinder', radius: r, halfHeight: h * 0.5 });
-      if (assets.hasBackend) scene.setMesh3D(e, { meshId: cylMeshId, materialId: matId, boundsRadius: Math.hypot(r, h * 0.5) });
+      if (assets.hasBackend && !hideMesh) {
+        scene.setMesh3D(e, { meshId: cylMeshId, materialId: matId, transparent: isTransparentMat, boundsRadius: Math.hypot(r, h * 0.5) });
+      }
     } else {
       scene.setTransform(e, { position: def.position, rotation: quat, scale: effScale, immediate: true });
-      if (def.physics.mode !== 'none' || def.kind === 'trigger' || this.mode === 'edit') {
+      if (def.physics.mode !== 'none' || isTrig || this.mode === 'edit') {
         scene.setCollider3D(e, { kind: 'aabb', halfExtents: [effScale[0] * 0.5, effScale[1] * 0.5, effScale[2] * 0.5] });
       }
-      if (assets.hasBackend) {
-        const isTrig = def.kind === 'trigger' || Boolean(def.physics.isTrigger);
+      if (assets.hasBackend && !hideMesh) {
         scene.setMesh3D(e, {
           meshId: boxMeshId,
           materialId: matId,
-          transparent: isTrig,
+          transparent: isTransparentMat,
           boundsRadius: Math.hypot(effScale[0] * 0.5, effScale[1] * 0.5, effScale[2] * 0.5) + 0.1,
         });
       }
     }
 
-    if (def.kind === 'trigger' || def.physics.isTrigger) {
+    if (isTrig) {
       scene.setTrigger(e, true);
+      scene.setCollisionFilter(e, 2, 0xffffffff);
       this.triggerPairs.set(e, def.id);
     } else if (def.physics.mode !== 'none') {
+      scene.setCollisionFilter(e, 1, 0xffffffff);
       scene.setRigidBody(e, {
         dynamic: isDynamic,
         mass: isDynamic ? Math.max(0.1, def.physics.mass) : 0,
@@ -406,10 +498,19 @@ export class ProjectRunner {
         restitution: def.physics.restitution,
         gravityScale: def.physics.gravityScale ?? 1,
       });
+    } else {
+      scene.setCollisionFilter(e, 1, 0xffffffff);
     }
 
     this.docToEid.set(def.id, e);
     this.eidToDoc.set(e, def.id);
+    this.pickables.push({
+      eid: e,
+      docId: def.id,
+      shape: def.kind === 'sphere' ? 'sphere' : 'box',
+      hiddenInEdit: isTrig && def.kind === 'trigger',
+      isFloorLike: def.id === 'floor_main' || def.id === 'floor_start',
+    });
   }
 
   /** Updates live transform & physics for a single entity in Edit mode without rebuilding the whole scene. */
@@ -538,4 +639,60 @@ export class ProjectRunner {
     this.engine.assets.unloadTag('project');
     this.engine.scene.clear();
   }
+}
+
+function intersectRaySphere(origin: Vec3Tuple, dir: Vec3Tuple, center: Vec3Tuple, radius: number): number | null {
+  const ocx = origin[0] - center[0];
+  const ocy = origin[1] - center[1];
+  const ocz = origin[2] - center[2];
+  const b = ocx * dir[0] + ocy * dir[1] + ocz * dir[2];
+  const c = ocx * ocx + ocy * ocy + ocz * ocz - radius * radius;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const s = Math.sqrt(disc);
+  const t0 = -b - s;
+  if (t0 >= 0) return t0;
+  const t1 = -b + s;
+  return t1 >= 0 ? t1 : null;
+}
+
+function rotateByConjugateQuat(v: Vec3Tuple, q: readonly [number, number, number, number]): Vec3Tuple {
+  const qx = -q[0], qy = -q[1], qz = -q[2], qw = q[3];
+  const tx = 2 * (qy * v[2] - qz * v[1]);
+  const ty = 2 * (qz * v[0] - qx * v[2]);
+  const tz = 2 * (qx * v[1] - qy * v[0]);
+  return [
+    v[0] + qw * tx + (qy * tz - qz * ty),
+    v[1] + qw * ty + (qz * tx - qx * tz),
+    v[2] + qw * tz + (qx * ty - qy * tx),
+  ];
+}
+
+function intersectRayOBB(
+  origin: Vec3Tuple,
+  dir: Vec3Tuple,
+  center: Vec3Tuple,
+  rot: readonly [number, number, number, number],
+  half: Vec3Tuple
+): number | null {
+  const lo = rotateByConjugateQuat([origin[0] - center[0], origin[1] - center[1], origin[2] - center[2]], rot);
+  const ld = rotateByConjugateQuat(dir, rot);
+  let tmin = -Infinity;
+  let tmax = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const h = half[i];
+    const d = ld[i];
+    const o = lo[i];
+    if (Math.abs(d) < 1e-6) {
+      if (o < -h || o > h) return null;
+    } else {
+      let t1 = (-h - o) / d;
+      let t2 = (h - o) / d;
+      if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
+      if (tmin > tmax || tmax < 0) return null;
+    }
+  }
+  return Math.max(0, tmin);
 }
