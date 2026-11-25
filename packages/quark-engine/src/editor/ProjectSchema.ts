@@ -104,6 +104,7 @@ export interface EditorWeldDef {
 export type BlueprintNodeType =
   | 'onStart'
   | 'onTick'
+  | 'timerLoop'
   | 'onKeyPress'
   | 'onTriggerEnter'
   | 'onTriggerExit'
@@ -111,15 +112,20 @@ export type BlueprintNodeType =
   | 'onRaycastClick'
   | 'setVar'
   | 'ifVar'
+  | 'sequence'
+  | 'flipFlop'
+  | 'randomBranch'
   | 'gateOnce'
   | 'delay'
   | 'moveObject'
   | 'rotateObject'
   | 'applyImpulse'
   | 'setStaticLocked'
+  | 'setMaterialStyle'
   | 'spawnProp'
   | 'destroyObject'
   | 'toggleLight'
+  | 'cameraShake'
   | 'emitVfx'
   | 'playSound'
   | 'teleportPlayer'
@@ -217,12 +223,12 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
   floorMat.blocks = ['pbrLighting', 'triplanarGrid', 'distanceFog'];
   const baseMats: EditorMaterialDef[] = [
     floorMat,
-    makeMaterialFromPreset('mat_wall', 'Стены комнаты (Кирпич)', 'ultraRealism', { baseColor: [0.76, 0.78, 0.84, 1], roughness: 0.85 }, 'brick'),
-    makeMaterialFromPreset('mat_wood', 'Дерево (Ящики)', 'ultraRealism', { baseColor: [0.85, 0.68, 0.48, 1], roughness: 0.68 }, 'wood'),
-    makeMaterialFromPreset('mat_neon', 'Неон (Энергия)', 'cyberNeon', { baseColor: [0.1, 0.88, 1.0, 1], glowColor: [0.0, 0.95, 1.0], roughness: 0.2 }),
-    makeMaterialFromPreset('mat_gold', 'Золото (Ключ/Монета)', 'pbr', { baseColor: [1.0, 0.82, 0.2, 1], glowColor: [0.95, 0.65, 0.05], metallic: 0.9, roughness: 0.2 }),
-    makeMaterialFromPreset('mat_trigger', 'Зона триггера', 'hologram', { baseColor: [0.2, 0.95, 0.55, 0.35], glowColor: [0.2, 0.95, 0.55] }),
-    makeMaterialFromPreset('mat_door', 'Дверь (Металл)', 'pbr', { baseColor: [0.55, 0.62, 0.72, 1], metallic: 0.75, roughness: 0.35 }, 'metal'),
+    makeMaterialFromPreset('mat_wall', 'Стены (Кирпич)', 'ultraRealism', { baseColor: [0.76, 0.78, 0.84, 1], roughness: 0.85 }, 'brick'),
+    makeMaterialFromPreset('mat_wood', 'Дерево', 'ultraRealism', { baseColor: [0.85, 0.68, 0.48, 1], roughness: 0.68 }, 'wood'),
+    makeMaterialFromPreset('mat_neon', 'Неон', 'cyberNeon', { baseColor: [0.1, 0.88, 1.0, 1], glowColor: [0.0, 0.95, 1.0], roughness: 0.2 }),
+    makeMaterialFromPreset('mat_gold', 'Золото', 'pbr', { baseColor: [1.0, 0.82, 0.2, 1], glowColor: [0.95, 0.65, 0.05], metallic: 0.9, roughness: 0.2 }),
+    makeMaterialFromPreset('mat_trigger', 'Триггер', 'hologram', { baseColor: [0.2, 0.95, 0.55, 0.35], glowColor: [0.2, 0.95, 0.55] }),
+    makeMaterialFromPreset('mat_door', 'Металл двери', 'pbr', { baseColor: [0.55, 0.62, 0.72, 1], metallic: 0.75, roughness: 0.35 }, 'metal'),
   ];
 
   const baseEnv: EditorEnvironmentDef = {
@@ -318,7 +324,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
         },
         {
           id: 'pad_jump',
-          name: 'Батут (Триггер)',
+          name: 'Батут',
           kind: 'trigger',
           position: [0, 0.35, 2],
           rotationDeg: [0, 0, 0],
@@ -340,7 +346,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
         },
         {
           id: 'trig_win',
-          name: 'Финиш (Портал)',
+          name: 'Финишный портал',
           kind: 'trigger',
           position: [0, 5.5, -9],
           rotationDeg: [0, 0, 0],
@@ -407,7 +413,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
       },
       {
         id: 'room_main',
-        name: 'Закрытая комната (Статика)',
+        name: 'Главная комната',
         kind: 'room',
         position: [0, 0, 0],
         rotationDeg: [0, 0, 0],
@@ -419,7 +425,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
       },
       {
         id: 'door_locked',
-        name: 'Бронедверь (Двигается нодой)',
+        name: 'Бронедверь',
         kind: 'box',
         position: [0, 1.35, -5.0],
         rotationDeg: [0, 0, 0],
@@ -453,7 +459,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
       },
       {
         id: 'crate_decor',
-        name: 'Ящик в углу (Физика)',
+        name: 'Ящик в углу',
         kind: 'box',
         position: [3.2, 0.65, -2.6],
         rotationDeg: [0, 22, 0],
@@ -464,7 +470,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
       },
       {
         id: 'exit_pad',
-        name: 'Зона выхода (Снаружи)',
+        name: 'Зона выхода',
         kind: 'trigger',
         position: [0, 0.9, -9.0],
         rotationDeg: [0, 0, 0],
@@ -478,7 +484,7 @@ export function createStarterProject(template: StarterTemplateId = 'escapeRoom')
     blueprints: [
       {
         id: 'bp_escape',
-        name: 'Ключ и Дверь (Blueprint)',
+        name: 'Ключ и Дверь',
         enabled: true,
         nodes: [
           { id: 'n_start', type: 'onStart', x: 40, y: 40, params: {} },

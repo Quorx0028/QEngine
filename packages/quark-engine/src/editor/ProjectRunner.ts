@@ -135,6 +135,10 @@ export class ProjectRunner {
         audio,
         getPlayerEntity: () => this.playerEid,
         resolveEntityId: (docId) => this.docToEid.get(docId) ?? null,
+        resolveEntityMaterialId: (docId) => {
+          const def = this.doc.entities.find((e) => e.id === docId);
+          return def ? (this.docToMatId.get(def.materialId) ?? null) : null;
+        },
         resolveLightIndex: (docId) => this.lightRefs.get(docId) ?? null,
         getEntityEulerDeg: (docId) => this.runtimeEuler.get(docId) ?? [0, 0, 0],
         setEntityEulerDeg: (docId, euler) => this.runtimeEuler.set(docId, [...euler]),

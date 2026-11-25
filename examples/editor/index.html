@@ -3,119 +3,140 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>QuarkStudio — Визуальный игровой 3D редактор</title>
+    <title>QuarkStudio Editor</title>
   </head>
   <body>
     <div id="app" class="studio-shell">
       <header class="topbar">
         <div class="tb-group">
-          <span class="brand">Quark<b>Studio</b></span>
-          <input id="inp-proj-name" class="proj-name" value="Побег из комнаты" title="Название игры" />
-          <select id="sel-template" title="Загрузить стартовый шаблон">
-            <option value="escapeRoom">Шаблон: Побег из комнаты</option>
-            <option value="parkour">Шаблон: Неоновый Паркур</option>
-            <option value="empty">Шаблон: Пустой мир</option>
+          <span class="brand">Quark<span>Studio</span></span>
+          <input id="inp-proj-name" class="proj-name" value="Побег из комнаты" aria-label="Название проекта" />
+          <select id="sel-template" aria-label="Шаблон сцены">
+            <option value="escapeRoom">Побег из комнаты</option>
+            <option value="parkour">Неоновый паркур</option>
+            <option value="empty">Пустой мир</option>
           </select>
         </div>
 
         <div class="tb-group">
-          <button id="btn-undo" title="Отменить (Ctrl+Z)">↶ Undo</button>
-          <button id="btn-redo" title="Повторить (Ctrl+Y)">↷ Redo</button>
+          <button id="btn-undo" class="icon-btn" title="Отменить (Ctrl+Z)" aria-label="Отменить">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
+          </button>
+          <button id="btn-redo" class="icon-btn" title="Повторить (Ctrl+Y)" aria-label="Повторить">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5A5.5 5.5 0 0 0 4 14.5 5.5 5.5 0 0 0 9.5 20H13"/></svg>
+          </button>
         </div>
 
         <div class="tb-group">
-          <button id="btn-tool-translate" class="active" title="Перемещение (W)">Move</button>
-          <button id="btn-tool-rotate" title="Вращение (E)">Rotate</button>
-          <button id="btn-tool-scale" title="Масштаб (R)">Scale</button>
-          <label class="tb-chk" title="Привязка к сетке 0.5м и углам 15°">
+          <div class="seg-group">
+            <button id="btn-tool-translate" class="active" title="Перемещение (W)">Move</button>
+            <button id="btn-tool-rotate" title="Вращение (E)">Rotate</button>
+            <button id="btn-tool-scale" title="Масштаб (R)">Scale</button>
+          </div>
+          <label class="tb-chk">
             <input type="checkbox" id="chk-snap" checked /> Snap 0.5м
           </label>
         </div>
 
         <div class="tb-group">
-          <select id="sel-add-kind">
-            <option value="">+ Добавить в мир...</option>
-            <option value="box">Куб / Стена (Статика)</option>
-            <option value="crate">Ящик (Физика)</option>
+          <select id="sel-add-kind" aria-label="Добавить объект">
+            <option value="">+ Добавить объект</option>
+            <option value="box">Куб или стена</option>
+            <option value="crate">Ящик с физикой</option>
             <option value="room">Комната с дверью</option>
             <option value="stairs">Лестница</option>
             <option value="ramp">Рампа</option>
-            <option value="sphere">Сфера (Физика)</option>
-            <option value="cylinder">Колонна / Цилиндр</option>
-            <option value="pool">Бассейн с 3D водой</option>
-            <option value="trigger">Зона-Триггер (События)</option>
-            <option value="breakable">Ломаемое стекло</option>
+            <option value="sphere">Сфера с физикой</option>
+            <option value="cylinder">Цилиндр</option>
+            <option value="pool">Бассейн</option>
+            <option value="trigger">Зона триггера</option>
+            <option value="breakable">Стекло</option>
             <option value="pointLight">Точечный свет</option>
-            <option value="spotLight">Прожектор (Тени)</option>
+            <option value="spotLight">Прожектор</option>
           </select>
-          <label class="btn-like" title="Импорт 3D модели .glb">
-            + .GLB <input type="file" id="inp-glb" accept=".glb" hidden />
+          <label class="btn-like" title="Загрузить .glb модель">
+            + GLB <input type="file" id="inp-glb" accept=".glb" hidden />
           </label>
         </div>
 
         <div class="tb-group tb-right">
-          <button id="btn-play" class="btn-play">▶ PLAY</button>
-          <button id="btn-save" title="Сохранить проект в браузере">💾</button>
-          <button id="btn-export" title="Скачать файл игры .quark.json">⬇ JSON</button>
-          <label class="btn-like" title="Открыть файл .quark.json">
-            📂 <input type="file" id="inp-import" accept=".json,.quark.json" hidden />
+          <label class="tb-chk" title="Прозрачность панелей редактора">
+            <span>Стекло</span>
+            <input id="sl-glass" type="range" min="0.45" max="0.96" step="0.05" value="0.78" class="compact-range" />
+          </label>
+          <button id="btn-zen" title="Скрыть панели (Tab)">Обзор</button>
+          <button id="btn-play" class="btn-play">Play</button>
+          <button id="btn-save" class="icon-btn" title="Сохранить проект в браузере" aria-label="Сохранить">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          </button>
+          <button id="btn-export" class="icon-btn" title="Скачать файл .quark.json" aria-label="Экспорт JSON">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+          <label class="btn-like icon-btn" title="Открыть .quark.json" aria-label="Импорт JSON">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            <input type="file" id="inp-import" accept=".json,.quark.json" hidden />
           </label>
         </div>
       </header>
 
-      <main class="workspace">
-        <aside class="dock dock-left">
+      <main class="stage-root">
+        <canvas id="viewport"></canvas>
+
+        <div class="vp-telemetry" id="vp-stats">
+          <span class="stat-pill" id="st-mode">EDIT</span>
+          <span class="stat-pill" id="st-fps">0 fps</span>
+          <span class="stat-pill" id="st-draws">0 draws</span>
+          <span class="stat-pill" id="st-ents">0 obj</span>
+        </div>
+
+        <div class="play-hud" id="play-hud">
+          <div class="crosshair" id="play-crosshair"></div>
+          <div class="play-top-bar">
+            <span id="play-counters"></span>
+            <button id="btn-stop-play" class="btn-stop">Stop (ESC)</button>
+          </div>
+          <div class="play-banner" id="play-banner"></div>
+        </div>
+
+        <aside class="dock dock-left" id="dock-left">
           <div class="dock-head">
-            <span>Сцена (Объекты)</span>
-            <input id="inp-search" class="search" placeholder="Поиск..." />
+            <span>Сцена</span>
+            <input id="inp-search" class="search" placeholder="Фильтр" aria-label="Фильтр объектов" />
           </div>
           <div id="outliner-list" class="outliner-list"></div>
           <div class="dock-foot">
-            <button id="btn-focus" title="Приблизить камеру (F)">🎯 Фокус (F)</button>
-            <button id="btn-dup" title="Дублировать (Ctrl+D)">⧉ Копия</button>
-            <button id="btn-del" class="btn-danger" title="Удалить (Del)">🗑</button>
+            <button id="btn-focus" title="Приблизить камеру (F)">Фокус</button>
+            <button id="btn-dup" title="Дублировать (Ctrl+D)">Копия</button>
+            <button id="btn-del" class="btn-danger" title="Удалить (Del)" aria-label="Удалить объект">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
           </div>
         </aside>
 
-        <section class="center-col">
-          <div class="viewport-wrap" id="viewport-wrap">
-            <canvas id="viewport"></canvas>
-            <div class="vp-badge" id="vp-stats">QuarkEngine · Loading...</div>
-            <div class="vp-hint" id="vp-hint">Edit Mode: ЛКМ выбор/Gizmo · ПКМ/Drag орбита · Колесо зум · F фокус</div>
-            <div class="play-hud" id="play-hud">
-              <div class="crosshair" id="play-crosshair"></div>
-              <div class="play-top-bar">
-                <span id="play-counters"></span>
-                <button id="btn-stop-play" class="btn-stop">■ STOP (ESC)</button>
-              </div>
-              <div class="play-banner" id="play-banner"></div>
-            </div>
-          </div>
-
-          <div class="bottom-drawer" id="bottom-drawer">
-            <div class="drawer-tabs">
-              <div class="tabs-left">
-                <button class="tab-btn active" data-tab="blueprints">📐 Ноды логики (Blueprints)</button>
-                <button class="tab-btn" data-tab="shaders">🎨 Текстуры и Шейдеры</button>
-                <button class="tab-btn" data-tab="world">🌍 Мир, Свет и Качество</button>
-              </div>
-              <button id="btn-toggle-drawer" title="Свернуть/Развернуть панель">▾</button>
-            </div>
-            <div id="tab-blueprints" class="drawer-body active"></div>
-            <div id="tab-shaders" class="drawer-body"></div>
-            <div id="tab-world" class="drawer-body"></div>
-          </div>
-        </section>
-
-        <aside class="dock dock-right">
+        <aside class="dock dock-right" id="dock-right">
           <div class="dock-head">
             <span>Инспектор</span>
-            <span id="insp-id" class="muted">Не выбрано</span>
+            <span id="insp-id" class="muted">Пусто</span>
           </div>
           <div id="inspector-body" class="inspector-body">
-            <div class="empty-msg">Выбери объект в сцене или кликни по нему во вьюпорте</div>
+            <div class="empty-msg">Выберите объект в сцене</div>
           </div>
         </aside>
+
+        <section class="bottom-drawer" id="bottom-drawer">
+          <div class="drawer-resizer" id="drawer-resizer" title="Потяните для изменения высоты"></div>
+          <div class="drawer-tabs">
+            <div class="tabs-left">
+              <button class="tab-btn active" data-tab="blueprints">Ноды логики</button>
+              <button class="tab-btn" data-tab="shaders">Текстуры и шейдеры</button>
+              <button class="tab-btn" data-tab="world">Мир и качество</button>
+            </div>
+            <button id="btn-toggle-drawer" title="Свернуть или развернуть панель" aria-label="Свернуть панель">▾</button>
+          </div>
+          <div id="tab-blueprints" class="drawer-body active"></div>
+          <div id="tab-shaders" class="drawer-body"></div>
+          <div id="tab-world" class="drawer-body"></div>
+        </section>
       </main>
     </div>
     <script type="module" src="/src/main.ts"></script>

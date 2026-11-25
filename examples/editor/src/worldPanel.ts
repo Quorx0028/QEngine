@@ -7,7 +7,7 @@ import type {
 
 const MOODS = {
   daylight: {
-    label: 'День (Daylight)',
+    label: 'День',
     skyTop: [0.12, 0.34, 0.68] as [number, number, number],
     skyHorizon: [0.64, 0.78, 0.92] as [number, number, number],
     fogColor: [0.56, 0.7, 0.86] as [number, number, number],
@@ -16,7 +16,7 @@ const MOODS = {
     ambientColor: [0.26, 0.31, 0.4] as [number, number, number],
   },
   sunset: {
-    label: 'Закат (Sunset)',
+    label: 'Закат',
     skyTop: [0.16, 0.13, 0.34] as [number, number, number],
     skyHorizon: [0.96, 0.56, 0.34] as [number, number, number],
     fogColor: [0.64, 0.4, 0.36] as [number, number, number],
@@ -25,7 +25,7 @@ const MOODS = {
     ambientColor: [0.28, 0.2, 0.26] as [number, number, number],
   },
   cyber: {
-    label: 'Кибер-ночь (Cyber)',
+    label: 'Кибер-ночь',
     skyTop: [0.03, 0.05, 0.14] as [number, number, number],
     skyHorizon: [0.08, 0.16, 0.34] as [number, number, number],
     fogColor: [0.05, 0.09, 0.2] as [number, number, number],
@@ -34,7 +34,7 @@ const MOODS = {
     ambientColor: [0.14, 0.18, 0.28] as [number, number, number],
   },
   pastel: {
-    label: 'Аниме-Пастель (Pastel)',
+    label: 'Пастель',
     skyTop: [0.42, 0.58, 0.94] as [number, number, number],
     skyHorizon: [0.98, 0.82, 0.9] as [number, number, number],
     fogColor: [0.82, 0.78, 0.92] as [number, number, number],
@@ -65,12 +65,12 @@ export class WorldSettingsPanel {
     const shell = document.createElement('div');
     shell.className = 'world-shell';
 
-    // Col 1: Sky & Weather
     const c1 = document.createElement('div');
     c1.className = 'card';
-    c1.innerHTML = `<div class="card-title">Небо, Погода и Свет</div>`;
+    c1.innerHTML = `<div class="card-title">Небо и погода</div>`;
 
     const selMood = document.createElement('select');
+    selMood.setAttribute('aria-label', 'Освещение неба');
     for (const [k, v] of Object.entries(MOODS)) {
       const o = document.createElement('option');
       o.value = k;
@@ -91,10 +91,11 @@ export class WorldSettingsPanel {
     };
 
     const selWeather = document.createElement('select');
+    selWeather.setAttribute('aria-label', 'Погода');
     for (const [id, lbl] of [['clear', 'Ясно'], ['snow', 'Снег'], ['rain', 'Дождь'], ['downpour', 'Ливень']] as const) {
       const o = document.createElement('option');
       o.value = id;
-      o.textContent = `Погода: ${lbl}`;
+      o.textContent = lbl;
       if (env.weather === id) o.selected = true;
       selWeather.appendChild(o);
     }
@@ -104,10 +105,11 @@ export class WorldSettingsPanel {
     };
 
     const selCloud = document.createElement('select');
+    selCloud.setAttribute('aria-label', 'Стиль облаков');
     for (const [id, lbl] of [['realistic', 'Реализм'], ['anime', 'Аниме'], ['dramatic', 'Шторм'], ['clear', 'Чистое']] as const) {
       const o = document.createElement('option');
       o.value = id;
-      o.textContent = `Облака: ${lbl}`;
+      o.textContent = lbl;
       if (env.cloudStyle === id) o.selected = true;
       selCloud.appendChild(o);
     }
@@ -125,14 +127,13 @@ export class WorldSettingsPanel {
       env.shadowsEnabled = cbSh.checked;
       this.onMutate(true);
     };
-    chkSh.append(cbSh, document.createTextNode('Тени включены'));
+    chkSh.append(cbSh, document.createTextNode('Тени'));
 
     c1.append(selMood, selWeather, selCloud, chkSh);
 
-    // Col 2: Quality Tier + PostProcess
     const c2 = document.createElement('div');
     c2.className = 'card';
-    c2.innerHTML = `<div class="card-title">Качество графики (Quality Tier)</div>`;
+    c2.innerHTML = `<div class="card-title">Качество графики</div>`;
     const qWrap = document.createElement('div');
     qWrap.className = 'quality-segs';
     for (const q of QUALITIES) {
@@ -151,7 +152,7 @@ export class WorldSettingsPanel {
       const wrap = document.createElement('label');
       wrap.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;';
       const sp = document.createElement('span');
-      sp.textContent = `${label}: ${val.toFixed(2)}`;
+      sp.textContent = `${label} ${val.toFixed(2)}`;
       const rng = document.createElement('input');
       rng.type = 'range';
       rng.min = String(min);
@@ -160,7 +161,7 @@ export class WorldSettingsPanel {
       rng.value = String(val);
       rng.oninput = () => {
         const nv = Number(rng.value);
-        sp.textContent = `${label}: ${nv.toFixed(2)}`;
+        sp.textContent = `${label} ${nv.toFixed(2)}`;
         onSet(nv);
       };
       rng.onchange = () => this.onMutate(true);
@@ -178,16 +179,15 @@ export class WorldSettingsPanel {
         env.postProcess.enabled = true;
         env.postProcess.ssao = v;
       }),
-      addSlider('Контур (Outline)', 0, 1.0, 0.05, env.postProcess.screenOutline, (v) => {
+      addSlider('Outline', 0, 1.0, 0.05, env.postProcess.screenOutline, (v) => {
         env.postProcess.enabled = true;
         env.postProcess.screenOutline = v;
       })
     );
 
-    // Col 3: Player Settings
     const c3 = document.createElement('div');
     c3.className = 'card';
-    c3.innerHTML = `<div class="card-title">Игрок и Спавн (Play Mode)</div>`;
+    c3.innerHTML = `<div class="card-title">Игрок</div>`;
 
     const chkPl = document.createElement('label');
     chkPl.className = 'tb-chk';
@@ -198,13 +198,13 @@ export class WorldSettingsPanel {
       doc.player.enabled = cbPl.checked;
       this.onMutate(false);
     };
-    chkPl.append(cbPl, document.createTextNode('Спавнить FPS-игрока в Play'));
+    chkPl.append(cbPl, document.createTextNode('Спавнить игрока при запуске'));
 
     const spawnGrid = document.createElement('div');
     spawnGrid.className = 'vec3-grid';
     (['X', 'Y', 'Z'] as const).forEach((axis, idx) => {
       const lbl = document.createElement('label');
-      lbl.textContent = `Спавн ${axis}`;
+      lbl.textContent = axis;
       const inp = document.createElement('input');
       inp.type = 'number';
       inp.step = '0.5';
@@ -220,8 +220,8 @@ export class WorldSettingsPanel {
     c3.append(
       chkPl,
       spawnGrid,
-      addSlider('Скорость бега', 2, 16, 0.5, doc.player.moveSpeed, (v) => (doc.player.moveSpeed = v)),
-      addSlider('Высота прыжка', 3, 18, 0.5, doc.player.jumpSpeed, (v) => (doc.player.jumpSpeed = v))
+      addSlider('Скорость', 2, 16, 0.5, doc.player.moveSpeed, (v) => (doc.player.moveSpeed = v)),
+      addSlider('Прыжок', 3, 18, 0.5, doc.player.jumpSpeed, (v) => (doc.player.jumpSpeed = v))
     );
 
     shell.append(c1, c2, c3);

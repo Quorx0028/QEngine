@@ -7,12 +7,51 @@ import {
   type QuarkProjectDoc,
 } from 'quark-engine';
 
+const PARAM_LABELS: Record<string, string> = {
+  entityId: 'Объект',
+  triggerEntityId: 'Зона',
+  targetEntityId: 'Цель',
+  anchorEntityId: 'Привязка',
+  onlyPlayer: 'Только игрок',
+  minImpulse: 'Мин. сила',
+  intervalSec: 'Интервал, с',
+  durationSec: 'Время, с',
+  seconds: 'Пауза, с',
+  chance: 'Шанс 0..1',
+  opacity: 'Прозрачн.',
+  intensity: 'Сила',
+  color: 'Цвет',
+  glow: 'Свечение',
+  preset: 'Эффект',
+  count: 'Кол-во',
+  sound: 'Звук',
+  freq: 'Частота',
+  varName: 'Переменная',
+  label: 'Текст',
+  name: 'Имя',
+  value: 'Значение',
+  op: 'Операция',
+  cmp: 'Условие',
+  key: 'Клавиша',
+  mode: 'Режим',
+  locked: 'Статика',
+  dynamic: 'Физика',
+  kind: 'Форма',
+  title: 'Заголовок',
+  subtitle: 'Подпись',
+  weather: 'Погода',
+};
+
 export class NodeGraphEditor {
   private readonly root: HTMLElement;
   private readonly getDoc: () => QuarkProjectDoc;
   private readonly onMutate: (rebuildRequired?: boolean) => void;
   private activeGraphId: string | null = null;
   private pendingLink: { nodeId: string; port: string } | null = null;
+  private panX = 0;
+  private panY = 0;
+  private zoom = 1;
+  private nodeFilter = '';
   private readonly nodeEls = new Map<string, HTMLElement>();
 
   constructor(
@@ -44,7 +83,7 @@ export class NodeGraphEditor {
 
   addQuickTriggerRule(targetEntityId: string, eventType: 'onTriggerEnter' | 'onRaycastClick'): void {
     const g = this.ensureDefaultGraph();
-    const y = 40 + g.nodes.length * 55;
+    const y = 40 + g.nodes.length * 56;
     const n1Id = `n_${Date.now()}_a`;
     const n2Id = `n_${Date.now()}_b`;
     g.nodes.push(
@@ -61,7 +100,7 @@ export class NodeGraphEditor {
       {
         id: n2Id,
         type: 'emitVfx',
-        x: 330,
+        x: 340,
         y,
         params: { preset: 'confetti', entityId: targetEntityId, x: 0, y: 0.8, z: 0, count: 32 },
       }
@@ -75,7 +114,7 @@ export class NodeGraphEditor {
     const el = this.nodeEls.get(nodeId);
     if (!el) return;
     el.classList.add('pulse');
-    window.setTimeout(() => el.classList.remove('pulse'), 320);
+    window.setTimeout(() => el.classList.remove('pulse'), 300);
   }
 
   render(): void {
@@ -87,17 +126,18 @@ export class NodeGraphEditor {
     const shell = document.createElement('div');
     shell.className = 'bp-shell';
 
-    // Top bar
     const bar = document.createElement('div');
     bar.className = 'bp-bar';
 
     const leftBar = document.createElement('div');
     leftBar.className = 'row-gap';
+
     const selGraph = document.createElement('select');
+    selGraph.setAttribute('aria-label', 'Активный граф');
     for (const g of doc.blueprints) {
       const opt = document.createElement('option');
       opt.value = g.id;
-      opt.textContent = `Граф: ${g.name}`;
+      opt.textContent = g.name;
       if (g.id === graph.id) opt.selected = true;
       selGraph.appendChild(opt);
     }
@@ -108,11 +148,11 @@ export class NodeGraphEditor {
     };
 
     const btnNewGraph = document.createElement('button');
-    btnNewGraph.textContent = '+ Новый граф';
+    btnNewGraph.textContent = '+ Граф';
     btnNewGraph.onclick = () => {
       const ng: BlueprintGraph = {
         id: `bp_${Date.now()}`,
-        name: `Скрипт #${doc.blueprints.length + 1}`,
+        name: `Скрипт ${doc.blueprints.length + 1}`,
         enabled: true,
         nodes: [],
         edges: [],
@@ -132,95 +172,154 @@ export class NodeGraphEditor {
       graph.enabled = cb.checked;
       this.onMutate(false);
     };
-    chkEnabled.append(cb, document.createTextNode('Активен'));
+    chkEnabled.append(cb, document.createTextNode('Вкл'));
 
     leftBar.append(selGraph, btnNewGraph, chkEnabled);
 
     const rightBar = document.createElement('div');
     rightBar.className = 'row-gap';
 
-    const makeAddSelect = (cat: 'event' | 'logic' | 'action', title: string) => {
-      const sel = document.createElement('select');
-      const defOpt = document.createElement('option');
-      defOpt.value = '';
-      defOpt.textContent = title;
-      sel.appendChild(defOpt);
+    const searchInp = document.createElement('input');
+    searchInp.type = 'text';
+    searchInp.className = 'search';
+    searchInp.placeholder = 'Найти ноду';
+    searchInp.value = this.nodeFilter;
+    searchInp.setAttribute('aria-label', 'Поиск ноды для добавления');
+
+    const selQuickAdd = document.createElement('select');
+    selQuickAdd.setAttribute('aria-label', 'Добавить ноду');
+    const populateQuickAdd = () => {
+      selQuickAdd.innerHTML = '';
+      const def = document.createElement('option');
+      def.value = '';
+      def.textContent = this.nodeFilter ? '+ Выбрать найденную...' : '+ Добавить ноду';
+      selQuickAdd.appendChild(def);
+      const q = this.nodeFilter.trim().toLowerCase();
       for (const spec of BLUEPRINT_NODE_CATALOG) {
-        if (spec.category !== cat) continue;
+        if (q && !spec.label.toLowerCase().includes(q) && !spec.type.toLowerCase().includes(q)) continue;
         const opt = document.createElement('option');
         opt.value = spec.type;
-        opt.textContent = spec.label;
-        sel.appendChild(opt);
+        const cat = spec.category === 'event' ? 'Событие' : spec.category === 'logic' ? 'Логика' : 'Действие';
+        opt.textContent = `${cat}: ${spec.label}`;
+        selQuickAdd.appendChild(opt);
       }
-      sel.onchange = () => {
-        if (!sel.value) return;
-        const t = sel.value as BlueprintNodeType;
-        const spec = NODE_SPEC_BY_TYPE.get(t)!;
-        const idx = graph.nodes.length;
-        graph.nodes.push({
-          id: `n_${Date.now()}_${idx}`,
-          type: t,
-          x: 60 + ((idx * 240) % 720),
-          y: 50 + Math.floor(idx / 3) * 180,
-          params: { ...spec.defaultParams },
-        });
-        sel.value = '';
-        this.onMutate(false);
-        this.render();
-      };
-      return sel;
+    };
+    populateQuickAdd();
+    searchInp.oninput = () => {
+      this.nodeFilter = searchInp.value;
+      populateQuickAdd();
+    };
+    selQuickAdd.onchange = () => {
+      if (!selQuickAdd.value) return;
+      const t = selQuickAdd.value as BlueprintNodeType;
+      const spec = NODE_SPEC_BY_TYPE.get(t)!;
+      const idx = graph.nodes.length;
+      graph.nodes.push({
+        id: `n_${Date.now()}_${idx}`,
+        type: t,
+        x: Math.round((80 - this.panX) / this.zoom + ((idx * 240) % 720)),
+        y: Math.round((40 - this.panY) / this.zoom + Math.floor(idx / 3) * 180),
+        params: { ...spec.defaultParams },
+      });
+      selQuickAdd.value = '';
+      this.onMutate(false);
+      this.render();
     };
 
-    const hintSpan = document.createElement('span');
-    hintSpan.className = 'muted';
-    hintSpan.textContent = this.pendingLink
-      ? 'Кликни входной порт (in/reset) для соединения...'
-      : 'Выход → Вход: кликни порты для связи · Клик по проводу = удалить';
+    const btnResetView = document.createElement('button');
+    btnResetView.textContent = `${Math.round(this.zoom * 100)}%`;
+    btnResetView.title = 'Сбросить масштаб и центр';
+    btnResetView.onclick = () => {
+      this.panX = 0;
+      this.panY = 0;
+      this.zoom = 1;
+      applyStageTransform();
+      btnResetView.textContent = '100%';
+    };
 
-    rightBar.append(
-      makeAddSelect('event', '+ Событие...'),
-      makeAddSelect('logic', '+ Условие / Перем...'),
-      makeAddSelect('action', '+ Действие...'),
-      hintSpan
-    );
-
+    rightBar.append(searchInp, selQuickAdd, btnResetView);
     bar.append(leftBar, rightBar);
     shell.appendChild(bar);
 
-    // Canvas stage
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'bp-canvas';
     const stage = document.createElement('div');
     stage.className = 'bp-stage';
 
+    const applyStageTransform = () => {
+      stage.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
+      canvasWrap.style.backgroundPosition = `${this.panX}px ${this.panY}px`;
+    };
+    applyStageTransform();
+
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'bp-wires');
     stage.appendChild(svg);
 
+    const previewPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    previewPath.setAttribute('class', 'bp-wire-preview');
+    previewPath.style.display = 'none';
+    svg.appendChild(previewPath);
+
+    const portCenter = (el: HTMLElement) => {
+      const sr = stage.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return {
+        x: (r.left + r.width * 0.5 - sr.left) / this.zoom,
+        y: (r.top + r.height * 0.5 - sr.top) / this.zoom,
+      };
+    };
+
     const drawWires = () => {
-      svg.innerHTML = '';
+      while (svg.firstChild && svg.firstChild !== previewPath) svg.removeChild(svg.firstChild);
       for (const edge of graph.edges) {
         const fromEl = stage.querySelector<HTMLElement>(`[data-out="${edge.fromNode}:${edge.fromPort}"]`);
         const toEl = stage.querySelector<HTMLElement>(`[data-in="${edge.toNode}:${edge.toPort}"]`);
         if (!fromEl || !toEl) continue;
-        const sr = stage.getBoundingClientRect();
-        const fr = fromEl.getBoundingClientRect();
-        const tr = toEl.getBoundingClientRect();
-        const x1 = fr.right - sr.left;
-        const y1 = fr.top + fr.height * 0.5 - sr.top;
-        const x2 = tr.left - sr.left;
-        const y2 = tr.top + tr.height * 0.5 - sr.top;
-        const dx = Math.max(45, Math.abs(x2 - x1) * 0.5);
+        const p1 = portCenter(fromEl);
+        const p2 = portCenter(toEl);
+        const dx = Math.max(40, Math.abs(p2.x - p1.x) * 0.5);
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.setAttribute('class', 'bp-wire');
-        path.setAttribute('d', `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+        const isAlt = edge.fromPort === 'false' || edge.fromPort === 'b';
+        path.setAttribute('class', isAlt ? 'bp-wire alt' : 'bp-wire');
+        path.setAttribute('d', `M ${p1.x} ${p1.y} C ${p1.x + dx} ${p1.y}, ${p2.x - dx} ${p2.y}, ${p2.x} ${p2.y}`);
         path.onclick = () => {
           graph.edges = graph.edges.filter((e) => e.id !== edge.id);
           this.onMutate(false);
           this.render();
         };
-        svg.appendChild(path);
+        svg.insertBefore(path, previewPath);
       }
+    };
+
+    // Pan empty stage & zoom wheel
+    canvasWrap.onpointerdown = (ev) => {
+      if (ev.target !== canvasWrap && ev.target !== stage) return;
+      canvasWrap.classList.add('panning');
+      const sx = ev.clientX;
+      const sy = ev.clientY;
+      const ox = this.panX;
+      const oy = this.panY;
+      const onMove = (mv: PointerEvent) => {
+        this.panX = Math.round(ox + mv.clientX - sx);
+        this.panY = Math.round(oy + mv.clientY - sy);
+        applyStageTransform();
+      };
+      const onUp = () => {
+        canvasWrap.classList.remove('panning');
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+
+    canvasWrap.onwheel = (ev) => {
+      ev.preventDefault();
+      const next = Math.max(0.55, Math.min(1.4, this.zoom * (ev.deltaY > 0 ? 0.92 : 1.08)));
+      this.zoom = Number(next.toFixed(2));
+      btnResetView.textContent = `${Math.round(this.zoom * 100)}%`;
+      applyStageTransform();
     };
 
     for (const node of graph.nodes) {
@@ -236,9 +335,29 @@ export class NodeGraphEditor {
       head.className = `bp-node-head bp-cat-${spec.category}`;
       const titleSpan = document.createElement('span');
       titleSpan.textContent = spec.label;
+
+      const actions = document.createElement('div');
+      actions.className = 'bp-node-actions';
+
+      const dupBtn = document.createElement('button');
+      dupBtn.textContent = '+';
+      dupBtn.title = 'Копировать ноду';
+      dupBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        graph.nodes.push({
+          id: `n_${Date.now()}`,
+          type: node.type,
+          x: node.x + 28,
+          y: node.y + 28,
+          params: { ...node.params },
+        });
+        this.onMutate(false);
+        this.render();
+      };
+
       const delBtn = document.createElement('button');
       delBtn.textContent = '×';
-      delBtn.style.cssText = 'padding:0 5px;background:rgba(0,0,0,0.35);border:none;';
+      delBtn.title = 'Удалить ноду';
       delBtn.onclick = (ev) => {
         ev.stopPropagation();
         graph.nodes = graph.nodes.filter((n) => n.id !== node.id);
@@ -246,9 +365,9 @@ export class NodeGraphEditor {
         this.onMutate(false);
         this.render();
       };
-      head.append(titleSpan, delBtn);
+      actions.append(dupBtn, delBtn);
+      head.append(titleSpan, actions);
 
-      // Drag node position
       head.onpointerdown = (ev) => {
         if ((ev.target as HTMLElement).tagName === 'BUTTON') return;
         const sx = ev.clientX;
@@ -256,8 +375,8 @@ export class NodeGraphEditor {
         const ox = node.x;
         const oy = node.y;
         const onMove = (mv: PointerEvent) => {
-          node.x = Math.max(0, Math.round(ox + mv.clientX - sx));
-          node.y = Math.max(0, Math.round(oy + mv.clientY - sy));
+          node.x = Math.max(0, Math.round(ox + (mv.clientX - sx) / this.zoom));
+          node.y = Math.max(0, Math.round(oy + (mv.clientY - sy) / this.zoom));
           card.style.left = `${node.x}px`;
           card.style.top = `${node.y}px`;
           drawWires();
@@ -281,7 +400,9 @@ export class NodeGraphEditor {
         const b = document.createElement('button');
         b.className = 'port-btn';
         b.dataset.in = `${node.id}:${ip}`;
-        b.textContent = `● ${ip}`;
+        const dot = document.createElement('span');
+        dot.className = 'port-dot';
+        b.append(dot, document.createTextNode(ip));
         b.onclick = () => {
           if (this.pendingLink && this.pendingLink.nodeId !== node.id) {
             graph.edges.push({
@@ -309,7 +430,54 @@ export class NodeGraphEditor {
           b.classList.add('armed');
         }
         b.dataset.out = `${node.id}:${op}`;
-        b.textContent = `${op} ●`;
+        const dot = document.createElement('span');
+        dot.className = op === 'false' || op === 'b' ? 'port-dot alt' : 'port-dot';
+        b.append(document.createTextNode(op), dot);
+
+        // Support BOTH drag-to-connect Bezier preview AND click-to-link
+        b.onpointerdown = (ev) => {
+          ev.stopPropagation();
+          const start = portCenter(b);
+          let dragged = false;
+          const onMove = (mv: PointerEvent) => {
+            const sr = stage.getBoundingClientRect();
+            const mx = (mv.clientX - sr.left) / this.zoom;
+            const my = (mv.clientY - sr.top) / this.zoom;
+            if (Math.hypot(mx - start.x, my - start.y) > 8) dragged = true;
+            if (!dragged) return;
+            const dx = Math.max(36, Math.abs(mx - start.x) * 0.5);
+            previewPath.style.display = 'block';
+            previewPath.setAttribute('d', `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${mx - dx} ${my}, ${mx} ${my}`);
+          };
+          const onUp = (up: PointerEvent) => {
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+            previewPath.style.display = 'none';
+            if (dragged) {
+              const target = document.elementFromPoint(up.clientX, up.clientY)?.closest<HTMLElement>('[data-in]');
+              const specStr = target?.dataset.in;
+              if (specStr) {
+                const [toNode, toPort] = specStr.split(':');
+                if (toNode && toPort && toNode !== node.id) {
+                  graph.edges.push({
+                    id: `e_${Date.now()}`,
+                    fromNode: node.id,
+                    fromPort: op,
+                    toNode,
+                    toPort,
+                  });
+                  this.pendingLink = null;
+                  this.onMutate(false);
+                  this.render();
+                  return;
+                }
+              }
+            }
+          };
+          window.addEventListener('pointermove', onMove);
+          window.addEventListener('pointerup', onUp);
+        };
+
         b.onclick = () => {
           this.pendingLink =
             this.pendingLink?.nodeId === node.id && this.pendingLink.port === op
@@ -337,22 +505,22 @@ export class NodeGraphEditor {
 
     for (const [key, val] of Object.entries(node.params)) {
       const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:4px;';
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;';
       const lbl = document.createElement('span');
       lbl.className = 'muted';
-      lbl.style.minWidth = '54px';
-      lbl.textContent = key;
+      lbl.style.minWidth = '64px';
+      lbl.textContent = PARAM_LABELS[key] ?? key;
 
       if (key === 'entityId' || key === 'triggerEntityId' || key === 'targetEntityId' || key === 'anchorEntityId') {
         const sel = document.createElement('select');
         const emptyOpt = document.createElement('option');
         emptyOpt.value = '';
-        emptyOpt.textContent = '(выбрать)';
+        emptyOpt.textContent = 'Не выбран';
         sel.appendChild(emptyOpt);
         if (key === 'entityId' && node.type === 'applyImpulse') {
           const pl = document.createElement('option');
           pl.value = '__player__';
-          pl.textContent = '🎮 Игрок';
+          pl.textContent = 'Игрок';
           if (val === '__player__') pl.selected = true;
           sel.appendChild(pl);
         }
@@ -390,7 +558,7 @@ export class NodeGraphEditor {
         row.append(lbl, inp);
       } else {
         const inp = document.createElement('input');
-        inp.type = key === 'color' ? 'color' : 'text';
+        inp.type = key === 'color' || key === 'glow' ? 'color' : 'text';
         inp.value = String(val);
         inp.onchange = () => {
           node.params[key] = inp.value;

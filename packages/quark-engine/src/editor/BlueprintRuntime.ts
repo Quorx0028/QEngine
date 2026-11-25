@@ -17,31 +17,37 @@ export interface BlueprintNodeSpec {
 
 export const BLUEPRINT_NODE_CATALOG: readonly BlueprintNodeSpec[] = [
   { type: 'onStart', category: 'event', label: 'Старт игры', inputs: [], outputs: ['out'], defaultParams: {} },
-  { type: 'onTick', category: 'event', label: 'Каждый кадр / Таймер', inputs: [], outputs: ['out'], defaultParams: { intervalSec: 0.5 } },
-  { type: 'onKeyPress', category: 'event', label: 'Нажата клавиша', inputs: [], outputs: ['out'], defaultParams: { key: 'KeyE' } },
-  { type: 'onTriggerEnter', category: 'event', label: 'Вход в триггер', inputs: [], outputs: ['out'], defaultParams: { triggerEntityId: '', onlyPlayer: true } },
-  { type: 'onTriggerExit', category: 'event', label: 'Выход из триггера', inputs: [], outputs: ['out'], defaultParams: { triggerEntityId: '', onlyPlayer: true } },
-  { type: 'onCollision', category: 'event', label: 'Столкновение', inputs: [], outputs: ['out'], defaultParams: { entityId: '', minImpulse: 1.0 } },
-  { type: 'onRaycastClick', category: 'event', label: 'Клик / Выстрел по объекту', inputs: [], outputs: ['out'], defaultParams: { targetEntityId: '' } },
+  { type: 'timerLoop', category: 'event', label: 'Таймер', inputs: [], outputs: ['out'], defaultParams: { intervalSec: 1.0 } },
+  { type: 'onTick', category: 'event', label: 'Каждый кадр', inputs: [], outputs: ['out'], defaultParams: { intervalSec: 0 } },
+  { type: 'onKeyPress', category: 'event', label: 'Клавиша', inputs: [], outputs: ['out'], defaultParams: { key: 'KeyE' } },
+  { type: 'onTriggerEnter', category: 'event', label: 'Вход в зону', inputs: [], outputs: ['out'], defaultParams: { triggerEntityId: '', onlyPlayer: true } },
+  { type: 'onTriggerExit', category: 'event', label: 'Выход из зоны', inputs: [], outputs: ['out'], defaultParams: { triggerEntityId: '', onlyPlayer: true } },
+  { type: 'onCollision', category: 'event', label: 'Удар', inputs: [], outputs: ['out'], defaultParams: { entityId: '', minImpulse: 1.0 } },
+  { type: 'onRaycastClick', category: 'event', label: 'Клик по объекту', inputs: [], outputs: ['out'], defaultParams: { targetEntityId: '' } },
 
-  { type: 'setVar', category: 'logic', label: 'Переменная (+ / =)', inputs: ['in'], outputs: ['out'], defaultParams: { name: 'score', op: 'add', value: 1 } },
-  { type: 'ifVar', category: 'logic', label: 'Если переменная...', inputs: ['in'], outputs: ['true', 'false'], defaultParams: { name: 'keys', cmp: '>=', value: 1 } },
-  { type: 'gateOnce', category: 'logic', label: 'Только 1 раз', inputs: ['in', 'reset'], outputs: ['out'], defaultParams: {} },
-  { type: 'delay', category: 'logic', label: 'Задержка (сек)', inputs: ['in'], outputs: ['out'], defaultParams: { seconds: 1.0 } },
+  { type: 'setVar', category: 'logic', label: 'Переменная', inputs: ['in'], outputs: ['out'], defaultParams: { name: 'score', op: 'add', value: 1 } },
+  { type: 'ifVar', category: 'logic', label: 'Условие', inputs: ['in'], outputs: ['true', 'false'], defaultParams: { name: 'keys', cmp: '>=', value: 1 } },
+  { type: 'sequence', category: 'logic', label: 'Цепочка 1-2-3', inputs: ['in'], outputs: ['then1', 'then2', 'then3'], defaultParams: {} },
+  { type: 'flipFlop', category: 'logic', label: 'Переключатель A/B', inputs: ['in'], outputs: ['a', 'b'], defaultParams: {} },
+  { type: 'randomBranch', category: 'logic', label: 'Случайно', inputs: ['in'], outputs: ['true', 'false'], defaultParams: { chance: 0.5 } },
+  { type: 'gateOnce', category: 'logic', label: 'Один раз', inputs: ['in', 'reset'], outputs: ['out'], defaultParams: {} },
+  { type: 'delay', category: 'logic', label: 'Пауза', inputs: ['in'], outputs: ['out'], defaultParams: { seconds: 1.0 } },
 
-  { type: 'moveObject', category: 'action', label: 'Двигать объект', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', x: 0, y: 2.5, z: 0, durationSec: 0.8, mode: 'offset' } },
-  { type: 'rotateObject', category: 'action', label: 'Повернуть объект', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', rx: 0, ry: 90, rz: 0, durationSec: 0.6 } },
-  { type: 'applyImpulse', category: 'action', label: 'Толчок / Прыжок', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '__player__', x: 0, y: 12, z: 0 } },
-  { type: 'setStaticLocked', category: 'action', label: 'Вкл/Выкл фиксацию', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', locked: false } },
-  { type: 'spawnProp', category: 'action', label: 'Спавн объекта', inputs: ['in'], outputs: ['out'], defaultParams: { kind: 'box', anchorEntityId: '', x: 0, y: 2, z: 0, dynamic: true, color: '#f59e0b' } },
+  { type: 'moveObject', category: 'action', label: 'Сдвинуть объект', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', x: 0, y: 2.5, z: 0, durationSec: 0.8, mode: 'offset' } },
+  { type: 'rotateObject', category: 'action', label: 'Повернуть', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', rx: 0, ry: 90, rz: 0, durationSec: 0.6 } },
+  { type: 'applyImpulse', category: 'action', label: 'Импульс', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '__player__', x: 0, y: 12, z: 0 } },
+  { type: 'setStaticLocked', category: 'action', label: 'Фиксация физики', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', locked: false } },
+  { type: 'setMaterialStyle', category: 'action', label: 'Цвет и прозрачность', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', color: '#38bdf8', opacity: 0.5, glow: '#38bdf8' } },
+  { type: 'spawnProp', category: 'action', label: 'Создать объект', inputs: ['in'], outputs: ['out'], defaultParams: { kind: 'box', anchorEntityId: '', x: 0, y: 2, z: 0, dynamic: true, color: '#f59e0b' } },
   { type: 'destroyObject', category: 'action', label: 'Удалить объект', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '' } },
-  { type: 'toggleLight', category: 'action', label: 'Переключить свет', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', mode: 'toggle' } },
-  { type: 'emitVfx', category: 'action', label: 'Эффект частиц (VFX)', inputs: ['in'], outputs: ['out'], defaultParams: { preset: 'sparks', entityId: '', x: 0, y: 0.5, z: 0, count: 28 } },
-  { type: 'playSound', category: 'action', label: '3D Звук', inputs: ['in'], outputs: ['out'], defaultParams: { sound: 'pickup', freq: 720, entityId: '' } },
+  { type: 'toggleLight', category: 'action', label: 'Свет вкл/выкл', inputs: ['in'], outputs: ['out'], defaultParams: { entityId: '', mode: 'toggle' } },
+  { type: 'cameraShake', category: 'action', label: 'Тряска камеры', inputs: ['in'], outputs: ['out'], defaultParams: { intensity: 0.16, durationSec: 0.25 } },
+  { type: 'emitVfx', category: 'action', label: 'Частицы VFX', inputs: ['in'], outputs: ['out'], defaultParams: { preset: 'sparks', entityId: '', x: 0, y: 0.5, z: 0, count: 28 } },
+  { type: 'playSound', category: 'action', label: 'Звук 3D', inputs: ['in'], outputs: ['out'], defaultParams: { sound: 'pickup', freq: 720, entityId: '' } },
   { type: 'teleportPlayer', category: 'action', label: 'Телепорт игрока', inputs: ['in'], outputs: ['out'], defaultParams: { x: 0, y: 1.6, z: 0 } },
-  { type: 'showBanner', category: 'action', label: 'Баннер / Сообщение', inputs: ['in'], outputs: ['out'], defaultParams: { title: 'Событие!', subtitle: '', color: '#38bdf8' } },
+  { type: 'showBanner', category: 'action', label: 'Баннер экрана', inputs: ['in'], outputs: ['out'], defaultParams: { title: 'Готово', subtitle: '', color: '#38bdf8' } },
   { type: 'setHudCounter', category: 'action', label: 'Счётчик HUD', inputs: ['in'], outputs: ['out'], defaultParams: { label: 'Счёт', varName: 'score' } },
-  { type: 'setWeather', category: 'action', label: 'Сменить погоду', inputs: ['in'], outputs: ['out'], defaultParams: { weather: 'rain' } },
+  { type: 'setWeather', category: 'action', label: 'Погода', inputs: ['in'], outputs: ['out'], defaultParams: { weather: 'rain' } },
 ];
 
 export const NODE_SPEC_BY_TYPE = new Map<BlueprintNodeType, BlueprintNodeSpec>(
@@ -54,6 +60,7 @@ export interface BlueprintHostApi {
   audio: AudioSystem;
   getPlayerEntity: () => EntityId | null;
   resolveEntityId: (docId: string) => EntityId | null;
+  resolveEntityMaterialId?: (docId: string) => number | null;
   resolveLightIndex: (docId: string) => { kind: 'point' | 'spot'; index: number } | null;
   getEntityEulerDeg: (docId: string) => Vec3Tuple;
   setEntityEulerDeg: (docId: string, euler: Vec3Tuple) => void;
@@ -95,6 +102,7 @@ export class BlueprintRuntime {
   private readonly vars = new Map<string, string | number | boolean>();
   private readonly hudBindings = new Map<string, string>(); // varName -> label
   private readonly onceGates = new Set<string>();
+  private readonly flipStates = new Set<string>();
   private readonly tickAccumulators = new Map<string, number>();
   private readonly moveTweens: ActiveMoveTween[] = [];
   private readonly rotTweens: ActiveRotTween[] = [];
@@ -151,11 +159,11 @@ export class BlueprintRuntime {
   update(dt: number): void {
     if (this.disposed) return;
 
-    // 1. Periodic onTick nodes
+    // 1. Periodic onTick / timerLoop nodes
     for (const g of this.graphs) {
       for (const n of g.nodes) {
-        if (n.type !== 'onTick') continue;
-        const interval = Math.max(0, Number(n.params.intervalSec ?? 0));
+        if (n.type !== 'onTick' && n.type !== 'timerLoop') continue;
+        const interval = Math.max(n.type === 'timerLoop' ? 0.05 : 0, Number(n.params.intervalSec ?? 0));
         const key = `${g.id}:${n.id}`;
         const acc = (this.tickAccumulators.get(key) ?? 0) + dt;
         if (acc >= interval) {
@@ -373,6 +381,57 @@ export class BlueprintRuntime {
         break;
       }
 
+      case 'sequence': {
+        this.executeFromOutput(graph, node.id, 'then1', depth + 1);
+        this.executeFromOutput(graph, node.id, 'then2', depth + 1);
+        this.executeFromOutput(graph, node.id, 'then3', depth + 1);
+        return;
+      }
+
+      case 'flipFlop': {
+        const key = `${graph.id}:${node.id}`;
+        const isA = !this.flipStates.has(key);
+        if (isA) this.flipStates.add(key);
+        else this.flipStates.delete(key);
+        this.executeFromOutput(graph, node.id, isA ? 'a' : 'b', depth + 1);
+        return;
+      }
+
+      case 'randomBranch': {
+        const chance = Math.max(0, Math.min(1, Number(p.chance ?? 0.5)));
+        this.executeFromOutput(graph, node.id, Math.random() < chance ? 'true' : 'false', depth + 1);
+        return;
+      }
+
+      case 'cameraShake': {
+        scene.triggerShake(Number(p.intensity ?? 0.16), Number(p.durationSec ?? 0.25));
+        break;
+      }
+
+      case 'setMaterialStyle': {
+        const docId = String(p.entityId ?? '');
+        const matId = this.host.resolveEntityMaterialId?.(docId);
+        if (matId !== null && matId !== undefined && this.host.assets.hasBackend) {
+          const clean = String(p.color ?? '#38bdf8').replace('#', '');
+          const r = parseInt(clean.slice(0, 2) || 'ff', 16) / 255;
+          const g = parseInt(clean.slice(2, 4) || 'ff', 16) / 255;
+          const b = parseInt(clean.slice(4, 6) || 'ff', 16) / 255;
+          const alpha = Math.max(0, Math.min(1, Number(p.opacity ?? 1)));
+          const gClean = String(p.glow ?? '#38bdf8').replace('#', '');
+          const gr = parseInt(gClean.slice(0, 2) || '00', 16) / 255;
+          const gg = parseInt(gClean.slice(2, 4) || '00', 16) / 255;
+          const gb = parseInt(gClean.slice(4, 6) || '00', 16) / 255;
+          this.host.assets.updateMaterial(matId, {
+            transparent: alpha < 0.99,
+            uniforms: {
+              baseColor: [r, g, b, alpha],
+              glowColor: [gr, gg, gb],
+            } as never,
+          });
+        }
+        break;
+      }
+
       case 'spawnProp': {
         const anchor = this.resolveTargetEid(String(p.anchorEntityId ?? ''));
         const base = anchor !== null && scene.isAlive(anchor) ? scene.getPosition(anchor) : [0, 0, 0];
@@ -487,5 +546,6 @@ export class BlueprintRuntime {
     this.pendingDelays.length = 0;
     this.vars.clear();
     this.onceGates.clear();
+    this.flipStates.clear();
   }
 }
